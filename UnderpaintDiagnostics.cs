@@ -90,6 +90,9 @@ public sealed record NativeConstantBufferSnapshot(
 
 public sealed record NativeCameraParameterSnapshot(
     int Slot,
+    int ByteOffset,
+    float MatchError,
+    bool Transposed,
     Matrix4x4 ViewProjection,
     Matrix4x4 Projection,
     Matrix4x4 MainViewToProjection

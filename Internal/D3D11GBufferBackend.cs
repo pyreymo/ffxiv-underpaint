@@ -142,6 +142,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     private nint candidateDepthStencil;
     private uint candidateWidth;
     private uint candidateHeight;
+    private ViewportF? candidateViewport;
     private bool detouring;
     private bool disposed;
     private uint ditherPhase;
@@ -182,13 +183,15 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         public DepthStencilView DepthStencil { get; }
         public uint Width { get; }
         public uint Height { get; }
+        public ViewportF Viewport { get; }
 
         public PendingTargets(
             GBufferTarget target,
             nint[] renderTargets,
             nint depthStencil,
             uint width,
-            uint height
+            uint height,
+            ViewportF? viewport
         )
         {
             Target = target;
@@ -219,6 +222,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             DepthStencil = retainedDepth;
             Width = width;
             Height = height;
+            Viewport = viewport ?? new ViewportF(0, 0, width, height, 0, 1);
         }
 
         public void Dispose()
@@ -568,7 +572,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         var depthDescription = DepthStencilStateDescription.Default();
         depthDescription.IsDepthEnabled = true;
         depthDescription.DepthWriteMask = DepthWriteMask.All;
-        depthDescription.DepthComparison = Comparison.GreaterEqual;
+        depthDescription.DepthComparison = Comparison.Greater;
         depthDescription.IsStencilEnabled = true;
         depthDescription.StencilReadMask = 0xFF;
         depthDescription.StencilWriteMask = 0xFF;
@@ -902,6 +906,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         int baseVertexLocation
     )
     {
+        TryCaptureCandidateViewport(context);
         TryCaptureOpaqueDrawSnapshot(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawIndexedHook.Original(context, indexCount, startIndexLocation, baseVertexLocation);
@@ -909,6 +914,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
 
     private void DrawDetour(nint context, uint vertexCount, uint startVertexLocation)
     {
+        TryCaptureCandidateViewport(context);
         TryCaptureOpaqueDrawSnapshot(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawHook.Original(context, vertexCount, startVertexLocation);
@@ -923,6 +929,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         uint startInstanceLocation
     )
     {
+        TryCaptureCandidateViewport(context);
         TryCaptureOpaqueDrawSnapshot(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawIndexedInstancedHook.Original(
@@ -943,6 +950,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         uint startInstanceLocation
     )
     {
+        TryCaptureCandidateViewport(context);
         TryCaptureOpaqueDrawSnapshot(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawInstancedHook.Original(
@@ -952,6 +960,28 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             startVertexLocation,
             startInstanceLocation
         );
+    }
+
+    private void TryCaptureCandidateViewport(nint context)
+    {
+        if (detouring || context != immediateContextPointer)
+        {
+            return;
+        }
+
+        lock (stateLock)
+        {
+            if (!candidateActive || candidateViewport != null)
+            {
+                return;
+            }
+
+            var viewports = immediateContext.Rasterizer.GetViewports<ViewportF>();
+            if (viewports.Length != 0)
+            {
+                candidateViewport = viewports[0];
+            }
+        }
     }
 
     private void TryCaptureOpaqueDrawSnapshot(nint context)
@@ -992,6 +1022,20 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
 
     private NativeDrawSnapshot CaptureOpaqueDrawSnapshot()
     {
+        var control = Control.Instance();
+        var controlViewProjection =
+            control != null
+                ? ToNumerics(control->ViewProjectionMatrix)
+                : NumericsMatrix4x4.Identity;
+        NumericsMatrix4x4? sceneViewProjection = null;
+        var activeCamera = control != null ? control->CameraManager.GetActiveCamera() : null;
+        if (activeCamera != null && activeCamera->SceneCamera.RenderCamera != null)
+        {
+            sceneViewProjection =
+                ToNumerics(activeCamera->SceneCamera.ViewMatrix)
+                * ToNumerics(activeCamera->SceneCamera.RenderCamera->ProjectionMatrix);
+        }
+
         var viewports = immediateContext
             .Rasterizer.GetViewports<ViewportF>()
             .Select(viewport => new NativeViewportSnapshot(
@@ -1080,18 +1124,19 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
                         ComputeFnv1A64(bytes)
                     )
                 );
-                if (bytes.Length == sizeof(CameraParameter) && cameraParameterSnapshot == null)
+                var cameraParameterCandidate = FindCameraParameter(
+                    bytes,
+                    slot,
+                    controlViewProjection,
+                    sceneViewProjection
+                );
+                if (
+                    cameraParameterCandidate != null
+                    && cameraParameterCandidate.MatchError
+                        < (cameraParameterSnapshot?.MatchError ?? float.PositiveInfinity)
+                )
                 {
-                    fixed (byte* data = bytes)
-                    {
-                        var cameraParameter = (CameraParameter*)data;
-                        cameraParameterSnapshot = new NativeCameraParameterSnapshot(
-                            slot,
-                            ToNumerics(cameraParameter->ViewProjectionMatrix),
-                            ToNumerics(cameraParameter->ProjectionMatrix),
-                            ToNumerics(cameraParameter->MainViewToProjectionMatrix)
-                        );
-                    }
+                    cameraParameterSnapshot = cameraParameterCandidate;
                 }
             }
         }
@@ -1101,20 +1146,6 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             {
                 constantBuffer?.Dispose();
             }
-        }
-
-        var control = Control.Instance();
-        var controlViewProjection =
-            control != null
-                ? ToNumerics(control->ViewProjectionMatrix)
-                : NumericsMatrix4x4.Identity;
-        NumericsMatrix4x4? sceneViewProjection = null;
-        var activeCamera = control != null ? control->CameraManager.GetActiveCamera() : null;
-        if (activeCamera != null && activeCamera->SceneCamera.RenderCamera != null)
-        {
-            sceneViewProjection =
-                ToNumerics(activeCamera->SceneCamera.ViewMatrix)
-                * ToNumerics(activeCamera->SceneCamera.RenderCamera->ProjectionMatrix);
         }
 
         return new NativeDrawSnapshot(
@@ -1132,6 +1163,87 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             DescribeRenderTargets(candidateRenderTargets),
             DescribeDepthTarget(candidateDepthStencil)
         );
+    }
+
+    private static NativeCameraParameterSnapshot? FindCameraParameter(
+        byte[] bytes,
+        int slot,
+        NumericsMatrix4x4 controlViewProjection,
+        NumericsMatrix4x4? sceneViewProjection
+    )
+    {
+        NativeCameraParameterSnapshot? best = null;
+        if (bytes.Length < sizeof(CameraParameter))
+        {
+            return null;
+        }
+
+        fixed (byte* data = bytes)
+        {
+            for (var offset = 0; offset <= bytes.Length - sizeof(CameraParameter); offset += 16)
+            {
+                var cameraParameter = (CameraParameter*)(data + offset);
+                var rawViewProjection = ToNumerics(cameraParameter->ViewProjectionMatrix);
+                var directError = MatrixError(rawViewProjection, controlViewProjection);
+                if (sceneViewProjection is { } scene)
+                {
+                    directError = MathF.Min(directError, MatrixError(rawViewProjection, scene));
+                }
+
+                var transposedViewProjection = NumericsMatrix4x4.Transpose(rawViewProjection);
+                var transposedError = MatrixError(transposedViewProjection, controlViewProjection);
+                if (sceneViewProjection is { } transposedScene)
+                {
+                    transposedError = MathF.Min(
+                        transposedError,
+                        MatrixError(transposedViewProjection, transposedScene)
+                    );
+                }
+
+                var transpose = transposedError < directError;
+                var error = transpose ? transposedError : directError;
+                if (!float.IsFinite(error) || error >= (best?.MatchError ?? 0.05f))
+                {
+                    continue;
+                }
+
+                var projection = ToNumerics(cameraParameter->ProjectionMatrix);
+                var mainViewToProjection = ToNumerics(cameraParameter->MainViewToProjectionMatrix);
+                best = new NativeCameraParameterSnapshot(
+                    slot,
+                    offset,
+                    error,
+                    transpose,
+                    transpose ? transposedViewProjection : rawViewProjection,
+                    transpose ? NumericsMatrix4x4.Transpose(projection) : projection,
+                    transpose
+                        ? NumericsMatrix4x4.Transpose(mainViewToProjection)
+                        : mainViewToProjection
+                );
+            }
+        }
+
+        return best;
+    }
+
+    private static float MatrixError(NumericsMatrix4x4 actual, NumericsMatrix4x4 expected)
+    {
+        var total = 0f;
+        var actualValues = (float*)&actual;
+        var expectedValues = (float*)&expected;
+        for (var index = 0; index < 16; index++)
+        {
+            if (!float.IsFinite(actualValues[index]) || !float.IsFinite(expectedValues[index]))
+            {
+                return float.PositiveInfinity;
+            }
+
+            total +=
+                MathF.Abs(actualValues[index] - expectedValues[index])
+                / (1f + MathF.Abs(expectedValues[index]));
+        }
+
+        return total / 16f;
     }
 
     private byte[] ReadConstantBuffer(D3D11Buffer source)
@@ -1530,7 +1642,8 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
                     candidateRenderTargets,
                     candidateDepthStencil,
                     candidateWidth,
-                    candidateHeight
+                    candidateHeight,
+                    candidateViewport
                 );
             }
             ResetCandidate();
@@ -1546,6 +1659,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         candidateDepthStencil = depthStencilView;
         candidateWidth = match.Width;
         candidateHeight = match.Height;
+        candidateViewport = null;
         var expectedTargetCount = candidateTarget == GBufferTarget.Opaque ? 5 : 4;
         candidateRenderTargets = new nint[expectedTargetCount];
         for (var index = 0; index < expectedTargetCount; index++)
@@ -1652,7 +1766,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
                 selectedDepthStencilState,
                 stencilReference
             );
-            deferredContext.Rasterizer.SetViewport(0, 0, pending.Width, pending.Height, 0, 1);
+            deferredContext.Rasterizer.SetViewport(pending.Viewport);
             deferredContext.Rasterizer.State = rasterizerState;
             deferredContext.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
             deferredContext.InputAssembler.InputLayout = inputLayout;
@@ -1865,6 +1979,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         candidateDepthStencil = 0;
         candidateWidth = 0;
         candidateHeight = 0;
+        candidateViewport = null;
     }
 
     private static Vector4 ToSharpDx(NumericsVector4 value) =>
