@@ -124,6 +124,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     private readonly ShaderResourceView whiteTextureView;
     private readonly SamplerState sampler;
     private readonly RasterizerState rasterizerState;
+    private RasterizerState opaqueRasterizerState;
     private readonly BlendState blendState;
     private readonly BlendState semitransparentCompositeBlendState;
     private readonly DepthStencilState depthStencilState;
@@ -158,6 +159,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     private GBufferFrame? activeSemitransparentCycle;
     private long nextCycleId;
     private NumericsVector2 opaqueJitterPixels;
+    private int opaqueDepthBias;
     private bool forceOpaqueAlpha;
     private bool opaqueSnapshotRequested;
     private NativeDrawSnapshot? opaqueSnapshot;
@@ -549,6 +551,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         rasterizerDescription.CullMode = CullMode.None;
         rasterizerDescription.IsScissorEnabled = false;
         rasterizerState = new RasterizerState(device, rasterizerDescription);
+        opaqueRasterizerState = rasterizerState;
 
         var blendDescription = BlendStateDescription.Default();
         blendDescription.IndependentBlendEnable = true;
@@ -715,6 +718,47 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         }
     }
 
+    public int GetOpaqueDepthBias()
+    {
+        lock (stateLock)
+        {
+            return opaqueDepthBias;
+        }
+    }
+
+    public void SetOpaqueDepthBias(int value)
+    {
+        lock (stateLock)
+        {
+            value = Math.Clamp(value, 0, 64);
+            if (value == opaqueDepthBias)
+            {
+                return;
+            }
+
+            var oldState = opaqueRasterizerState;
+            if (value == 0)
+            {
+                opaqueRasterizerState = rasterizerState;
+            }
+            else
+            {
+                var description = RasterizerStateDescription.Default();
+                description.CullMode = CullMode.None;
+                description.IsScissorEnabled = false;
+                description.DepthBias = value;
+                description.DepthBiasClamp = 100f;
+                opaqueRasterizerState = new RasterizerState(device, description);
+            }
+            opaqueDepthBias = value;
+
+            if (!ReferenceEquals(oldState, rasterizerState))
+            {
+                oldState.Dispose();
+            }
+        }
+    }
+
     public void RequestOpaqueDrawSnapshot()
     {
         lock (stateLock)
@@ -787,6 +831,10 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             depthStencilState.Dispose();
             semitransparentCompositeBlendState.Dispose();
             blendState.Dispose();
+            if (!ReferenceEquals(opaqueRasterizerState, rasterizerState))
+            {
+                opaqueRasterizerState.Dispose();
+            }
             rasterizerState.Dispose();
             sampler.Dispose();
             whiteTextureView.Dispose();
@@ -1819,7 +1867,8 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
                 stencilReference
             );
             deferredContext.Rasterizer.SetViewport(pending.Viewport);
-            deferredContext.Rasterizer.State = rasterizerState;
+            deferredContext.Rasterizer.State =
+                pending.Target == GBufferTarget.Opaque ? opaqueRasterizerState : rasterizerState;
             deferredContext.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
             deferredContext.InputAssembler.InputLayout = inputLayout;
             deferredContext.InputAssembler.SetVertexBuffers(

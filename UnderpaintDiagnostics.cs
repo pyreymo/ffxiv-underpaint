@@ -27,6 +27,16 @@ public sealed class UnderpaintDiagnostics
         set => backend.SetForceOpaqueAlpha(value);
     }
 
+    /// <summary>
+    /// Positive reverse-Z rasterizer depth bias, in R24 depth units, used to isolate equal-depth
+    /// surface competition. Zero matches the native opaque state.
+    /// </summary>
+    public int OpaqueDepthBias
+    {
+        get => backend.GetOpaqueDepthBias();
+        set => backend.SetOpaqueDepthBias(value);
+    }
+
     /// <summary>Captures the next native draw issued while the opaque G-buffer is bound.</summary>
     public void RequestOpaqueDrawSnapshot() => backend.RequestOpaqueDrawSnapshot();
 
