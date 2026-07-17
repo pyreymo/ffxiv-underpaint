@@ -27,6 +27,7 @@ public sealed record TransparentDrawCapture(
     DateTimeOffset StartedAt,
     DateTimeOffset CompletedAt,
     string Reason,
+    int CapturedStageAFrames,
     IReadOnlyList<TransparentNativeDrawSnapshot> Draws
 );
 

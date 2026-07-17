@@ -86,7 +86,7 @@ internal sealed unsafe partial class D3D11GBufferBackend
                 return new TransparentDrawCaptureStatus(
                     TransparentDrawCaptureState.Completed,
                     completed.Draws.Count,
-                    CountStageAPasses(completed.Draws),
+                    completed.CapturedStageAFrames,
                     completed.Reason
                 );
             }
@@ -341,6 +341,7 @@ internal sealed unsafe partial class D3D11GBufferBackend
             transparentCapture.StartedAt,
             DateTimeOffset.UtcNow,
             reason,
+            transparentCapture.StageAPasses.Count,
             transparentCapture.Draws.ToArray()
         );
         transparentCapture = null;
@@ -350,9 +351,6 @@ internal sealed unsafe partial class D3D11GBufferBackend
         transparentStageCActive = false;
 
     private void NotifyTransparentLightBuffersBound() => transparentStageCActive = true;
-
-    private static int CountStageAPasses(IReadOnlyList<TransparentNativeDrawSnapshot> draws) =>
-        draws.Any(draw => draw.Stage == TransparentDrawStage.StageA) ? 1 : 0;
 
     private static CaptureModule[] CaptureModules()
     {
