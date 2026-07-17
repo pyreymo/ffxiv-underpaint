@@ -137,14 +137,12 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     private readonly Hook<DrawDelegate> drawHook;
     private readonly Hook<DrawIndexedInstancedDelegate> drawIndexedInstancedHook;
     private readonly Hook<DrawInstancedDelegate> drawInstancedHook;
-    private bool candidateActive;
-    private GBufferTarget candidateTarget;
-    private nint[] candidateRenderTargets = [];
-    private nint candidateDepthStencil;
-    private uint candidateWidth;
-    private uint candidateHeight;
-    private ViewportF? candidateViewport;
-    private bool candidateOpaqueIssued;
+    private PassLease? activePass;
+    private long nextPassInstanceId;
+    private long lastOpaqueFrameId;
+    private long lastSemitransparentFrameId;
+    private long lastOpaquePassInstanceId;
+    private long lastSemitransparentPassInstanceId;
     private bool detouring;
     private bool disposed;
     private uint ditherPhase;
@@ -179,25 +177,31 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         public Vector4 DebugParameters;
     }
 
-    private sealed class PendingTargets : IDisposable
+    private sealed class PassLease : IDisposable
     {
-        public GBufferTarget Target { get; }
+        public GBufferTarget Kind { get; }
         public RenderTargetView[] RenderTargets { get; }
         public DepthStencilView DepthStencil { get; }
         public uint Width { get; }
         public uint Height { get; }
-        public ViewportF Viewport { get; }
+        public ViewportF Viewport { get; private set; }
+        public RawRectangle? Scissor { get; private set; }
+        public Matrix ViewProjection { get; private set; }
+        public long FrameId { get; }
+        public long PassInstanceId { get; }
+        public bool HasDrawContext { get; private set; }
 
-        public PendingTargets(
-            GBufferTarget target,
+        public PassLease(
+            GBufferTarget kind,
             nint[] renderTargets,
             nint depthStencil,
             uint width,
             uint height,
-            ViewportF? viewport
+            GBufferFrame? frame,
+            long passInstanceId
         )
         {
-            Target = target;
+            Kind = kind;
             var retainedTargets = new List<RenderTargetView>(5);
             DepthStencilView? retainedDepth = null;
             try
@@ -225,7 +229,27 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             DepthStencil = retainedDepth;
             Width = width;
             Height = height;
-            Viewport = viewport ?? new ViewportF(0, 0, width, height, 0, 1);
+            Viewport = new ViewportF(0, 0, width, height, 0, 1);
+            FrameId = frame?.CycleId ?? 0;
+            PassInstanceId = passInstanceId;
+        }
+
+        public void CaptureDrawContext(DeviceContext context, Matrix viewProjection)
+        {
+            var viewports = context.Rasterizer.GetViewports<ViewportF>();
+            if (viewports.Length != 0)
+            {
+                Viewport = viewports[0];
+            }
+
+            using var rasterizerState = context.Rasterizer.State;
+            if (rasterizerState?.Description.IsScissorEnabled == true)
+            {
+                var scissors = context.Rasterizer.GetScissorRectangles<RawRectangle>();
+                Scissor = scissors.Length != 0 ? scissors[0] : null;
+            }
+            ViewProjection = viewProjection;
+            HasDrawContext = true;
         }
 
         public void Dispose()
@@ -549,7 +573,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
 
         var rasterizerDescription = RasterizerStateDescription.Default();
         rasterizerDescription.CullMode = CullMode.None;
-        rasterizerDescription.IsScissorEnabled = false;
+        rasterizerDescription.IsScissorEnabled = true;
         rasterizerState = new RasterizerState(device, rasterizerDescription);
         opaqueRasterizerState = rasterizerState;
 
@@ -745,7 +769,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             {
                 var description = RasterizerStateDescription.Default();
                 description.CullMode = CullMode.None;
-                description.IsScissorEnabled = false;
+                description.IsScissorEnabled = true;
                 description.DepthBias = value;
                 description.DepthBiasClamp = 100f;
                 opaqueRasterizerState = new RasterizerState(device, description);
@@ -820,6 +844,8 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
 
         lock (stateLock)
         {
+            activePass?.Dispose();
+            activePass = null;
             opaqueFrame?.Release();
             opaqueFrame = null;
             semitransparentFrame?.Release();
@@ -859,20 +885,24 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         nint depthStencilView
     )
     {
-        PendingTargets? pending = null;
+        PassLease? completedPass = null;
         try
         {
             if (!detouring && context == immediateContextPointer)
             {
                 lock (stateLock)
                 {
-                    pending = TrackTargetChange(numViews, renderTargetViews, depthStencilView);
+                    completedPass = TrackPassChange(
+                        numViews,
+                        renderTargetViews,
+                        depthStencilView
+                    );
                 }
             }
         }
         catch (Exception exception)
         {
-            log.Warning(exception, "[Underpaint] Failed to track opaque G-buffer targets.");
+            log.Warning(exception, "[Underpaint] Failed to track G-buffer pass targets.");
         }
 
         try
@@ -881,11 +911,11 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         }
         catch
         {
-            pending?.Dispose();
+            completedPass?.Dispose();
             throw;
         }
 
-        IssueSafely(pending);
+        IssueSafely(completedPass);
     }
 
     private void OMSetRenderTargetsAndUavsDetour(
@@ -899,7 +929,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         uint* unorderedAccessViewInitialCounts
     )
     {
-        PendingTargets? pending = null;
+        PassLease? completedPass = null;
         try
         {
             if (
@@ -910,7 +940,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             {
                 lock (stateLock)
                 {
-                    pending = TrackTargetChange(
+                    completedPass = TrackPassChange(
                         numRenderTargetViews,
                         renderTargetViews,
                         depthStencilView
@@ -922,7 +952,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         {
             log.Warning(
                 exception,
-                "[Underpaint] Failed to track opaque G-buffer targets with UAVs."
+                "[Underpaint] Failed to track G-buffer pass targets with UAVs."
             );
         }
 
@@ -941,11 +971,11 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         }
         catch
         {
-            pending?.Dispose();
+            completedPass?.Dispose();
             throw;
         }
 
-        IssueSafely(pending);
+        IssueSafely(completedPass);
     }
 
     private void DrawIndexedDetour(
@@ -955,18 +985,16 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         int baseVertexLocation
     )
     {
-        TryCaptureCandidateViewport(context);
+        TryCapturePassContext(context);
         TryCaptureOpaqueDrawSnapshot(context);
-        TryIssueOpaqueBeforeNativeDraw(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawIndexedHook.Original(context, indexCount, startIndexLocation, baseVertexLocation);
     }
 
     private void DrawDetour(nint context, uint vertexCount, uint startVertexLocation)
     {
-        TryCaptureCandidateViewport(context);
+        TryCapturePassContext(context);
         TryCaptureOpaqueDrawSnapshot(context);
-        TryIssueOpaqueBeforeNativeDraw(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawHook.Original(context, vertexCount, startVertexLocation);
     }
@@ -980,9 +1008,8 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         uint startInstanceLocation
     )
     {
-        TryCaptureCandidateViewport(context);
+        TryCapturePassContext(context);
         TryCaptureOpaqueDrawSnapshot(context);
-        TryIssueOpaqueBeforeNativeDraw(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawIndexedInstancedHook.Original(
             context,
@@ -1002,9 +1029,8 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         uint startInstanceLocation
     )
     {
-        TryCaptureCandidateViewport(context);
+        TryCapturePassContext(context);
         TryCaptureOpaqueDrawSnapshot(context);
-        TryIssueOpaqueBeforeNativeDraw(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawInstancedHook.Original(
             context,
@@ -1015,49 +1041,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         );
     }
 
-    private void TryIssueOpaqueBeforeNativeDraw(nint context)
-    {
-        if (detouring || context != immediateContextPointer)
-        {
-            return;
-        }
-
-        PendingTargets? pending = null;
-        try
-        {
-            lock (stateLock)
-            {
-                if (
-                    candidateActive
-                    && candidateTarget == GBufferTarget.Opaque
-                    && !candidateOpaqueIssued
-                    && candidateRenderTargets.Length != 0
-                    && candidateDepthStencil != 0
-                )
-                {
-                    pending = new PendingTargets(
-                        candidateTarget,
-                        candidateRenderTargets,
-                        candidateDepthStencil,
-                        candidateWidth,
-                        candidateHeight,
-                        candidateViewport
-                    );
-                    candidateOpaqueIssued = true;
-                }
-            }
-        }
-        catch (Exception exception)
-        {
-            pending?.Dispose();
-            log.Error(exception, "[Underpaint] Failed to prepare early opaque injection.");
-            return;
-        }
-
-        IssueSafely(pending);
-    }
-
-    private void TryCaptureCandidateViewport(nint context)
+    private void TryCapturePassContext(nint context)
     {
         if (detouring || context != immediateContextPointer)
         {
@@ -1066,16 +1050,20 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
 
         lock (stateLock)
         {
-            if (!candidateActive || candidateViewport != null)
+            if (activePass == null || activePass.HasDrawContext)
             {
                 return;
             }
 
-            var viewports = immediateContext.Rasterizer.GetViewports<ViewportF>();
-            if (viewports.Length != 0)
+            var control = Control.Instance();
+            if (control == null)
             {
-                candidateViewport = viewports[0];
+                return;
             }
+
+            var viewProjection = *(Matrix*)&control->ViewProjectionMatrix;
+            viewProjection.Transpose();
+            activePass.CaptureDrawContext(immediateContext, viewProjection);
         }
     }
 
@@ -1090,8 +1078,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         {
             if (
                 !opaqueSnapshotRequested
-                || !candidateActive
-                || candidateTarget != GBufferTarget.Opaque
+                || activePass?.Kind != GBufferTarget.Opaque
             )
             {
                 return;
@@ -1255,8 +1242,10 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             controlViewProjection,
             sceneViewProjection,
             cameraParameterSnapshot,
-            DescribeRenderTargets(candidateRenderTargets),
-            DescribeDepthTarget(candidateDepthStencil)
+            DescribeRenderTargets(
+                activePass?.RenderTargets.Select(target => target.NativePointer).ToArray() ?? []
+            ),
+            DescribeDepthTarget(activePass?.DepthStencil.NativePointer ?? 0)
         );
     }
 
@@ -1699,13 +1688,13 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         return hasDiffuse && hasSpecular;
     }
 
-    private PendingTargets? TrackTargetChange(
+    private PassLease? TrackPassChange(
         uint numViews,
         nint* renderTargetViews,
         nint depthStencilView
     )
     {
-        PendingTargets? pending = null;
+        PassLease? completedPass = null;
         GBufferTarget? detectedTarget = null;
         (int MatchedCount, uint Width, uint Height) match = default;
 
@@ -1726,53 +1715,42 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             }
         }
 
-        if (candidateActive && detectedTarget != candidateTarget)
+        PassLease? nextPass = null;
+        if (detectedTarget != null && activePass?.Kind != detectedTarget)
         {
-            var frame =
-                candidateTarget == GBufferTarget.Opaque ? opaqueFrame : semitransparentFrame;
-            if (
-                frame != null
-                && candidateRenderTargets.Length != 0
-                && candidateDepthStencil != 0
-                && (candidateTarget != GBufferTarget.Opaque || !candidateOpaqueIssued)
-            )
+            var kind = detectedTarget.Value;
+            var expectedTargetCount = kind == GBufferTarget.Opaque ? 5 : 4;
+            var targets = new nint[expectedTargetCount];
+            for (var index = 0; index < expectedTargetCount; index++)
             {
-                pending = new PendingTargets(
-                    candidateTarget,
-                    candidateRenderTargets,
-                    candidateDepthStencil,
-                    candidateWidth,
-                    candidateHeight,
-                    candidateViewport
-                );
+                targets[index] = renderTargetViews[index];
             }
-            ResetCandidate();
+
+            var frame = kind == GBufferTarget.Opaque ? opaqueFrame : semitransparentFrame;
+            nextPass = new PassLease(
+                kind,
+                targets,
+                depthStencilView,
+                match.Width,
+                match.Height,
+                frame,
+                Interlocked.Increment(ref nextPassInstanceId)
+            );
         }
 
-        if (detectedTarget == null)
+        if (activePass != null && detectedTarget != activePass.Kind)
         {
-            return pending;
+            completedPass = activePass;
+            activePass = null;
         }
 
-        candidateActive = true;
-        candidateTarget = detectedTarget.Value;
-        candidateDepthStencil = depthStencilView;
-        candidateWidth = match.Width;
-        candidateHeight = match.Height;
-        candidateViewport = null;
-        var expectedTargetCount = candidateTarget == GBufferTarget.Opaque ? 5 : 4;
-        candidateRenderTargets = new nint[expectedTargetCount];
-        for (var index = 0; index < expectedTargetCount; index++)
-        {
-            candidateRenderTargets[index] = renderTargetViews[index];
-        }
-
-        return pending;
+        activePass = nextPass ?? activePass;
+        return completedPass;
     }
 
-    private void IssueSafely(PendingTargets? pending)
+    private void IssueSafely(PassLease? completedPass)
     {
-        if (pending == null)
+        if (completedPass == null)
         {
             return;
         }
@@ -1782,39 +1760,61 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             lock (stateLock)
             {
                 var frame =
-                    pending.Target == GBufferTarget.Opaque ? opaqueFrame : semitransparentFrame;
-                if (frame != null)
+                    completedPass.Kind == GBufferTarget.Opaque
+                        ? opaqueFrame
+                        : semitransparentFrame;
+                if (
+                    frame != null
+                    && frame.CycleId == completedPass.FrameId
+                    && completedPass.HasDrawContext
+                    && !WasPassIssued(completedPass)
+                )
                 {
-                    if (pending.Target == GBufferTarget.Semitransparent)
+                    if (completedPass.Kind == GBufferTarget.Semitransparent)
                     {
                         activeSemitransparentCycle?.Release();
                         activeSemitransparentCycle = frame.Retain();
                     }
-                    Issue(pending, frame);
+                    Issue(completedPass, frame);
+                    MarkPassIssued(completedPass);
                 }
             }
         }
         catch (Exception exception)
         {
-            log.Error(exception, "[Underpaint] Failed to draw opaque G-buffer commands.");
+            log.Error(exception, "[Underpaint] Failed to draw G-buffer commands at pass exit.");
         }
         finally
         {
-            pending.Dispose();
+            completedPass.Dispose();
         }
     }
 
-    private void Issue(PendingTargets pending, GBufferFrame frame)
-    {
-        var control = Control.Instance();
-        if (control == null)
-        {
-            return;
-        }
+    private bool WasPassIssued(PassLease pass) =>
+        pass.Kind == GBufferTarget.Opaque
+            ? lastOpaquePassInstanceId == pass.PassInstanceId
+                || (pass.FrameId != 0 && lastOpaqueFrameId == pass.FrameId)
+            : lastSemitransparentPassInstanceId == pass.PassInstanceId
+                || (pass.FrameId != 0 && lastSemitransparentFrameId == pass.FrameId);
 
-        var viewProjection = *(Matrix*)&control->ViewProjectionMatrix;
-        viewProjection.Transpose();
-        if (pending.Target == GBufferTarget.Semitransparent)
+    private void MarkPassIssued(PassLease pass)
+    {
+        if (pass.Kind == GBufferTarget.Opaque)
+        {
+            lastOpaqueFrameId = pass.FrameId;
+            lastOpaquePassInstanceId = pass.PassInstanceId;
+        }
+        else
+        {
+            lastSemitransparentFrameId = pass.FrameId;
+            lastSemitransparentPassInstanceId = pass.PassInstanceId;
+        }
+    }
+
+    private void Issue(PassLease pending, GBufferFrame frame)
+    {
+        var viewProjection = pending.ViewProjection;
+        if (pending.Kind == GBufferTarget.Semitransparent)
         {
             semitransparentInjectedViewProjection = viewProjection;
             hasSemitransparentInjectedViewProjection = true;
@@ -1822,12 +1822,12 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             semitransparentCompositeInjected = false;
         }
         var currentDitherPhase = ditherPhase;
-        if (pending.Target == GBufferTarget.Opaque)
+        if (pending.Kind == GBufferTarget.Opaque)
         {
             ditherPhase = (ditherPhase + 1) & 15;
         }
         var debugJitter =
-            pending.Target == GBufferTarget.Opaque ? opaqueJitterPixels : NumericsVector2.Zero;
+            pending.Kind == GBufferTarget.Opaque ? opaqueJitterPixels : NumericsVector2.Zero;
         var constants = new WorldConstants
         {
             ViewProjection = viewProjection,
@@ -1838,8 +1838,8 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             G4 = ToSharpDx(frame.Material.G4),
             DitherParameters = new Vector4(
                 currentDitherPhase,
-                pending.Target == GBufferTarget.Semitransparent ? 1f : 0f,
-                pending.Target == GBufferTarget.Opaque && forceOpaqueAlpha ? 1f : 0f,
+                pending.Kind == GBufferTarget.Semitransparent ? 1f : 0f,
+                pending.Kind == GBufferTarget.Opaque && forceOpaqueAlpha ? 1f : 0f,
                 0f
             ),
             DebugParameters = new Vector4(
@@ -1857,18 +1857,25 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             deferredContext.OutputMerger.SetTargets(pending.DepthStencil, pending.RenderTargets);
             deferredContext.OutputMerger.SetBlendState(blendState);
             var selectedDepthStencilState =
-                pending.Target == GBufferTarget.Semitransparent
+                pending.Kind == GBufferTarget.Semitransparent
                     ? semitransparentDepthTestWriteStencilState
                     : depthStencilState;
             var stencilReference =
-                pending.Target == GBufferTarget.Semitransparent ? 0x10 : frame.Material.Stencil;
+                pending.Kind == GBufferTarget.Semitransparent ? 0x10 : frame.Material.Stencil;
             deferredContext.OutputMerger.SetDepthStencilState(
                 selectedDepthStencilState,
                 stencilReference
             );
             deferredContext.Rasterizer.SetViewport(pending.Viewport);
+            var scissor = pending.Scissor ?? ViewportBounds(pending.Viewport);
+            deferredContext.Rasterizer.SetScissorRectangle(
+                scissor.Left,
+                scissor.Top,
+                scissor.Right,
+                scissor.Bottom
+            );
             deferredContext.Rasterizer.State =
-                pending.Target == GBufferTarget.Opaque ? opaqueRasterizerState : rasterizerState;
+                pending.Kind == GBufferTarget.Opaque ? opaqueRasterizerState : rasterizerState;
             deferredContext.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
             deferredContext.InputAssembler.InputLayout = inputLayout;
             deferredContext.InputAssembler.SetVertexBuffers(
@@ -1881,7 +1888,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             deferredContext.VertexShader.Set(vertexShader);
             deferredContext.VertexShader.SetConstantBuffer(0, constantsBuffer);
             deferredContext.PixelShader.Set(
-                pending.Target == GBufferTarget.Semitransparent
+                pending.Kind == GBufferTarget.Semitransparent
                     ? semitransparentPixelShader
                     : pixelShader
             );
@@ -1932,11 +1939,11 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             using var commandList = deferredContext.FinishCommandList(false);
             ExecuteAnnotated(
                 commandList,
-                pending.Target == GBufferTarget.Opaque
+                pending.Kind == GBufferTarget.Opaque
                     ? "Underpaint/Opaque"
                     : "Underpaint/SemitransparentGBuffer"
             );
-            if (pending.Target == GBufferTarget.Semitransparent && !semitransparentDrawLogged)
+            if (pending.Kind == GBufferTarget.Semitransparent && !semitransparentDrawLogged)
             {
                 semitransparentDrawLogged = true;
                 log.Information(
@@ -2073,16 +2080,13 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         }
     }
 
-    private void ResetCandidate()
-    {
-        candidateActive = false;
-        candidateRenderTargets = [];
-        candidateDepthStencil = 0;
-        candidateWidth = 0;
-        candidateHeight = 0;
-        candidateViewport = null;
-        candidateOpaqueIssued = false;
-    }
+    private static RawRectangle ViewportBounds(ViewportF viewport) =>
+        new(
+            (int)MathF.Floor(viewport.X),
+            (int)MathF.Floor(viewport.Y),
+            (int)MathF.Ceiling(viewport.X + viewport.Width),
+            (int)MathF.Ceiling(viewport.Y + viewport.Height)
+        );
 
     private static Vector4 ToSharpDx(NumericsVector4 value) =>
         new(value.X, value.Y, value.Z, value.W);
