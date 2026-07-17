@@ -101,7 +101,7 @@ internal sealed class GBufferFrame
     }
 }
 
-internal sealed unsafe class D3D11GBufferBackend : IDisposable
+internal sealed unsafe partial class D3D11GBufferBackend : IDisposable
 {
     internal const int MaxVerticesPerCommand = 128 * 6;
 
@@ -890,13 +890,10 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         {
             if (!detouring && context == immediateContextPointer)
             {
+                NotifyOutputTargetsChangedForTransparentCapture();
                 lock (stateLock)
                 {
-                    completedPass = TrackPassChange(
-                        numViews,
-                        renderTargetViews,
-                        depthStencilView
-                    );
+                    completedPass = TrackPassChange(numViews, renderTargetViews, depthStencilView);
                 }
             }
         }
@@ -938,6 +935,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
                 && numRenderTargetViews != uint.MaxValue
             )
             {
+                NotifyOutputTargetsChangedForTransparentCapture();
                 lock (stateLock)
                 {
                     completedPass = TrackPassChange(
@@ -950,10 +948,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         }
         catch (Exception exception)
         {
-            log.Warning(
-                exception,
-                "[Underpaint] Failed to track G-buffer pass targets with UAVs."
-            );
+            log.Warning(exception, "[Underpaint] Failed to track G-buffer pass targets with UAVs.");
         }
 
         try
@@ -987,6 +982,18 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     {
         TryCapturePassContext(context);
         TryCaptureOpaqueDrawSnapshot(context);
+        TryCaptureTransparentDraw(
+            context,
+            new TransparentDrawArguments(
+                "DrawIndexed",
+                indexCount,
+                1,
+                startIndexLocation,
+                baseVertexLocation,
+                0,
+                0
+            )
+        );
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawIndexedHook.Original(context, indexCount, startIndexLocation, baseVertexLocation);
     }
@@ -995,6 +1002,10 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     {
         TryCapturePassContext(context);
         TryCaptureOpaqueDrawSnapshot(context);
+        TryCaptureTransparentDraw(
+            context,
+            new TransparentDrawArguments("Draw", vertexCount, 1, 0, 0, startVertexLocation, 0)
+        );
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawHook.Original(context, vertexCount, startVertexLocation);
     }
@@ -1010,6 +1021,18 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     {
         TryCapturePassContext(context);
         TryCaptureOpaqueDrawSnapshot(context);
+        TryCaptureTransparentDraw(
+            context,
+            new TransparentDrawArguments(
+                "DrawIndexedInstanced",
+                indexCountPerInstance,
+                instanceCount,
+                startIndexLocation,
+                baseVertexLocation,
+                0,
+                startInstanceLocation
+            )
+        );
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawIndexedInstancedHook.Original(
             context,
@@ -1031,6 +1054,18 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     {
         TryCapturePassContext(context);
         TryCaptureOpaqueDrawSnapshot(context);
+        TryCaptureTransparentDraw(
+            context,
+            new TransparentDrawArguments(
+                "DrawInstanced",
+                vertexCountPerInstance,
+                instanceCount,
+                0,
+                0,
+                startVertexLocation,
+                startInstanceLocation
+            )
+        );
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawInstancedHook.Original(
             context,
@@ -1076,10 +1111,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
 
         lock (stateLock)
         {
-            if (
-                !opaqueSnapshotRequested
-                || activePass?.Kind != GBufferTarget.Opaque
-            )
+            if (!opaqueSnapshotRequested || activePass?.Kind != GBufferTarget.Opaque)
             {
                 return;
             }
@@ -1638,14 +1670,19 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     {
         try
         {
-            if (
+            var bindsTransparentLightBuffers =
                 !detouring
                 && context == immediateContextPointer
+                && shaderResourceViews != null
+                && BindsBothSemitransparentLightBuffers(numViews, shaderResourceViews);
+            if (bindsTransparentLightBuffers)
+                NotifyTransparentLightBuffersBound();
+
+            if (
+                bindsTransparentLightBuffers
                 && activeSemitransparentCycle != null
                 && hasSemitransparentInjectedViewProjection
                 && !semitransparentCompositeInjected
-                && shaderResourceViews != null
-                && BindsBothSemitransparentLightBuffers(numViews, shaderResourceViews)
             )
             {
                 semitransparentCompositeArmed = true;
@@ -1760,9 +1797,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             lock (stateLock)
             {
                 var frame =
-                    completedPass.Kind == GBufferTarget.Opaque
-                        ? opaqueFrame
-                        : semitransparentFrame;
+                    completedPass.Kind == GBufferTarget.Opaque ? opaqueFrame : semitransparentFrame;
                 if (
                     frame != null
                     && frame.CycleId == completedPass.FrameId

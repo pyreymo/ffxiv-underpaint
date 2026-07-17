@@ -43,6 +43,21 @@ public sealed class UnderpaintDiagnostics
     /// <summary>Returns and consumes the latest completed one-shot snapshot.</summary>
     public bool TryTakeOpaqueDrawSnapshot(out NativeDrawSnapshot snapshot) =>
         backend.TryTakeOpaqueDrawSnapshot(out snapshot);
+
+#if DEBUG
+    /// <summary>Starts a bounded, read-only capture of native semitransparent Stage A/C draws.</summary>
+    public void BeginTransparentDrawCapture(int maxDraws = 128, int maxStageAFrames = 4) =>
+        backend.BeginTransparentDrawCapture(maxDraws, maxStageAFrames);
+
+    public void CancelTransparentDrawCapture(string reason = "cancelled") =>
+        backend.CancelTransparentDrawCapture(reason);
+
+    public TransparentDrawCaptureStatus TransparentDrawCaptureStatus =>
+        backend.GetTransparentDrawCaptureStatus();
+
+    public bool TryTakeTransparentDrawCapture(out TransparentDrawCapture capture) =>
+        backend.TryTakeTransparentDrawCapture(out capture);
+#endif
 }
 
 public sealed record NativeDrawSnapshot(
