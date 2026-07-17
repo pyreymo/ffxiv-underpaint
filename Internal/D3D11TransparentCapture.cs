@@ -40,6 +40,8 @@ internal sealed unsafe partial class D3D11GBufferBackend
         public CaptureModule[] Modules { get; } = modules;
         public List<TransparentNativeDrawSnapshot> Draws { get; } = new(maxDraws);
         public HashSet<long> StageAPasses { get; } = [];
+        public int StageADraws;
+        public int StageCDraws;
     }
 
     private readonly record struct CaptureModule(nint Start, nint End, string Name);
@@ -147,12 +149,25 @@ internal sealed unsafe partial class D3D11GBufferBackend
                 return;
             }
 
+            var perStageLimit = Math.Max(1, capture.MaxDraws / 2);
+            if (
+                (stage == TransparentDrawStage.StageA && capture.StageADraws >= perStageLimit)
+                || (stage == TransparentDrawStage.StageC && capture.StageCDraws >= perStageLimit)
+            )
+            {
+                return;
+            }
+
             try
             {
                 capture.Draws.Add(CaptureTransparentDraw(stage.Value, arguments, capture.Modules));
-                if (capture.Draws.Count >= capture.MaxDraws)
+                if (stage == TransparentDrawStage.StageA)
+                    capture.StageADraws++;
+                else
+                    capture.StageCDraws++;
+                if (capture.StageADraws >= perStageLimit && capture.StageCDraws >= perStageLimit)
                 {
-                    CompleteTransparentCapture("draw-limit");
+                    CompleteTransparentCapture("per-stage-draw-limits");
                 }
             }
             catch (Exception exception)
