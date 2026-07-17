@@ -21,11 +21,11 @@ The backend hooks D3D11 immediate-context methods obtained from the game's activ
 
 Recognition validates native resource identity and dimensions against `RenderTargetManager`; MRT count alone is not treated as sufficient.
 
-The diagnostics snapshot is captured before a native draw while the opaque candidate is still bound. This is deliberately separate from normal injection, which currently executes after the candidate target set is replaced. The snapshot therefore represents the native pass state; the later injection context does not.
+The diagnostics snapshot is captured before Underpaint injects and before the first native draw while the opaque candidate is still bound. It therefore represents the untouched native pass state.
 
 ## Opaque path
 
-At the first draw after the complete opaque MRT binding, Underpaint records and executes its commands into the native G-buffer/depth targets. Vertex alpha and texture alpha use a rotating 4x4 Bayer coverage phase. The current implementation therefore depends on temporal accumulation for stable fractional coverage.
+At the first draw after the complete opaque MRT binding, Underpaint records and executes its commands into the native G-buffer/depth targets before forwarding that draw. Native opaque geometry then depth-tests normally against the injected geometry, while later preparation within the pass can observe the injected depth, stencil, and MRT data. Vertex alpha and texture alpha use a rotating 4x4 Bayer coverage phase. The current implementation therefore depends on temporal accumulation for stable fractional coverage.
 
 ## Semitransparent path
 
@@ -43,7 +43,7 @@ The retained cycle is important: a new submission between Stage A and Stage C be
 
 ### Temporal stability
 
-Underpaint does not currently write the game's velocity/motion-vector target and has no persistent per-object previous transform. It also has not yet proven whether the injected view-projection matrix must include the game's per-frame jitter at the selected hook. As a result, camera or object motion can shimmer and reconstructed depth can appear offset.
+Underpaint does not currently generate moving-object velocity data and has no persistent per-object previous transform. Runtime capture has confirmed that `Control.ViewProjectionMatrix` matches the opaque vertex shader's jittered `CameraParameter.ViewProjectionMatrix`; current-frame camera projection is therefore no longer an open question. Moving submitted geometry can still shimmer because its temporal identity and previous transform are absent.
 
 Required exploration:
 

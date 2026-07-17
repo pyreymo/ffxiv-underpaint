@@ -143,6 +143,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     private uint candidateWidth;
     private uint candidateHeight;
     private ViewportF? candidateViewport;
+    private bool candidateOpaqueIssued;
     private bool detouring;
     private bool disposed;
     private uint ditherPhase;
@@ -908,6 +909,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     {
         TryCaptureCandidateViewport(context);
         TryCaptureOpaqueDrawSnapshot(context);
+        TryIssueOpaqueBeforeNativeDraw(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawIndexedHook.Original(context, indexCount, startIndexLocation, baseVertexLocation);
     }
@@ -916,6 +918,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     {
         TryCaptureCandidateViewport(context);
         TryCaptureOpaqueDrawSnapshot(context);
+        TryIssueOpaqueBeforeNativeDraw(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawHook.Original(context, vertexCount, startVertexLocation);
     }
@@ -931,6 +934,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     {
         TryCaptureCandidateViewport(context);
         TryCaptureOpaqueDrawSnapshot(context);
+        TryIssueOpaqueBeforeNativeDraw(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawIndexedInstancedHook.Original(
             context,
@@ -952,6 +956,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
     {
         TryCaptureCandidateViewport(context);
         TryCaptureOpaqueDrawSnapshot(context);
+        TryIssueOpaqueBeforeNativeDraw(context);
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawInstancedHook.Original(
             context,
@@ -960,6 +965,48 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
             startVertexLocation,
             startInstanceLocation
         );
+    }
+
+    private void TryIssueOpaqueBeforeNativeDraw(nint context)
+    {
+        if (detouring || context != immediateContextPointer)
+        {
+            return;
+        }
+
+        PendingTargets? pending = null;
+        try
+        {
+            lock (stateLock)
+            {
+                if (
+                    candidateActive
+                    && candidateTarget == GBufferTarget.Opaque
+                    && !candidateOpaqueIssued
+                    && candidateRenderTargets.Length != 0
+                    && candidateDepthStencil != 0
+                )
+                {
+                    pending = new PendingTargets(
+                        candidateTarget,
+                        candidateRenderTargets,
+                        candidateDepthStencil,
+                        candidateWidth,
+                        candidateHeight,
+                        candidateViewport
+                    );
+                    candidateOpaqueIssued = true;
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            pending?.Dispose();
+            log.Error(exception, "[Underpaint] Failed to prepare early opaque injection.");
+            return;
+        }
+
+        IssueSafely(pending);
     }
 
     private void TryCaptureCandidateViewport(nint context)
@@ -1635,7 +1682,12 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         {
             var frame =
                 candidateTarget == GBufferTarget.Opaque ? opaqueFrame : semitransparentFrame;
-            if (frame != null && candidateRenderTargets.Length != 0 && candidateDepthStencil != 0)
+            if (
+                frame != null
+                && candidateRenderTargets.Length != 0
+                && candidateDepthStencil != 0
+                && (candidateTarget != GBufferTarget.Opaque || !candidateOpaqueIssued)
+            )
             {
                 pending = new PendingTargets(
                     candidateTarget,
@@ -1980,6 +2032,7 @@ internal sealed unsafe class D3D11GBufferBackend : IDisposable
         candidateWidth = 0;
         candidateHeight = 0;
         candidateViewport = null;
+        candidateOpaqueIssued = false;
     }
 
     private static Vector4 ToSharpDx(NumericsVector4 value) =>
