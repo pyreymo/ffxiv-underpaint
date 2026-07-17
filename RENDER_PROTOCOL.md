@@ -21,6 +21,8 @@ The backend hooks D3D11 immediate-context methods obtained from the game's activ
 
 Recognition validates native resource identity and dimensions against `RenderTargetManager`; MRT count alone is not treated as sufficient.
 
+The diagnostics snapshot is captured before a native draw while the opaque candidate is still bound. This is deliberately separate from normal injection, which currently executes after the candidate target set is replaced. The snapshot therefore represents the native pass state; the later injection context does not.
+
 ## Opaque path
 
 At the first draw after the complete opaque MRT binding, Underpaint records and executes its commands into the native G-buffer/depth targets. Vertex alpha and texture alpha use a rotating 4x4 Bayer coverage phase. The current implementation therefore depends on temporal accumulation for stable fractional coverage.

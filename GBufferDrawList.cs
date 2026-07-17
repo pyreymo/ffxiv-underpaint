@@ -25,7 +25,12 @@ public sealed class GBufferDrawList : IDisposable
     private readonly List<GBufferDrawCommand> commands = [];
     private bool disposed;
 
-    internal GBufferDrawList(D3D11GBufferBackend backend, GBufferTarget target, GBufferMaterial material, SemitransparentLighting lighting)
+    internal GBufferDrawList(
+        D3D11GBufferBackend backend,
+        GBufferTarget target,
+        GBufferMaterial material,
+        SemitransparentLighting lighting
+    )
     {
         this.backend = backend;
         this.target = target;
@@ -38,7 +43,14 @@ public sealed class GBufferDrawList : IDisposable
         AddTriangleFilled(a, b, c, color, color, color);
     }
 
-    public void AddTriangleFilled(Vector3 a, Vector3 b, Vector3 c, uint colorA, uint colorB, uint colorC)
+    public void AddTriangleFilled(
+        Vector3 a,
+        Vector3 b,
+        Vector3 c,
+        uint colorA,
+        uint colorB,
+        uint colorC
+    )
     {
         ThrowIfDisposed();
         var normal = Vector3.Cross(b - a, c - a);
@@ -62,7 +74,16 @@ public sealed class GBufferDrawList : IDisposable
         AddQuadFilled(a, b, c, d, color, color, color, color);
     }
 
-    public void AddQuadFilled(Vector3 a, Vector3 b, Vector3 c, Vector3 d, uint colorA, uint colorB, uint colorC, uint colorD)
+    public void AddQuadFilled(
+        Vector3 a,
+        Vector3 b,
+        Vector3 c,
+        Vector3 d,
+        uint colorA,
+        uint colorB,
+        uint colorC,
+        uint colorD
+    )
     {
         ThrowIfDisposed();
         var normal = Vector3.Cross(b - a, c - a);
@@ -100,7 +121,12 @@ public sealed class GBufferDrawList : IDisposable
     )
     {
         ThrowIfDisposed();
-        if (!float.IsFinite(innerRadius) || !float.IsFinite(outerRadius) || innerRadius < 0f || outerRadius <= innerRadius)
+        if (
+            !float.IsFinite(innerRadius)
+            || !float.IsFinite(outerRadius)
+            || innerRadius < 0f
+            || outerRadius <= innerRadius
+        )
         {
             return;
         }
@@ -154,8 +180,28 @@ public sealed class GBufferDrawList : IDisposable
 
             var inner0 = origin + innerRadius * direction0;
             var inner1 = origin + innerRadius * direction1;
-            WriteUpwardTriangle(inner0, inner, new Vector2(u0, 0f), inner1, inner, new Vector2(u1, 0f), outer1, outer, new Vector2(u1, 1f));
-            WriteUpwardTriangle(inner0, inner, new Vector2(u0, 0f), outer1, outer, new Vector2(u1, 1f), outer0, outer, new Vector2(u0, 1f));
+            WriteUpwardTriangle(
+                inner0,
+                inner,
+                new Vector2(u0, 0f),
+                inner1,
+                inner,
+                new Vector2(u1, 0f),
+                outer1,
+                outer,
+                new Vector2(u1, 1f)
+            );
+            WriteUpwardTriangle(
+                inner0,
+                inner,
+                new Vector2(u0, 0f),
+                outer1,
+                outer,
+                new Vector2(u1, 1f),
+                outer0,
+                outer,
+                new Vector2(u0, 1f)
+            );
         }
 
         commands.Add(new GBufferDrawCommand(vertices));
@@ -199,7 +245,13 @@ public sealed class GBufferDrawList : IDisposable
     )
     {
         ThrowIfDisposed();
-        if (!float.IsFinite(origin.X) || !float.IsFinite(origin.Y) || !float.IsFinite(origin.Z) || !float.IsFinite(radius) || radius <= 0f)
+        if (
+            !float.IsFinite(origin.X)
+            || !float.IsFinite(origin.Y)
+            || !float.IsFinite(origin.Z)
+            || !float.IsFinite(radius)
+            || radius <= 0f
+        )
         {
             return;
         }
@@ -261,9 +313,15 @@ public sealed class GBufferDrawList : IDisposable
                 FlushVertices();
             }
 
-            vertices.Add(new GBufferVertex(origin + radius * normalA, normalA, sphereColor, Vector2.Zero));
-            vertices.Add(new GBufferVertex(origin + radius * normalB, normalB, sphereColor, Vector2.Zero));
-            vertices.Add(new GBufferVertex(origin + radius * normalC, normalC, sphereColor, Vector2.Zero));
+            vertices.Add(
+                new GBufferVertex(origin + radius * normalA, normalA, sphereColor, Vector2.Zero)
+            );
+            vertices.Add(
+                new GBufferVertex(origin + radius * normalB, normalB, sphereColor, Vector2.Zero)
+            );
+            vertices.Add(
+                new GBufferVertex(origin + radius * normalC, normalC, sphereColor, Vector2.Zero)
+            );
         }
 
         void FlushVertices()

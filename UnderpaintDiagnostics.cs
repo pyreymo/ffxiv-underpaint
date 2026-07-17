@@ -1,0 +1,96 @@
+using System.Numerics;
+using Underpaint.Internal;
+
+namespace Underpaint;
+
+/// <summary>Runtime-only controls for isolating projection and native G-buffer state mismatches.</summary>
+public sealed class UnderpaintDiagnostics
+{
+    private readonly D3D11GBufferBackend backend;
+
+    internal UnderpaintDiagnostics(D3D11GBufferBackend backend)
+    {
+        this.backend = backend;
+    }
+
+    /// <summary>Additional opaque clip-space offset expressed in pixels of the injected viewport.</summary>
+    public Vector2 OpaqueJitterPixels
+    {
+        get => backend.GetOpaqueJitterPixels();
+        set => backend.SetOpaqueJitterPixels(value);
+    }
+
+    /// <summary>Forces opaque coverage to one so Bayer dithering cannot affect an isolation test.</summary>
+    public bool ForceOpaqueAlpha
+    {
+        get => backend.GetForceOpaqueAlpha();
+        set => backend.SetForceOpaqueAlpha(value);
+    }
+
+    /// <summary>Captures the next native draw issued while the opaque G-buffer is bound.</summary>
+    public void RequestOpaqueDrawSnapshot() => backend.RequestOpaqueDrawSnapshot();
+
+    /// <summary>Returns and consumes the latest completed one-shot snapshot.</summary>
+    public bool TryTakeOpaqueDrawSnapshot(out NativeDrawSnapshot snapshot) =>
+        backend.TryTakeOpaqueDrawSnapshot(out snapshot);
+}
+
+public sealed record NativeDrawSnapshot(
+    long Sequence,
+    DateTimeOffset CapturedAt,
+    IReadOnlyList<NativeViewportSnapshot> Viewports,
+    IReadOnlyList<NativeScissorSnapshot> Scissors,
+    NativeRasterizerSnapshot? Rasterizer,
+    NativeDepthStencilSnapshot? DepthStencil,
+    nint VertexShader,
+    IReadOnlyList<NativeConstantBufferSnapshot> VertexConstantBuffers,
+    Matrix4x4 ControlViewProjection,
+    Matrix4x4? SceneViewProjection,
+    NativeCameraParameterSnapshot? CameraParameter,
+    IReadOnlyList<string> RenderTargets,
+    string DepthTarget
+);
+
+public readonly record struct NativeViewportSnapshot(
+    float X,
+    float Y,
+    float Width,
+    float Height,
+    float MinDepth,
+    float MaxDepth
+);
+
+public readonly record struct NativeScissorSnapshot(int Left, int Top, int Right, int Bottom);
+
+public sealed record NativeRasterizerSnapshot(
+    string FillMode,
+    string CullMode,
+    bool FrontCounterClockwise,
+    int DepthBias,
+    float DepthBiasClamp,
+    float SlopeScaledDepthBias,
+    bool DepthClip,
+    bool Scissor
+);
+
+public sealed record NativeDepthStencilSnapshot(
+    bool DepthEnabled,
+    string DepthWriteMask,
+    string DepthComparison,
+    bool StencilEnabled,
+    int StencilReference
+);
+
+public sealed record NativeConstantBufferSnapshot(
+    int Slot,
+    nint Pointer,
+    int ByteWidth,
+    ulong ContentHash
+);
+
+public sealed record NativeCameraParameterSnapshot(
+    int Slot,
+    Matrix4x4 ViewProjection,
+    Matrix4x4 Projection,
+    Matrix4x4 MainViewToProjection
+);

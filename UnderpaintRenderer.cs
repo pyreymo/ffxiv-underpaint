@@ -8,15 +8,26 @@ public sealed class UnderpaintRenderer : IDisposable
 {
     private readonly D3D11GBufferBackend backend;
 
+    public UnderpaintDiagnostics Diagnostics { get; }
+
     public UnderpaintRenderer(IGameInteropProvider gameInteropProvider, IPluginLog log)
     {
         backend = new D3D11GBufferBackend(gameInteropProvider, log);
+        Diagnostics = new UnderpaintDiagnostics(backend);
     }
 
     public GBufferDrawList DrawOpaque(GBufferMaterial? material = null) =>
-        new(backend, GBufferTarget.Opaque, material ?? GBufferMaterial.Default, SemitransparentLighting.Default);
+        new(
+            backend,
+            GBufferTarget.Opaque,
+            material ?? GBufferMaterial.Default,
+            SemitransparentLighting.Default
+        );
 
-    public GBufferDrawList DrawSemitransparent(GBufferMaterial? material = null, SemitransparentLighting? lighting = null) =>
+    public GBufferDrawList DrawSemitransparent(
+        GBufferMaterial? material = null,
+        SemitransparentLighting? lighting = null
+    ) =>
         new(
             backend,
             GBufferTarget.Semitransparent,

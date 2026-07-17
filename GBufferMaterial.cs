@@ -6,7 +6,14 @@ namespace Underpaint;
 /// Raw native G-buffer material tuple. G0 RGB is replaced by the geometry normal and G2 RGB by
 /// vertex or texture albedo.
 /// </summary>
-public readonly record struct GBufferMaterial(Vector4 G0, Vector4 G1, Vector4 G2, Vector4 G3, Vector4 G4, byte Stencil)
+public readonly record struct GBufferMaterial(
+    Vector4 G0,
+    Vector4 G1,
+    Vector4 G2,
+    Vector4 G3,
+    Vector4 G4,
+    byte Stencil
+)
 {
     public static GBufferMaterial Default =>
         new(

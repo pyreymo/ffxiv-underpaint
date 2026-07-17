@@ -30,6 +30,12 @@ underpaint.Clear(GBufferTarget.Semitransparent);
 
 Dispose `UnderpaintRenderer` before the plugin unloads. Do not retain a draw list after disposal.
 
+## Projection diagnostics
+
+`UnderpaintRenderer.Diagnostics` provides runtime-only isolation controls. `OpaqueJitterPixels` applies a signed pixel offset in clip space, while `ForceOpaqueAlpha` removes Bayer coverage from opaque tests. `RequestOpaqueDrawSnapshot()` captures the next native draw while the opaque G-buffer is bound; consume the result with `TryTakeOpaqueDrawSnapshot()`.
+
+The one-shot snapshot records native viewport, scissor, rasterizer/depth state, render-target formats, VS constant-buffer hashes, and parses a `0x1C0` FFXIV `CameraParameter` when present. Constant-buffer readback intentionally stalls the GPU and must not be requested every frame.
+
 ## Current shape support
 
 - filled triangle and quad;
