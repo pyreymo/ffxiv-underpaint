@@ -6,29 +6,33 @@ namespace Underpaint;
 /// <summary>Owns native G-buffer hooks and accepts independent opaque and semitransparent submissions.</summary>
 public sealed class UnderpaintRenderer : IDisposable
 {
+    private readonly IGameInteropProvider gameInteropProvider;
     private readonly D3D11GBufferBackend backend;
-    private readonly NativeGeometrySubmissionBackend nativeGeometryBackend;
+    private NativeGeometrySubmissionBackend? nativeGeometryBackend;
 
     public UnderpaintDiagnostics Diagnostics { get; }
 
     public UnderpaintRenderer(IGameInteropProvider gameInteropProvider, IPluginLog log)
     {
+        this.gameInteropProvider = gameInteropProvider;
         backend = new D3D11GBufferBackend(gameInteropProvider, log);
-        nativeGeometryBackend = new NativeGeometrySubmissionBackend(gameInteropProvider);
         Diagnostics = new UnderpaintDiagnostics(backend);
     }
 
     internal NativeGeometry CreateNativeGeometry(
         ReadOnlySpan<System.Numerics.Vector3> positions,
         ReadOnlySpan<ushort> indices
-    ) => nativeGeometryBackend.CreateGeometry(positions, indices);
+    ) => NativeGeometryBackend.CreateGeometry(positions, indices);
 
     internal NativeGeometrySubmissionResult SubmitNativeGeometry(
         nint modelRenderer,
         nint materialParameters,
         NativeGeometry geometry,
         NativePassBuilder submit
-    ) => nativeGeometryBackend.Submit(modelRenderer, materialParameters, geometry, submit);
+    ) => NativeGeometryBackend.Submit(modelRenderer, materialParameters, geometry, submit);
+
+    private NativeGeometrySubmissionBackend NativeGeometryBackend =>
+        nativeGeometryBackend ??= new NativeGeometrySubmissionBackend(gameInteropProvider);
 
     public GBufferDrawList DrawOpaque(GBufferMaterial? material = null) =>
         new(
@@ -53,7 +57,7 @@ public sealed class UnderpaintRenderer : IDisposable
 
     public void Dispose()
     {
-        nativeGeometryBackend.Dispose();
+        nativeGeometryBackend?.Dispose();
         backend.Dispose();
     }
 }
