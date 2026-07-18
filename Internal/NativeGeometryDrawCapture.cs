@@ -7,6 +7,13 @@ internal readonly record struct NativeGeometryVertexBufferBinding(
     int Offset
 );
 
+internal readonly record struct NativeGeometryConstantBufferBinding(
+    int Slot,
+    nint Buffer,
+    int ByteWidth,
+    ulong? ContentHash
+);
+
 internal readonly record struct NativeGeometryDrawMatch(
     long Sequence,
     long Timestamp,
@@ -25,7 +32,8 @@ internal readonly record struct NativeGeometryDrawMatch(
     IReadOnlyList<NativeGeometryVertexBufferBinding> VertexBuffers,
     nint IndexBuffer,
     string IndexFormat,
-    int IndexOffset
+    int IndexOffset,
+    IReadOnlyList<NativeGeometryConstantBufferBinding> VertexConstantBuffers
 );
 
 internal sealed record NativeGeometryDrawCapture(

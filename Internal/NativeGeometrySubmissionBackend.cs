@@ -43,7 +43,25 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     int SourceVertexCount,
     int SourceStartIndex,
     int SourceIndexCount,
+    nint ModelParams,
+    nint RenderModelCallback,
+    nint RenderModelCallbackFunction,
+    nint ModelField38,
+    NativeConstantBufferProbe OnRenderModelConstant,
+    uint WorldConstantId,
+    NativeConstantBufferProbe WorldConstant,
+    uint InstancingConstantId,
+    NativeConstantBufferProbe InstancingConstant,
+    uint PreviousInstancingConstantId,
+    NativeConstantBufferProbe PreviousInstancingConstant,
     NativeGeometrySubmissionResult Submission
+);
+
+internal readonly record struct NativeConstantBufferProbe(
+    nint Buffer,
+    int ByteSize,
+    nint SourcePointer,
+    ulong ContentHash
 );
 
 internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
@@ -451,6 +469,25 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var sourceVertexBuffer = context == null ? 0 : *(nint*)(contextBytes + 0x8C0);
         var sourceStream0Stride = context == null ? 0 : *(byte*)(contextBytes + 0x8C8);
         var sourceStream1Stride = context == null ? 0 : *(byte*)(contextBytes + 0x8D8);
+        var modelParams = materialParameters == 0 ? 0 : *(nint*)materialParameters;
+        var model = modelParams == 0 ? 0 : *(nint*)modelParams;
+        var renderModelCallback = model == 0 ? 0 : *(nint*)(model + 0x48);
+        var renderModelCallbackFunction =
+            renderModelCallback == 0 ? 0 : *(nint*)renderModelCallback;
+        var modelField38 = model == 0 ? 0 : *(nint*)(model + 0x38);
+        var onRenderModelConstant = ProbeConstantBuffer(
+            modelParams == 0 ? 0 : *(nint*)(modelParams + 0x10)
+        );
+        var worldConstantId = GetConstantId(modelRenderer, 1);
+        var instancingConstantId = GetConstantId(modelRenderer, 11);
+        var previousInstancingConstantId = GetConstantId(modelRenderer, 12);
+        var worldConstant = ProbeConstantBuffer(GetContextConstant(contextBytes, worldConstantId));
+        var instancingConstant = ProbeConstantBuffer(
+            GetContextConstant(contextBytes, instancingConstantId)
+        );
+        var previousInstancingConstant = ProbeConstantBuffer(
+            GetContextConstant(contextBytes, previousInstancingConstantId)
+        );
         var result = expandPassesHook.Original(
             modelRenderer,
             materialParameters,
@@ -479,8 +516,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         if (geometry == null)
             return result;
 
-        var model = *(nint*)materialParameters;
-        model = model == 0 ? 0 : *(nint*)model;
         try
         {
             var submission = Submit(
@@ -507,6 +542,17 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     vertexCount,
                     startIndex,
                     indexCount,
+                    modelParams,
+                    renderModelCallback,
+                    renderModelCallbackFunction,
+                    modelField38,
+                    onRenderModelConstant,
+                    worldConstantId,
+                    worldConstant,
+                    instancingConstantId,
+                    instancingConstant,
+                    previousInstancingConstantId,
+                    previousInstancingConstant,
                     submission
                 );
             }
@@ -532,12 +578,52 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     vertexCount,
                     startIndex,
                     indexCount,
+                    modelParams,
+                    renderModelCallback,
+                    renderModelCallbackFunction,
+                    modelField38,
+                    onRenderModelConstant,
+                    worldConstantId,
+                    worldConstant,
+                    instancingConstantId,
+                    instancingConstant,
+                    previousInstancingConstantId,
+                    previousInstancingConstant,
                     default
                 );
             }
         }
 
         return result;
+    }
+
+    private static uint GetConstantId(nint modelRenderer, int wellKnownIndex) =>
+        modelRenderer == 0 ? uint.MaxValue : *(uint*)(modelRenderer + 8 + wellKnownIndex * 4);
+
+    private static nint GetContextConstant(byte* context, uint id) =>
+        context == null || id == uint.MaxValue ? 0 : *(nint*)(context + 0x940 + id * 8);
+
+    private static NativeConstantBufferProbe ProbeConstantBuffer(nint buffer)
+    {
+        if (buffer == 0)
+            return default;
+        var byteSize = *(int*)(buffer + 0x20);
+        var sourcePointer = *(nint*)(buffer + 0x28);
+        var hash = 14695981039346656037UL;
+        if (sourcePointer != 0 && byteSize is > 0 and <= 4096)
+        {
+            var bytes = (byte*)sourcePointer;
+            for (var index = 0; index < Math.Min(byteSize, 512); index++)
+            {
+                hash ^= bytes[index];
+                hash *= 1099511628211UL;
+            }
+        }
+        else
+        {
+            hash = 0;
+        }
+        return new NativeConstantBufferProbe(buffer, byteSize, sourcePointer, hash);
     }
 
     private static ulong PackStreamBinding(int byteOffset, int stride) =>
