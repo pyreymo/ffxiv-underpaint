@@ -7,14 +7,28 @@ namespace Underpaint;
 public sealed class UnderpaintRenderer : IDisposable
 {
     private readonly D3D11GBufferBackend backend;
+    private readonly NativeGeometrySubmissionBackend nativeGeometryBackend;
 
     public UnderpaintDiagnostics Diagnostics { get; }
 
     public UnderpaintRenderer(IGameInteropProvider gameInteropProvider, IPluginLog log)
     {
         backend = new D3D11GBufferBackend(gameInteropProvider, log);
+        nativeGeometryBackend = new NativeGeometrySubmissionBackend(gameInteropProvider);
         Diagnostics = new UnderpaintDiagnostics(backend);
     }
+
+    internal NativeGeometry CreateNativeGeometry(
+        ReadOnlySpan<System.Numerics.Vector3> positions,
+        ReadOnlySpan<ushort> indices
+    ) => nativeGeometryBackend.CreateGeometry(positions, indices);
+
+    internal NativeGeometrySubmissionResult SubmitNativeGeometry(
+        nint modelRenderer,
+        nint materialParameters,
+        NativeGeometry geometry,
+        NativePassBuilder submit
+    ) => nativeGeometryBackend.Submit(modelRenderer, materialParameters, geometry, submit);
 
     public GBufferDrawList DrawOpaque(GBufferMaterial? material = null) =>
         new(
@@ -37,5 +51,9 @@ public sealed class UnderpaintRenderer : IDisposable
 
     public void Clear(GBufferTarget target) => backend.Clear(target);
 
-    public void Dispose() => backend.Dispose();
+    public void Dispose()
+    {
+        nativeGeometryBackend.Dispose();
+        backend.Dispose();
+    }
 }

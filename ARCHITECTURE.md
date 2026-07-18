@@ -12,6 +12,8 @@ The public layer owns submission semantics:
 
 `Internal/D3D11GBufferBackend` owns all game-specific behavior: pass recognition, D3D11 objects, shaders, command recording, native injection, and snapshot lifetime. Consumers must not know hook addresses or render-target layouts.
 
+`Internal/NativeGeometrySubmissionBackend` owns the separately proven native-command path: game-owned vertex/index/declaration resources, temporary `Graphics::Kernel::Context` geometry bindings, and unconditional state restoration around a synchronous native pass-builder call. The current entry is intentionally internal while EventHorizon validates the remaining donor-independent material/instance boundary. Character, equipment-slot, and shader-package filtering remain outside Underpaint and are not part of this backend's semantics.
+
 Pictomancy remains an overlay/VFX dependency of EventHorizon, but no Pictomancy type crosses Underpaint's project boundary.
 
 ## State model
@@ -26,6 +28,7 @@ A published frame owns its draw commands and retained texture resources. Frames 
 - Hook callbacks never borrow caller-owned lists or mutable material state.
 - `GBufferDrawList.Dispose` is the commit point.
 - `UnderpaintRenderer.Dispose` disables hooks before releasing D3D resources and published frames.
+- Native geometry may only be submitted synchronously from the render thread and is retained until its owner or the renderer is disposed; no temporary native pointer is saved across frames.
 - A plugin owns exactly one renderer instance. Multiple instances would install competing hooks on the same D3D11 context and are unsupported.
 
 ## Dependency direction
