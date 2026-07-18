@@ -27,6 +27,17 @@ internal readonly record struct NativeGeometrySubmissionResult(
     int IndexCount
 );
 
+internal readonly record struct NativeGeometryStandaloneSubmission(
+    bool Succeeded,
+    string? Failure,
+    nint ModelRenderer,
+    nint MaterialParameters,
+    nint Model,
+    int View,
+    int SubView,
+    NativeGeometrySubmissionResult Submission
+);
+
 internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 {
     private const string CreateVertexBufferSignature = "40 55 56 57 41 57 48 83 EC 28";
@@ -38,6 +49,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         "40 53 48 83 EC 20 F7 41 40 00 08 00 00 48 8B D9";
     private const string CreateVertexDeclarationSignature =
         "48 8B 49 ?? E9 ?? ?? ?? ?? CC CC CC CC CC CC CC 40 53 55 57";
+    private const string ExpandPassesSignature =
+        "44 89 4C 24 ?? 44 89 44 24 ?? 53 56 57 41 54 41 55";
     private const uint ImmutableBufferFlags = 0x804;
     private const int Stream0Stride = 20;
     private const int Stream1Stride = 24;
@@ -83,7 +96,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private readonly Hook<CreateIndexBufferDelegate> createIndexBufferHook;
     private readonly Hook<InitializeBufferDelegate> initializeIndexBufferHook;
     private readonly Hook<CreateVertexDeclarationDelegate> createVertexDeclarationHook;
+    private readonly Hook<NativePassBuilder> expandPassesHook;
+    private readonly IPluginLog log;
     private readonly HashSet<NativeGeometry> geometries = [];
+    private NativeGeometry? armedStandaloneGeometry;
+    private NativeGeometryStandaloneSubmission? completedStandaloneSubmission;
     private bool disposed;
 
     private delegate nint CreateVertexBufferDelegate(
@@ -109,8 +126,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         uint elementCount
     );
 
-    public NativeGeometrySubmissionBackend(IGameInteropProvider gameInteropProvider)
+    public NativeGeometrySubmissionBackend(IGameInteropProvider gameInteropProvider, IPluginLog log)
     {
+        this.log = log;
         createVertexBufferHook = gameInteropProvider.HookFromSignature<CreateVertexBufferDelegate>(
             CreateVertexBufferSignature,
             (_, _, _, _) => 0
@@ -133,6 +151,45 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 CreateVertexDeclarationSignature,
                 (_, _, _) => 0
             );
+        expandPassesHook = gameInteropProvider.HookFromSignature<NativePassBuilder>(
+            ExpandPassesSignature,
+            ExpandPassesDetour
+        );
+        expandPassesHook.Enable();
+    }
+
+    public void ArmStandalone(NativeGeometry geometry)
+    {
+        lock (stateLock)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (geometry.Owner != this || geometry.IsDisposed)
+                throw new ObjectDisposedException(nameof(geometry));
+            armedStandaloneGeometry = geometry;
+            completedStandaloneSubmission = null;
+        }
+    }
+
+    public void CancelStandalone()
+    {
+        lock (stateLock)
+            armedStandaloneGeometry = null;
+    }
+
+    public bool TryTakeStandalone(out NativeGeometryStandaloneSubmission submission)
+    {
+        lock (stateLock)
+        {
+            if (completedStandaloneSubmission is not { } completed)
+            {
+                submission = default;
+                return false;
+            }
+
+            completedStandaloneSubmission = null;
+            submission = completed;
+            return true;
+        }
     }
 
     public NativeGeometry CreateGeometry(
@@ -246,11 +303,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
     public void Dispose()
     {
+        expandPassesHook.Disable();
         lock (stateLock)
         {
             if (disposed)
                 return;
             disposed = true;
+            armedStandaloneGeometry = null;
+            completedStandaloneSubmission = null;
             foreach (var geometry in geometries.ToArray())
                 geometry.DisposeCore();
             geometries.Clear();
@@ -261,6 +321,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         createIndexBufferHook.Dispose();
         initializeVertexBufferHook.Dispose();
         createVertexBufferHook.Dispose();
+        expandPassesHook.Dispose();
     }
 
     internal void Release(NativeGeometry geometry)
@@ -358,6 +419,83 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             ReleaseNativeResource(ref vertexBuffer);
             throw;
         }
+    }
+
+    private nint ExpandPassesDetour(
+        nint modelRenderer,
+        nint materialParameters,
+        int vertexCount,
+        int startIndex,
+        int indexCount
+    )
+    {
+        var result = expandPassesHook.Original(
+            modelRenderer,
+            materialParameters,
+            vertexCount,
+            startIndex,
+            indexCount
+        );
+        if (submitting || materialParameters == 0)
+            return result;
+
+        var threadLocals = ThreadLocals.ThreadLocalInstance();
+        var context = threadLocals == null ? null : threadLocals->GraphicsKernelContext;
+        if (context == null || context->ViewIndex != 30 || context->CurrentSubViewIndex != 11)
+            return result;
+
+        NativeGeometry? geometry;
+        lock (stateLock)
+        {
+            geometry = armedStandaloneGeometry;
+            armedStandaloneGeometry = null;
+        }
+        if (geometry == null)
+            return result;
+
+        var model = *(nint*)materialParameters;
+        model = model == 0 ? 0 : *(nint*)model;
+        try
+        {
+            var submission = Submit(
+                modelRenderer,
+                materialParameters,
+                geometry,
+                expandPassesHook.Original
+            );
+            lock (stateLock)
+            {
+                completedStandaloneSubmission = new NativeGeometryStandaloneSubmission(
+                    true,
+                    null,
+                    modelRenderer,
+                    materialParameters,
+                    model,
+                    context->ViewIndex,
+                    context->CurrentSubViewIndex,
+                    submission
+                );
+            }
+        }
+        catch (Exception exception)
+        {
+            log.Error(exception, "[Underpaint] Standalone native geometry submission failed.");
+            lock (stateLock)
+            {
+                completedStandaloneSubmission = new NativeGeometryStandaloneSubmission(
+                    false,
+                    exception.Message,
+                    modelRenderer,
+                    materialParameters,
+                    model,
+                    context->ViewIndex,
+                    context->CurrentSubViewIndex,
+                    default
+                );
+            }
+        }
+
+        return result;
     }
 
     private static ulong PackStreamBinding(int byteOffset, int stride) =>

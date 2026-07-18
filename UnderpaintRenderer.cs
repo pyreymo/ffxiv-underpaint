@@ -7,6 +7,7 @@ namespace Underpaint;
 public sealed class UnderpaintRenderer : IDisposable
 {
     private readonly IGameInteropProvider gameInteropProvider;
+    private readonly IPluginLog log;
     private readonly D3D11GBufferBackend backend;
     private NativeGeometrySubmissionBackend? nativeGeometryBackend;
 
@@ -15,6 +16,7 @@ public sealed class UnderpaintRenderer : IDisposable
     public UnderpaintRenderer(IGameInteropProvider gameInteropProvider, IPluginLog log)
     {
         this.gameInteropProvider = gameInteropProvider;
+        this.log = log;
         backend = new D3D11GBufferBackend(gameInteropProvider, log);
         Diagnostics = new UnderpaintDiagnostics(backend);
     }
@@ -31,8 +33,17 @@ public sealed class UnderpaintRenderer : IDisposable
         NativePassBuilder submit
     ) => NativeGeometryBackend.Submit(modelRenderer, materialParameters, geometry, submit);
 
+    internal void ArmNativeGeometrySubmission(NativeGeometry geometry) =>
+        NativeGeometryBackend.ArmStandalone(geometry);
+
+    internal void CancelNativeGeometrySubmission() => nativeGeometryBackend?.CancelStandalone();
+
+    internal bool TryTakeNativeGeometrySubmission(
+        out NativeGeometryStandaloneSubmission submission
+    ) => NativeGeometryBackend.TryTakeStandalone(out submission);
+
     private NativeGeometrySubmissionBackend NativeGeometryBackend =>
-        nativeGeometryBackend ??= new NativeGeometrySubmissionBackend(gameInteropProvider);
+        nativeGeometryBackend ??= new NativeGeometrySubmissionBackend(gameInteropProvider, log);
 
     public GBufferDrawList DrawOpaque(GBufferMaterial? material = null) =>
         new(
