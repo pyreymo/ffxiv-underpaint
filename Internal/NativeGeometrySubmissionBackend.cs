@@ -591,7 +591,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     }
 }
 
-internal sealed class NativeGeometry : IDisposable
+internal sealed unsafe class NativeGeometry : IDisposable
 {
     internal NativeGeometrySubmissionBackend Owner { get; }
     internal nint VertexBuffer;
@@ -600,6 +600,8 @@ internal sealed class NativeGeometry : IDisposable
     internal int VertexCount { get; }
     internal int IndexCount { get; }
     internal int Stream1Offset { get; }
+    internal nint VertexBufferResource => VertexBuffer == 0 ? 0 : *(nint*)(VertexBuffer + 0x40);
+    internal nint IndexBufferResource => IndexBuffer == 0 ? 0 : *(nint*)(IndexBuffer + 0x48);
     internal bool IsDisposed => VertexBuffer == 0;
 
     internal NativeGeometry(

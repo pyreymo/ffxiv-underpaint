@@ -27,6 +27,19 @@ internal sealed unsafe partial class D3D11GBufferBackend
     private TransparentDrawCapture? completedTransparentCapture;
     private long transparentCaptureSequence;
     private bool transparentStageCActive;
+    private NativeGeometryDrawCaptureSession? nativeGeometryDrawCapture;
+    private NativeGeometryDrawCapture? completedNativeGeometryDrawCapture;
+    private long nativeGeometryDrawSequence;
+
+    private sealed class NativeGeometryDrawCaptureSession(
+        nint targetVertexBuffer,
+        nint targetIndexBuffer
+    )
+    {
+        public nint TargetVertexBuffer { get; } = targetVertexBuffer;
+        public nint TargetIndexBuffer { get; } = targetIndexBuffer;
+        public List<NativeGeometryDrawMatch> Draws { get; } = [];
+    }
 
     private sealed class TransparentCaptureSession(
         int maxDraws,
@@ -58,6 +71,55 @@ internal sealed unsafe partial class D3D11GBufferBackend
         {
             transparentCapture = new TransparentCaptureSession(maxDraws, maxStageAFrames, modules);
             completedTransparentCapture = null;
+        }
+    }
+
+    public void BeginNativeGeometryDrawCapture(nint vertexBuffer, nint indexBuffer)
+    {
+        if (vertexBuffer == 0)
+            throw new ArgumentNullException(nameof(vertexBuffer));
+        if (indexBuffer == 0)
+            throw new ArgumentNullException(nameof(indexBuffer));
+
+        lock (stateLock)
+        {
+            nativeGeometryDrawCapture = new NativeGeometryDrawCaptureSession(
+                vertexBuffer,
+                indexBuffer
+            );
+            completedNativeGeometryDrawCapture = null;
+        }
+    }
+
+    public void CompleteNativeGeometryDrawCapture(string reason)
+    {
+        lock (stateLock)
+        {
+            if (nativeGeometryDrawCapture is not { } capture)
+                return;
+            completedNativeGeometryDrawCapture = new NativeGeometryDrawCapture(
+                capture.TargetVertexBuffer,
+                capture.TargetIndexBuffer,
+                reason,
+                capture.Draws.ToArray()
+            );
+            nativeGeometryDrawCapture = null;
+        }
+    }
+
+    public bool TryTakeNativeGeometryDrawCapture(out NativeGeometryDrawCapture capture)
+    {
+        lock (stateLock)
+        {
+            if (completedNativeGeometryDrawCapture == null)
+            {
+                capture = null!;
+                return false;
+            }
+
+            capture = completedNativeGeometryDrawCapture;
+            completedNativeGeometryDrawCapture = null;
+            return true;
         }
     }
 
@@ -175,6 +237,73 @@ internal sealed unsafe partial class D3D11GBufferBackend
                 log.Warning(exception, "[Underpaint] Transparent draw capture failed.");
                 CompleteTransparentCapture($"capture-error:{exception.GetType().Name}");
             }
+        }
+    }
+
+    private void TryCaptureNativeGeometryDraw(nint context, TransparentDrawArguments arguments)
+    {
+        if (detouring || context != immediateContextPointer)
+            return;
+
+        lock (stateLock)
+        {
+            var capture = nativeGeometryDrawCapture;
+            if (capture == null || capture.Draws.Count >= 32)
+                return;
+
+            var vertexBuffers = CaptureVertexBuffers();
+            var indexBuffer = CaptureIndexBuffer();
+            if (
+                vertexBuffers.All(item => item.Buffer != capture.TargetVertexBuffer)
+                || indexBuffer?.Buffer != capture.TargetIndexBuffer
+            )
+            {
+                return;
+            }
+
+            nint vertexShader;
+            nint pixelShader;
+            nint inputLayout;
+            using (var shader = immediateContext.VertexShader.Get())
+                vertexShader = shader?.NativePointer ?? 0;
+            using (var shader = immediateContext.PixelShader.Get())
+                pixelShader = shader?.NativePointer ?? 0;
+            var nativeInputLayout = immediateContext.InputAssembler.InputLayout;
+            using (nativeInputLayout)
+                inputLayout = nativeInputLayout?.NativePointer ?? 0;
+
+            var pass =
+                activePass?.Kind.ToString()
+                ?? (transparentStageCActive ? "SemitransparentStageC" : "Other");
+            capture.Draws.Add(
+                new NativeGeometryDrawMatch(
+                    Interlocked.Increment(ref nativeGeometryDrawSequence),
+                    Stopwatch.GetTimestamp(),
+                    Environment.CurrentManagedThreadId,
+                    pass,
+                    arguments.DrawType,
+                    arguments.ElementCount,
+                    arguments.InstanceCount,
+                    arguments.StartIndex,
+                    arguments.BaseVertex,
+                    arguments.StartVertex,
+                    arguments.StartInstance,
+                    vertexShader,
+                    pixelShader,
+                    inputLayout,
+                    vertexBuffers
+                        .Select(item => new NativeGeometryVertexBufferBinding(
+                            item.Slot,
+                            item.Buffer,
+                            item.Stride,
+                            item.Offset
+                        ))
+                        .ToArray(),
+                    indexBuffer.Value.Buffer,
+                    indexBuffer.Value.Format,
+                    indexBuffer.Value.Offset
+                )
+            );
         }
     }
 
@@ -428,6 +557,18 @@ internal readonly record struct TransparentDrawArguments(
 
 internal sealed unsafe partial class D3D11GBufferBackend
 {
+    public void BeginNativeGeometryDrawCapture(nint vertexBuffer, nint indexBuffer) { }
+
+    public void CompleteNativeGeometryDrawCapture(string reason) { }
+
+    public bool TryTakeNativeGeometryDrawCapture(out NativeGeometryDrawCapture capture)
+    {
+        capture = null!;
+        return false;
+    }
+
+    private void TryCaptureNativeGeometryDraw(nint context, TransparentDrawArguments arguments) { }
+
     private static void TryCaptureTransparentDraw(
         nint context,
         TransparentDrawArguments arguments

@@ -33,14 +33,35 @@ public sealed class UnderpaintRenderer : IDisposable
         NativePassBuilder submit
     ) => NativeGeometryBackend.Submit(modelRenderer, materialParameters, geometry, submit);
 
-    internal void ArmNativeGeometrySubmission(NativeGeometry geometry) =>
-        NativeGeometryBackend.ArmStandalone(geometry);
+    internal void ArmNativeGeometrySubmission(NativeGeometry geometry)
+    {
+        backend.BeginNativeGeometryDrawCapture(
+            geometry.VertexBufferResource,
+            geometry.IndexBufferResource
+        );
+        try
+        {
+            NativeGeometryBackend.ArmStandalone(geometry);
+        }
+        catch
+        {
+            backend.CompleteNativeGeometryDrawCapture("arm-failed");
+            throw;
+        }
+    }
 
-    internal void CancelNativeGeometrySubmission() => nativeGeometryBackend?.CancelStandalone();
+    internal void CancelNativeGeometrySubmission(string reason = "cancelled")
+    {
+        nativeGeometryBackend?.CancelStandalone();
+        backend.CompleteNativeGeometryDrawCapture(reason);
+    }
 
     internal bool TryTakeNativeGeometrySubmission(
         out NativeGeometryStandaloneSubmission submission
     ) => NativeGeometryBackend.TryTakeStandalone(out submission);
+
+    internal bool TryTakeNativeGeometryDrawCapture(out NativeGeometryDrawCapture capture) =>
+        backend.TryTakeNativeGeometryDrawCapture(out capture);
 
     private NativeGeometrySubmissionBackend NativeGeometryBackend =>
         nativeGeometryBackend ??= new NativeGeometrySubmissionBackend(gameInteropProvider, log);
