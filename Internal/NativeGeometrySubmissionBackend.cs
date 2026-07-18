@@ -303,7 +303,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
     public void Dispose()
     {
-        expandPassesHook.Disable();
         lock (stateLock)
         {
             if (disposed)
@@ -311,6 +310,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             disposed = true;
             armedStandaloneGeometry = null;
             completedStandaloneSubmission = null;
+        }
+
+        expandPassesHook.Disable();
+        lock (stateLock)
+        {
             foreach (var geometry in geometries.ToArray())
                 geometry.DisposeCore();
             geometries.Clear();
