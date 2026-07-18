@@ -384,7 +384,12 @@ internal sealed unsafe partial class D3D11GBufferBackend
     private static string[] CaptureNativeStack(CaptureModule[] modules)
     {
         var frames = stackalloc nint[24];
-        var count = RtlCaptureStackBackTrace(2, 24, frames, null);
+        // The draw detour enters managed code through a reverse-P/Invoke boundary. Skipping
+        // frames here can consume the whole unwindable native chain before it is recorded.
+        var count = RtlCaptureStackBackTrace(0, 24, frames, null);
+        if (count == 0)
+            return ["unavailable:rtl-capture-returned-zero"];
+
         var result = new string[count];
         for (var index = 0; index < count; index++)
         {
