@@ -35,6 +35,14 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     nint Model,
     int View,
     int SubView,
+    nint SourceVertexBuffer,
+    nint SourceIndexBuffer,
+    nint SourceVertexDeclaration,
+    int SourceStream0Stride,
+    int SourceStream1Stride,
+    int SourceVertexCount,
+    int SourceStartIndex,
+    int SourceIndexCount,
     NativeGeometrySubmissionResult Submission
 );
 
@@ -433,6 +441,16 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         int indexCount
     )
     {
+        var threadLocals = ThreadLocals.ThreadLocalInstance();
+        var context = threadLocals == null ? null : threadLocals->GraphicsKernelContext;
+        var contextBytes = (byte*)context;
+        var view = context == null ? -1 : context->ViewIndex;
+        var subView = context == null ? -1 : context->CurrentSubViewIndex;
+        var sourceIndexBuffer = context == null ? 0 : *(nint*)(contextBytes + 0x888);
+        var sourceVertexDeclaration = context == null ? 0 : *(nint*)(contextBytes + 0x890);
+        var sourceVertexBuffer = context == null ? 0 : *(nint*)(contextBytes + 0x8C0);
+        var sourceStream0Stride = context == null ? 0 : *(byte*)(contextBytes + 0x8C8);
+        var sourceStream1Stride = context == null ? 0 : *(byte*)(contextBytes + 0x8D8);
         var result = expandPassesHook.Original(
             modelRenderer,
             materialParameters,
@@ -443,9 +461,13 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         if (submitting || materialParameters == 0)
             return result;
 
-        var threadLocals = ThreadLocals.ThreadLocalInstance();
-        var context = threadLocals == null ? null : threadLocals->GraphicsKernelContext;
-        if (context == null || context->ViewIndex != 30 || context->CurrentSubViewIndex != 11)
+        if (
+            context == null
+            || view != 30
+            || subView != 11
+            || sourceStream0Stride != Stream0Stride
+            || sourceStream1Stride != Stream1Stride
+        )
             return result;
 
         NativeGeometry? geometry;
@@ -475,8 +497,16 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     modelRenderer,
                     materialParameters,
                     model,
-                    context->ViewIndex,
-                    context->CurrentSubViewIndex,
+                    view,
+                    subView,
+                    sourceVertexBuffer,
+                    sourceIndexBuffer,
+                    sourceVertexDeclaration,
+                    sourceStream0Stride,
+                    sourceStream1Stride,
+                    vertexCount,
+                    startIndex,
+                    indexCount,
                     submission
                 );
             }
@@ -492,8 +522,16 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     modelRenderer,
                     materialParameters,
                     model,
-                    context->ViewIndex,
-                    context->CurrentSubViewIndex,
+                    view,
+                    subView,
+                    sourceVertexBuffer,
+                    sourceIndexBuffer,
+                    sourceVertexDeclaration,
+                    sourceStream0Stride,
+                    sourceStream1Stride,
+                    vertexCount,
+                    startIndex,
+                    indexCount,
                     default
                 );
             }
