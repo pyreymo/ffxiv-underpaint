@@ -12,8 +12,6 @@ The public layer owns submission semantics:
 
 `Internal/D3D11GBufferBackend` owns all game-specific behavior: pass recognition, D3D11 objects, shaders, command recording, native injection, and snapshot lifetime. Consumers must not know hook addresses or render-target layouts.
 
-`Internal/NativeGeometrySubmissionBackend` owns the separately proven native-command path: game-owned vertex/index/declaration resources, rigid-instance World constants, canonical `ModelRenderer` scene/subview keys, and a single scoped `Graphics::Kernel::Context` restore boundary around each synchronous native pass-builder call. The current entry is intentionally internal while EventHorizon validates the remaining source pass/view masks and object-constant defaults. Character, equipment-slot, and source shader-package filtering are not part of this backend's semantics.
-
 Pictomancy remains an overlay/VFX dependency of EventHorizon, but no Pictomancy type crosses Underpaint's project boundary.
 
 ## State model
@@ -28,9 +26,6 @@ A published frame owns its draw commands and retained texture resources. Frames 
 - Hook callbacks never borrow caller-owned lists or mutable material state.
 - `GBufferDrawList.Dispose` is the commit point.
 - `UnderpaintRenderer.Dispose` disables hooks before releasing D3D resources and published frames.
-- Native geometry may only be submitted synchronously from the render thread and is retained until its owner or the renderer is disposed; no temporary native pointer is saved across frames.
-- Internal rigid instances rendezvous on the validated native render hook and deduplicate by `Framework.FrameCounter + Context* + view + subview`; their current/previous World constants are Underpaint-owned and history can be explicitly reset.
-- Removed rigid instances stop submitting immediately, but their native World resources remain retained until backend teardown. Releasing them earlier is blocked on a confirmed render-frame/GPU completion boundary; builder return is not treated as a lifetime fence.
 - A plugin owns exactly one renderer instance. Multiple instances would install competing hooks on the same D3D11 context and are unsupported.
 
 ## Dependency direction
@@ -46,4 +41,4 @@ The demo window is an integration consumer of both libraries; it is not part of 
 
 ## Deliberate non-goals of this extraction
 
-This change separates ownership and removes avoidable cross-backend state coupling. It does not guess at native motion-vector encoding, fabricate object history, or reorder the game's transparent renderer. Those require further runtime evidence and dedicated hook points.
+This change separates ownership and removes avoidable cross-backend state coupling. It does not guess at native motion-vector encoding, fabricate object history, reorder the game's transparent renderer, or fabricate game scene-resource objects. Those require further runtime evidence and dedicated hook points.

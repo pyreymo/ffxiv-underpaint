@@ -6,56 +6,15 @@ namespace Underpaint;
 /// <summary>Owns native G-buffer hooks and accepts independent opaque and semitransparent submissions.</summary>
 public sealed class UnderpaintRenderer : IDisposable
 {
-    private readonly IGameInteropProvider gameInteropProvider;
-    private readonly IPluginLog log;
     private readonly D3D11GBufferBackend backend;
-    private NativeGeometrySubmissionBackend? nativeGeometryBackend;
 
     public UnderpaintDiagnostics Diagnostics { get; }
 
     public UnderpaintRenderer(IGameInteropProvider gameInteropProvider, IPluginLog log)
     {
-        this.gameInteropProvider = gameInteropProvider;
-        this.log = log;
         backend = new D3D11GBufferBackend(gameInteropProvider, log);
         Diagnostics = new UnderpaintDiagnostics(backend);
     }
-
-    internal NativeGeometry CreateNativeGeometry(
-        ReadOnlySpan<System.Numerics.Vector3> positions,
-        ReadOnlySpan<ushort> indices
-    ) => NativeGeometryBackend.CreateGeometry(positions, indices);
-
-    internal NativeGeometry CreateNativeGeometry(
-        ReadOnlySpan<System.Numerics.Vector3> positions,
-        ReadOnlySpan<System.Numerics.Vector2> textureCoordinates,
-        ReadOnlySpan<ushort> indices
-    ) => NativeGeometryBackend.CreateGeometry(positions, textureCoordinates, indices);
-
-    internal NativeRigidInstance CreateNativeRigidInstance(
-        NativeGeometry geometry,
-        System.Numerics.Matrix4x4 currentWorldView
-    ) => NativeGeometryBackend.CreateRigidInstance(geometry, currentWorldView);
-
-    internal NativeRigidInstance CreateNativeWorldRigidInstance(
-        NativeGeometry geometry,
-        System.Numerics.Matrix4x4 world
-    ) => NativeGeometryBackend.CreateWorldRigidInstance(geometry, world);
-
-    internal void BeginNativeGeometryDrawCapture(NativeGeometry geometry) =>
-        backend.BeginNativeGeometryDrawCapture(
-            geometry.VertexBufferResource,
-            geometry.IndexBufferResource
-        );
-
-    internal void CompleteNativeGeometryDrawCapture(string reason) =>
-        backend.CompleteNativeGeometryDrawCapture(reason);
-
-    internal bool TryTakeNativeGeometryDrawCapture(out NativeGeometryDrawCapture capture) =>
-        backend.TryTakeNativeGeometryDrawCapture(out capture);
-
-    private NativeGeometrySubmissionBackend NativeGeometryBackend =>
-        nativeGeometryBackend ??= new NativeGeometrySubmissionBackend(gameInteropProvider, log);
 
     public GBufferDrawList DrawOpaque(GBufferMaterial? material = null) =>
         new(
@@ -80,7 +39,6 @@ public sealed class UnderpaintRenderer : IDisposable
 
     public void Dispose()
     {
-        nativeGeometryBackend?.Dispose();
         backend.Dispose();
     }
 }
