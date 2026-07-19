@@ -72,6 +72,9 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     string? OwnedMaterialPath,
     bool MaterialCaptured,
     bool MaterialLoaded,
+    uint SourceMaterialFlags,
+    uint OwnedMaterialFlags,
+    uint SourceMaterialIndex,
     uint OwnedMaterialConstantId,
     NativeGeometrySubmissionResult Submission
 );
@@ -108,7 +111,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private const uint ImmutableBufferFlags = 0x804;
     private const int Stream0Stride = 20;
     private const int Stream1Stride = 24;
-    private const int StandaloneProbeSourceStream1Stride = 28;
     private const float StandaloneViewDepth = 5.0f;
     private const string StandaloneMaterialPath =
         "chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl";
@@ -587,7 +589,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             || subView != 11
             || onRenderModelConstant.ByteSize != 176
             || sourceStream0Stride != Stream0Stride
-            || sourceStream1Stride != StandaloneProbeSourceStream1Stride
         )
             return result;
 
@@ -616,7 +617,10 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 out var ownedMaterial,
                 out var ownedMaterialResource,
                 out var ownedShaderPackage,
-                out var materialLoaded
+                out var materialLoaded,
+                out var sourceMaterialFlags,
+                out var ownedMaterialFlags,
+                out var sourceMaterialIndex
             );
             var offsetModelConstant = ProbeConstantBuffer((nint)standaloneModelConstant);
             var offsetWorldConstant = ProbeConstantBuffer((nint)standaloneWorldConstant);
@@ -664,6 +668,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     standaloneMaterialPath,
                     false,
                     materialLoaded,
+                    sourceMaterialFlags,
+                    ownedMaterialFlags,
+                    sourceMaterialIndex,
                     standaloneMaterialConstantId,
                     submission
                 );
@@ -735,7 +742,10 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         out nint ownedMaterial,
         out nint ownedMaterialResource,
         out nint ownedShaderPackage,
-        out bool materialLoaded
+        out bool materialLoaded,
+        out uint sourceMaterialFlags,
+        out uint ownedMaterialFlags,
+        out uint sourceMaterialIndex
     )
     {
         var modelParams = *(nint*)materialParameters;
@@ -802,6 +812,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var copiedShaderSelection = stackalloc byte[0x28];
         Buffer.MemoryCopy((void*)modelParams, copiedModelParams, 0x20, 0x20);
         Buffer.MemoryCopy((void*)materialParameters, copiedMaterialParams, 0x48, 0x48);
+        sourceMaterialFlags = *(uint*)(copiedMaterialParams + 0x40);
+        sourceMaterialIndex = GetSourceMaterialIndex(copiedMaterialParams);
+        NativeMemory.Clear(copiedMaterialParams + 0x10, 0x28);
+        *(uint*)(copiedMaterialParams + 0x40) = 0;
+        *(uint*)(copiedMaterialParams + 0x44) = *(uint*)(copiedModelParams + 0x1C);
         NativeMemory.Clear(copiedShaderSelection, 0x28);
         *(nint*)copiedShaderSelection = *(nint*)shaderSelection;
         initializeShaderSelectionHook.Original(copiedShaderSelection, (nint)targetShaderPackage);
@@ -830,8 +845,15 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             var contextBytes = (byte*)context;
             var savedConstants = SaveConstants(contextBytes);
             var savedTextures = SaveMaterialTextures(contextBytes, targetMaterial);
+            var savedRasterizerState = *(uint*)(contextBytes + 0x874);
             try
             {
+                ((ModelRenderer*)modelRenderer)->OnRenderMaterial(
+                    (ModelRenderer.OnRenderMaterialParams2*)copiedMaterialParams,
+                    targetMaterial,
+                    sourceMaterialIndex
+                );
+                ownedMaterialFlags = *(uint*)(copiedMaterialParams + 0x40);
                 applyMaterialHook.Original(copiedShaderSelection, targetMaterial);
                 standaloneMaterialConstantId = FindBoundConstantId(
                     contextBytes,
@@ -852,6 +874,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             }
             finally
             {
+                *(uint*)(contextBytes + 0x874) = savedRasterizerState;
                 RestoreConstants(contextBytes, savedConstants);
                 RestoreMaterialTextures(contextBytes, savedTextures);
             }
@@ -860,6 +883,16 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         {
             destroyShaderSelectionHook.Original(copiedShaderSelection);
         }
+    }
+
+    private static uint GetSourceMaterialIndex(byte* materialParameters)
+    {
+        var modelResource = *(nint*)(materialParameters + 0x08);
+        var geometryIndex = *(ushort*)(materialParameters + 0x3C);
+        var geometryTable = modelResource == 0 ? 0 : *(nint*)(modelResource + 0xE8);
+        if (geometryTable == 0)
+            throw new InvalidOperationException("The native model resource has no geometry table.");
+        return *(ushort*)(geometryTable + geometryIndex * 0x24 + 0x08);
     }
 
     private static bool TryGetSceneKeyValue(nint metadata, nint values, uint key, out uint value)
