@@ -230,21 +230,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     public NativeRigidInstance CreateRigidInstance(
         NativeGeometry geometry,
         Matrix4x4 currentWorldView
-    ) => CreateRigidInstance(geometry, currentWorldView, null);
-
-    public NativeRigidInstance CreateCameraFacingRigidInstance(
-        NativeGeometry geometry,
-        float distance
-    )
-    {
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(distance, 0f);
-        return CreateRigidInstance(geometry, Matrix4x4.Identity, distance);
-    }
-
-    private NativeRigidInstance CreateRigidInstance(
-        NativeGeometry geometry,
-        Matrix4x4 currentWorldView,
-        float? cameraDistance
     )
     {
         lock (stateLock)
@@ -258,13 +243,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     "The game rejected a rigid-instance world constant buffer."
                 );
-            var instance = new NativeRigidInstance(
-                this,
-                geometry,
-                worldConstant,
-                currentWorldView,
-                cameraDistance
-            );
+            var instance = new NativeRigidInstance(this, geometry, worldConstant, currentWorldView);
             rigidInstances.Add(instance);
             return instance;
         }
@@ -536,14 +515,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         {
             try
             {
-                Matrix4x4? cameraFacingWorld = null;
-                if (instance.CameraDistance is { } distance)
-                {
-                    if (!TryGetCameraFacingWorld(view, subView, distance, out var world))
-                        continue;
-                    cameraFacingWorld = world;
-                }
-                if (!instance.PrepareWorld(frame, cameraFacingWorld))
+                if (!instance.PrepareWorld(frame))
                     continue;
                 SubmitOwnedWorld(
                     modelRenderer,
@@ -561,49 +533,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     log.Error(exception, "[Underpaint] Native rigid submission stopped.");
             }
         }
-    }
-
-    private static bool TryGetCameraFacingWorld(
-        int viewIndex,
-        int subViewIndex,
-        float distance,
-        out Matrix4x4 world
-    )
-    {
-        world = default;
-        if ((uint)viewIndex >= 87 || (uint)subViewIndex >= 16)
-            return false;
-        var manager = Manager.Instance();
-        var camera =
-            manager == null ? null : manager->Views[viewIndex].SubViews[subViewIndex].Camera;
-        if (camera == null)
-            return false;
-
-        var view = *(Matrix4x4*)&camera->ViewMatrix;
-        var projection = *(Matrix4x4*)&camera->ProjectionMatrix;
-        if (!Matrix4x4.Invert(view, out var cameraWorld))
-            return false;
-
-        for (var index = 0; index < 2; index++)
-        {
-            var depth = index == 0 ? distance : -distance;
-            var candidate = Matrix4x4.CreateTranslation(0f, 0f, depth) * cameraWorld;
-            var center = Vector3.Transform(Vector3.Zero, candidate);
-            var clip = Vector4.Transform(new Vector4(center, 1f), view * projection);
-            if (clip.W <= 0.001f)
-                continue;
-            var inverseW = 1f / clip.W;
-            if (
-                MathF.Abs(clip.X * inverseW) <= 0.8f
-                && MathF.Abs(clip.Y * inverseW) <= 0.8f
-                && clip.Z * inverseW is >= 0f and <= 1f
-            )
-            {
-                world = candidate;
-                return true;
-            }
-        }
-        return false;
     }
 
     private static uint GetConstantId(nint modelRenderer, int wellKnownIndex) =>
@@ -1079,7 +1008,6 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
     internal NativeGeometrySubmissionBackend Owner { get; }
     internal NativeGeometry Geometry { get; }
     internal ConstantBuffer* WorldConstant { get; private set; }
-    internal float? CameraDistance { get; }
     internal bool HasSubmitted
     {
         get
@@ -1101,14 +1029,12 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
         NativeGeometrySubmissionBackend owner,
         NativeGeometry geometry,
         ConstantBuffer* worldConstant,
-        Matrix4x4 currentWorldView,
-        float? cameraDistance
+        Matrix4x4 currentWorldView
     )
     {
         Owner = owner;
         Geometry = geometry;
         WorldConstant = worldConstant;
-        CameraDistance = cameraDistance;
         this.currentWorldView = currentWorldView;
         previousWorldView = currentWorldView;
     }
@@ -1123,7 +1049,7 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
         }
     }
 
-    internal bool PrepareWorld(uint frame, Matrix4x4? worldOverride)
+    internal bool PrepareWorld(uint frame)
     {
         lock (stateLock)
         {
@@ -1135,8 +1061,6 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
                 || preparedFrame == frame
             )
                 return false;
-            if (worldOverride is { } world)
-                currentWorldView = world;
             if (resetHistory)
                 previousWorldView = currentWorldView;
             NativeGeometrySubmissionBackend.WriteWorldConstant(

@@ -37,11 +37,6 @@ public sealed class UnderpaintRenderer : IDisposable
         System.Numerics.Matrix4x4 currentWorldView
     ) => NativeGeometryBackend.CreateRigidInstance(geometry, currentWorldView);
 
-    internal NativeRigidInstance CreateCameraFacingNativeRigidInstance(
-        NativeGeometry geometry,
-        float distance
-    ) => NativeGeometryBackend.CreateCameraFacingRigidInstance(geometry, distance);
-
     private NativeGeometrySubmissionBackend NativeGeometryBackend =>
         nativeGeometryBackend ??= new NativeGeometrySubmissionBackend(gameInteropProvider, log);
 
