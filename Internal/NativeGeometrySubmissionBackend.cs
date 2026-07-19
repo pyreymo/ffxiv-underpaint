@@ -1003,6 +1003,7 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
     private bool resetHistory = true;
     private bool removed;
     private bool hasSubmitted;
+    private long submissionCount;
     private string? failure;
 
     internal NativeGeometrySubmissionBackend Owner { get; }
@@ -1014,6 +1015,14 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
         {
             lock (stateLock)
                 return hasSubmitted;
+        }
+    }
+    internal long SubmissionCount
+    {
+        get
+        {
+            lock (stateLock)
+                return submissionCount;
         }
     }
     internal string? Failure
@@ -1093,6 +1102,7 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
             previousWorldView = currentWorldView;
             resetHistory = false;
             hasSubmitted = true;
+            submissionCount++;
         }
     }
 
