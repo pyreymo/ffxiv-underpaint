@@ -951,7 +951,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private readonly struct NativeStream0Vertex(Vector3 position)
     {
         public readonly Vector3 Position = position;
-        public readonly uint Attribute1 = uint.MaxValue;
+        public readonly uint Attribute1 = 0x000000FF;
         public readonly uint Attribute7 = 0;
     }
 
@@ -960,13 +960,17 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     {
         public NativeStream1Vertex(Vector2 textureCoordinate)
         {
-            Attribute2 = 0x3C003C0000000000;
-            Attribute15 = uint.MaxValue;
+            // The test material's 20/24 declaration consumes a half4 normal, packed
+            // bitangent, vertex color and half4 UV. Keep every supplied semantic valid
+            // even though this first backend only exposes position and primary UV.
+            Attribute2 = 0x00003C0000000000;
+            Attribute15 = 0x00800080;
             Attribute3 = uint.MaxValue;
             Attribute8 =
                 BitConverter.HalfToUInt16Bits((Half)textureCoordinate.X)
                 | ((ulong)BitConverter.HalfToUInt16Bits((Half)textureCoordinate.Y) << 16)
-                | (0x3C00UL << 48);
+                | (0xBC00UL << 32)
+                | (0x4000UL << 48);
         }
 
         public readonly ulong Attribute2;
