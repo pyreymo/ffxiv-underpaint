@@ -54,6 +54,9 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     NativeConstantBufferProbe InstancingConstant,
     uint PreviousInstancingConstantId,
     NativeConstantBufferProbe PreviousInstancingConstant,
+    NativeConstantBufferProbe OffsetModelConstant,
+    NativeConstantBufferProbe OffsetInstancingConstant,
+    NativeConstantBufferProbe OffsetPreviousInstancingConstant,
     NativeGeometrySubmissionResult Submission
 );
 
@@ -61,7 +64,10 @@ internal readonly record struct NativeConstantBufferProbe(
     nint Buffer,
     int ByteSize,
     nint SourcePointer,
-    ulong ContentHash
+    ulong ContentHash,
+    Vector4 Row0,
+    Vector4 Row1,
+    Vector4 Row2
 );
 
 internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
@@ -80,6 +86,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private const uint ImmutableBufferFlags = 0x804;
     private const int Stream0Stride = 20;
     private const int Stream1Stride = 24;
+    private const float StandaloneOffsetX = 2.0f;
 
     private static readonly byte[] VertexDeclarationElements =
     [
@@ -127,6 +134,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private readonly HashSet<NativeGeometry> geometries = [];
     private NativeGeometry? armedStandaloneGeometry;
     private NativeGeometryStandaloneSubmission? completedStandaloneSubmission;
+    private ConstantBuffer* standaloneModelConstant;
+    private ConstantBuffer* standaloneInstancingConstant;
+    private ConstantBuffer* standalonePreviousInstancingConstant;
     private bool disposed;
 
     private delegate nint CreateVertexBufferDelegate(
@@ -270,6 +280,29 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         if (submitting)
             throw new InvalidOperationException("Native geometry submission is not reentrant.");
 
+        return SubmitCore(
+            modelRenderer,
+            materialParameters,
+            geometry,
+            submit,
+            uint.MaxValue,
+            null,
+            uint.MaxValue,
+            null
+        );
+    }
+
+    private NativeGeometrySubmissionResult SubmitCore(
+        nint modelRenderer,
+        nint materialParameters,
+        NativeGeometry geometry,
+        NativePassBuilder submit,
+        uint instancingConstantId,
+        ConstantBuffer* instancingConstant,
+        uint previousInstancingConstantId,
+        ConstantBuffer* previousInstancingConstant
+    )
+    {
         var threadLocals = ThreadLocals.ThreadLocalInstance();
         var context = threadLocals == null ? null : threadLocals->GraphicsKernelContext;
         if (context == null)
@@ -283,6 +316,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         Span<ulong> savedStreams = stackalloc ulong[4];
         for (var index = 0; index < savedStreams.Length; index++)
             savedStreams[index] = *(ulong*)(contextBytes + 0x8C0 + index * 8);
+        var savedInstancingConstant = GetContextConstant(contextBytes, instancingConstantId);
+        var savedPreviousInstancingConstant = GetContextConstant(
+            contextBytes,
+            previousInstancingConstantId
+        );
 
         nint builderResult;
         submitting = true;
@@ -296,6 +334,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             *(ulong*)(contextBytes + 0x8D8) = PackStreamBinding(
                 geometry.Stream1Offset,
                 Stream1Stride
+            );
+            SetContextConstant(contextBytes, instancingConstantId, (nint)instancingConstant);
+            SetContextConstant(
+                contextBytes,
+                previousInstancingConstantId,
+                (nint)previousInstancingConstant
             );
             builderResult = submit(
                 modelRenderer,
@@ -311,6 +355,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             *(nint*)(contextBytes + 0x890) = savedVertexDeclaration;
             for (var index = 0; index < savedStreams.Length; index++)
                 *(ulong*)(contextBytes + 0x8C0 + index * 8) = savedStreams[index];
+            SetContextConstant(contextBytes, instancingConstantId, savedInstancingConstant);
+            SetContextConstant(
+                contextBytes,
+                previousInstancingConstantId,
+                savedPreviousInstancingConstant
+            );
             submitting = false;
         }
 
@@ -339,6 +389,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
 
         expandPassesHook.Disable();
+        ReleaseNativeResource(ref standalonePreviousInstancingConstant);
+        ReleaseNativeResource(ref standaloneInstancingConstant);
+        ReleaseNativeResource(ref standaloneModelConstant);
         lock (stateLock)
         {
             foreach (var geometry in geometries.ToArray())
@@ -518,11 +571,20 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
         try
         {
-            var submission = Submit(
+            var submission = SubmitStandaloneOffset(
                 modelRenderer,
                 materialParameters,
                 geometry,
-                expandPassesHook.Original
+                expandPassesHook.Original,
+                instancingConstantId,
+                instancingConstant,
+                previousInstancingConstantId,
+                previousInstancingConstant
+            );
+            var offsetModelConstant = ProbeConstantBuffer((nint)standaloneModelConstant);
+            var offsetInstancingConstant = ProbeConstantBuffer((nint)standaloneInstancingConstant);
+            var offsetPreviousInstancingConstant = ProbeConstantBuffer(
+                (nint)standalonePreviousInstancingConstant
             );
             lock (stateLock)
             {
@@ -553,6 +615,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     instancingConstant,
                     previousInstancingConstantId,
                     previousInstancingConstant,
+                    offsetModelConstant,
+                    offsetInstancingConstant,
+                    offsetPreviousInstancingConstant,
                     submission
                 );
             }
@@ -589,6 +654,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     instancingConstant,
                     previousInstancingConstantId,
                     previousInstancingConstant,
+                    default,
+                    default,
+                    default,
                     default
                 );
             }
@@ -602,6 +670,101 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
     private static nint GetContextConstant(byte* context, uint id) =>
         context == null || id == uint.MaxValue ? 0 : *(nint*)(context + 0x940 + id * 8);
+
+    private static void SetContextConstant(byte* context, uint id, nint value)
+    {
+        if (context != null && id != uint.MaxValue)
+            *(nint*)(context + 0x940 + id * 8) = value;
+    }
+
+    private NativeGeometrySubmissionResult SubmitStandaloneOffset(
+        nint modelRenderer,
+        nint materialParameters,
+        NativeGeometry geometry,
+        NativePassBuilder submit,
+        uint instancingConstantId,
+        NativeConstantBufferProbe instancingConstant,
+        uint previousInstancingConstantId,
+        NativeConstantBufferProbe previousInstancingConstant
+    )
+    {
+        var modelParams = *(nint*)materialParameters;
+        if (modelParams == 0)
+            throw new InvalidOperationException(
+                "The native material parameters have no model input."
+            );
+
+        var modelConstant = ProbeConstantBuffer(*(nint*)(modelParams + 0x10));
+        if (modelConstant.ByteSize != 176 || modelConstant.SourcePointer == 0)
+            throw new InvalidOperationException(
+                "The native model constant is not a readable 176-byte input."
+            );
+        if (instancingConstant.ByteSize != 48 || instancingConstant.SourcePointer == 0)
+            throw new InvalidOperationException(
+                "The native instancing constant is not a readable 48-byte input."
+            );
+
+        EnsureStandaloneConstants(previousInstancingConstant.Buffer != 0);
+        CopyConstant(modelConstant, standaloneModelConstant);
+        CopyConstant(instancingConstant, standaloneInstancingConstant);
+        var offsetRows = (Vector4*)standaloneInstancingConstant->UnsafeSourcePointer;
+        offsetRows[0].W += StandaloneOffsetX;
+
+        ConstantBuffer* previousConstant = null;
+        if (previousInstancingConstant.Buffer != 0)
+        {
+            CopyConstant(instancingConstant, standalonePreviousInstancingConstant);
+            ((Vector4*)standalonePreviousInstancingConstant->UnsafeSourcePointer)[0].W +=
+                StandaloneOffsetX;
+            previousConstant = standalonePreviousInstancingConstant;
+        }
+
+        var copiedModelParams = stackalloc byte[0x20];
+        var copiedMaterialParams = stackalloc byte[0x48];
+        Buffer.MemoryCopy((void*)modelParams, copiedModelParams, 0x20, 0x20);
+        Buffer.MemoryCopy((void*)materialParameters, copiedMaterialParams, 0x48, 0x48);
+        *(nint*)(copiedModelParams + 0x10) = (nint)standaloneModelConstant;
+        *(nint*)copiedMaterialParams = (nint)copiedModelParams;
+
+        return SubmitCore(
+            modelRenderer,
+            (nint)copiedMaterialParams,
+            geometry,
+            submit,
+            instancingConstantId,
+            standaloneInstancingConstant,
+            previousInstancingConstantId,
+            previousConstant
+        );
+    }
+
+    private void EnsureStandaloneConstants(bool needsPrevious)
+    {
+        var device = Device.Instance();
+        if (device == null)
+            throw new InvalidOperationException("The native graphics device is not available.");
+
+        if (standaloneModelConstant == null)
+            standaloneModelConstant = device->CreateConstantBuffer(176, 2, 0);
+        if (standaloneInstancingConstant == null)
+            standaloneInstancingConstant = device->CreateConstantBuffer(48, 1, 7);
+        if (needsPrevious && standalonePreviousInstancingConstant == null)
+            standalonePreviousInstancingConstant = device->CreateConstantBuffer(48, 1, 7);
+        if (
+            standaloneModelConstant == null
+            || standaloneInstancingConstant == null
+            || (needsPrevious && standalonePreviousInstancingConstant == null)
+        )
+            throw new InvalidOperationException("The game rejected a standalone constant buffer.");
+    }
+
+    private static void CopyConstant(NativeConstantBufferProbe source, ConstantBuffer* destination)
+    {
+        var target = destination->LoadSourcePointer(0, source.ByteSize);
+        if (target == null)
+            throw new InvalidOperationException("The game did not expose constant-buffer storage.");
+        Buffer.MemoryCopy((void*)source.SourcePointer, target, source.ByteSize, source.ByteSize);
+    }
 
     private static NativeConstantBufferProbe ProbeConstantBuffer(nint buffer)
     {
@@ -623,7 +786,24 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         {
             hash = 0;
         }
-        return new NativeConstantBufferProbe(buffer, byteSize, sourcePointer, hash);
+        var row0 = default(Vector4);
+        var row1 = default(Vector4);
+        var row2 = default(Vector4);
+        if (sourcePointer != 0 && byteSize == 48)
+        {
+            row0 = *(Vector4*)sourcePointer;
+            row1 = *(Vector4*)(sourcePointer + 16);
+            row2 = *(Vector4*)(sourcePointer + 32);
+        }
+        return new NativeConstantBufferProbe(
+            buffer,
+            byteSize,
+            sourcePointer,
+            hash,
+            row0,
+            row1,
+            row2
+        );
     }
 
     private static ulong PackStreamBinding(int byteOffset, int stride) =>
@@ -637,6 +817,13 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             return;
         var release = (delegate* unmanaged<nint, void>)(*(nint*)(*(nint*)value + 0x18));
         release(value);
+    }
+
+    private static void ReleaseNativeResource(ref ConstantBuffer* resource)
+    {
+        var value = (nint)resource;
+        resource = null;
+        ReleaseNativeResource(ref value);
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
