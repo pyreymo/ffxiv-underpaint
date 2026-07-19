@@ -71,6 +71,7 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     nint OwnedShaderPackage,
     string? OwnedMaterialPath,
     bool MaterialCaptured,
+    uint OwnedMaterialConstantId,
     NativeGeometrySubmissionResult Submission
 );
 
@@ -170,6 +171,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private ConstantBuffer* standaloneWorldConstant;
     private MaterialResourceHandle* standaloneMaterialResource;
     private string? standaloneMaterialPath;
+    private uint standaloneMaterialConstantId = uint.MaxValue;
     private bool disposed;
 
     private delegate nint CreateVertexBufferDelegate(
@@ -681,6 +683,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     ownedShaderPackage,
                     standaloneMaterialPath,
                     materialCaptured,
+                    standaloneMaterialConstantId,
                     submission
                 );
             }
@@ -717,6 +720,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     instancingConstant,
                     previousInstancingConstantId,
                     previousInstancingConstant,
+                    default,
                     default,
                     default,
                     default,
@@ -890,15 +894,19 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     "The current render thread has no graphics context."
                 );
             var contextBytes = (byte*)context;
-            var materialConstantId = FindMaterialConstantId(targetShaderPackage);
-            if (
-                targetMaterial->MaterialParameterCBuffer != null
-                && materialConstantId == uint.MaxValue
-            )
-                throw new InvalidOperationException(
-                    "The owned shader package has no material constant slot."
+            if (standaloneMaterialConstantId == uint.MaxValue)
+                standaloneMaterialConstantId = FindBoundConstantId(
+                    contextBytes,
+                    targetMaterial->MaterialParameterCBuffer
                 );
-            var savedMaterialConstant = GetContextConstant(contextBytes, materialConstantId);
+            if (standaloneMaterialConstantId == uint.MaxValue)
+                throw new InvalidOperationException(
+                    "The source material constant is not bound in the current context."
+                );
+            var savedMaterialConstant = GetContextConstant(
+                contextBytes,
+                standaloneMaterialConstantId
+            );
             var savedTextures = SaveMaterialTextures(contextBytes, targetMaterial);
             try
             {
@@ -914,7 +922,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             }
             finally
             {
-                SetContextConstant(contextBytes, materialConstantId, savedMaterialConstant);
+                SetContextConstant(
+                    contextBytes,
+                    standaloneMaterialConstantId,
+                    savedMaterialConstant
+                );
                 RestoreMaterialTextures(contextBytes, savedTextures);
             }
         }
@@ -984,13 +996,15 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         throw new InvalidOperationException("The owned material has no model-type scene key.");
     }
 
-    private static uint FindMaterialConstantId(ShaderPackage* shaderPackage)
+    private static uint FindBoundConstantId(byte* context, ConstantBuffer* constant)
     {
-        for (var index = 0; index < shaderPackage->ConstantCount; index++)
+        if (context == null || constant == null)
+            return uint.MaxValue;
+        const uint constantSlotCount = (0x1140 - 0x940) / sizeof(ulong);
+        for (uint id = 0; id < constantSlotCount; id++)
         {
-            var constant = shaderPackage->Constants + index;
-            if (constant->Slot == ShaderPackage.SamplerSlotMaterial)
-                return constant->Id;
+            if (GetContextConstant(context, id) == (nint)constant)
+                return id;
         }
         return uint.MaxValue;
     }
@@ -1027,6 +1041,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var resource = standaloneMaterialResource;
         standaloneMaterialResource = null;
         standaloneMaterialPath = null;
+        standaloneMaterialConstantId = uint.MaxValue;
         if (resource != null)
             resource->DecRef();
     }
