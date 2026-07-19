@@ -102,6 +102,18 @@ internal readonly record struct NativeConstantBufferProbe(
     Vector4 Row2
 );
 
+internal readonly record struct NativeRigidInstanceTelemetry(
+    long SubmissionCount,
+    long HistoryResetSubmissionCount,
+    long TemporalAdvanceSubmissionCount,
+    long DuplicateFrameSubmissionCount,
+    uint FirstSubmittedFrame,
+    uint LastSubmittedFrame,
+    Matrix4x4 LastCurrentWorldView,
+    Matrix4x4 LastPreviousWorldView,
+    bool Removed
+);
+
 internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 {
     private const string CreateVertexBufferSignature = "40 55 56 57 41 57 48 83 EC 28";
@@ -1451,6 +1463,15 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
     private Matrix4x4 currentWorldView;
     private Matrix4x4 previousWorldView;
     private uint preparedFrame = uint.MaxValue;
+    private uint firstSubmittedFrame = uint.MaxValue;
+    private uint lastSubmittedFrame = uint.MaxValue;
+    private long submissionCount;
+    private long historyResetSubmissionCount;
+    private long temporalAdvanceSubmissionCount;
+    private long duplicateFrameSubmissionCount;
+    private Matrix4x4 preparedCurrentWorldView;
+    private Matrix4x4 preparedPreviousWorldView;
+    private bool preparedHistoryReset;
     private bool resetHistory = true;
     private bool removed;
 
@@ -1490,6 +1511,9 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
                 return false;
             if (resetHistory)
                 previousWorldView = currentWorldView;
+            preparedCurrentWorldView = currentWorldView;
+            preparedPreviousWorldView = previousWorldView;
+            preparedHistoryReset = resetHistory;
             NativeGeometrySubmissionBackend.WriteWorldConstant(
                 WorldConstant,
                 currentWorldView,
@@ -1506,9 +1530,35 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
         {
             if (preparedFrame != frame)
                 return;
+            if (lastSubmittedFrame == frame)
+                duplicateFrameSubmissionCount++;
+            if (firstSubmittedFrame == uint.MaxValue)
+                firstSubmittedFrame = frame;
+            lastSubmittedFrame = frame;
+            submissionCount++;
+            if (preparedHistoryReset)
+                historyResetSubmissionCount++;
+            else if (preparedCurrentWorldView != preparedPreviousWorldView)
+                temporalAdvanceSubmissionCount++;
             previousWorldView = currentWorldView;
             resetHistory = false;
         }
+    }
+
+    internal NativeRigidInstanceTelemetry GetTelemetry()
+    {
+        lock (stateLock)
+            return new NativeRigidInstanceTelemetry(
+                submissionCount,
+                historyResetSubmissionCount,
+                temporalAdvanceSubmissionCount,
+                duplicateFrameSubmissionCount,
+                firstSubmittedFrame,
+                lastSubmittedFrame,
+                preparedCurrentWorldView,
+                preparedPreviousWorldView,
+                removed
+            );
     }
 
     internal void MarkRemoved()

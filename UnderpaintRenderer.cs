@@ -55,6 +55,15 @@ public sealed class UnderpaintRenderer : IDisposable
         }
     }
 
+    internal void BeginNativeGeometryDrawCapture(NativeGeometry geometry) =>
+        backend.BeginNativeGeometryDrawCapture(
+            geometry.VertexBufferResource,
+            geometry.IndexBufferResource
+        );
+
+    internal void CompleteNativeGeometryDrawCapture(string reason) =>
+        backend.CompleteNativeGeometryDrawCapture(reason);
+
     internal void CancelNativeGeometrySubmission(string reason = "cancelled")
     {
         nativeGeometryBackend?.CancelStandalone();
