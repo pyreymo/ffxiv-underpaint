@@ -51,7 +51,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private const uint StandaloneMaterialFileType = 0x6D74726C;
     private const uint StandaloneMaterialPathHash = 0x56D3AB97;
     private const uint InstanceParameterCrc = 0x20A30B34;
+    private const uint ModelParameterCrc = 0x4E0A5472;
+    private const uint DecalColorCrc = 0x5B0F708C;
+    private const uint TableSamplerCrc = 0x2005679F;
     private const int InstanceParameterSize = 176;
+    private const int VectorConstantSize = 16;
     private const uint SupportedMainPassMask = 0x01000000;
     private const uint SupportedAuxiliaryPassMask = 0x00C00000;
     private const uint SupportedAuxiliaryViewMask = 0x00000003;
@@ -118,6 +122,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private readonly HashSet<NativeRigidInstance> rigidInstances = [];
     private readonly List<NativeRigidInstance> retiredRigidInstances = [];
     private ConstantBuffer* standaloneInstanceConstant;
+    private ConstantBuffer* standaloneModelConstant;
+    private ConstantBuffer* standaloneDecalConstant;
+    private Texture* standaloneColorTableTexture;
     private MaterialResourceHandle* standaloneMaterialResource;
     private uint standaloneMaterialConstantId = uint.MaxValue;
     private bool disposed;
@@ -384,6 +391,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
         expandPassesHook.Disable();
         pushBackCommandHook.Disable();
+        ReleaseNativeResource(ref standaloneColorTableTexture);
+        ReleaseNativeResource(ref standaloneDecalConstant);
+        ReleaseNativeResource(ref standaloneModelConstant);
         ReleaseNativeResource(ref standaloneInstanceConstant);
         ReleaseStandaloneMaterial();
         lock (stateLock)
@@ -745,8 +755,22 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             InstanceParameterCrc,
             InstanceParameterSize
         );
+        var modelConstantId = FindShaderConstantId(
+            targetShaderPackage,
+            ModelParameterCrc,
+            VectorConstantSize
+        );
+        var decalConstantId = FindShaderConstantId(
+            targetShaderPackage,
+            DecalColorCrc,
+            VectorConstantSize
+        );
+        var tableSamplerId = FindShaderSamplerId(targetShaderPackage, TableSamplerCrc);
         EnsureStandaloneConstants();
         WriteDefaultInstanceConstant(standaloneInstanceConstant);
+        WriteVectorConstant(standaloneModelConstant, new Vector4(1, 0, 0, 0));
+        WriteVectorConstant(standaloneDecalConstant, Vector4.One);
+        EnsureStandaloneColorTable();
         if (worldConstant == null)
             throw new InvalidOperationException("The native instance has no world constant.");
 
@@ -785,7 +809,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     "The current render thread has no graphics context."
                 );
             var contextBytes = (byte*)context;
-            using var contextState = new NativeContextStateScope(contextBytes, targetMaterial);
+            using var contextState = new NativeContextStateScope(
+                contextBytes,
+                targetMaterial,
+                tableSamplerId
+            );
             var onRenderMaterialResult = (nint)
                 ((ModelRenderer*)modelRenderer)->OnRenderMaterial(
                     (ModelRenderer.OnRenderMaterialParams2*)copiedMaterialParams,
@@ -810,9 +838,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     BuildShaderSelectionProbe(contextBytes, copiedShaderSelection, shaderDescriptor)
                 );
-            instance.RecordSelectedBindingMap(
-                FormatSelectedBindingMap(targetShaderPackage, contextBytes, shaderDescriptor)
-            );
             var ownedPassFlags = *(uint*)(copiedMaterialParams + 0x40);
             if (
                 (ownedPassFlags & 0x201) != 0
@@ -832,6 +857,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     "The material helper did not bind the owned material constant."
                 );
             contextState.SetConstant(instanceConstantId, standaloneInstanceConstant);
+            contextState.SetConstant(modelConstantId, standaloneModelConstant);
+            contextState.SetConstant(decalConstantId, standaloneDecalConstant);
+            contextState.SetTexture(tableSamplerId, standaloneColorTableTexture);
+            instance.RecordSelectedBindingMap(
+                FormatSelectedBindingMap(targetShaderPackage, contextBytes, shaderDescriptor)
+            );
             SubmitCore(
                 modelRenderer,
                 (nint)copiedMaterialParams,
@@ -976,6 +1007,20 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
 
         throw new InvalidOperationException("The owned shader has no instance-parameter constant.");
+    }
+
+    private static uint FindShaderSamplerId(ShaderPackage* shaderPackage, uint crc)
+    {
+        if (shaderPackage == null || shaderPackage->Samplers == null)
+            throw new InvalidOperationException("The owned shader sampler table is unavailable.");
+        for (var index = 0; index < shaderPackage->SamplerCount; index++)
+        {
+            var sampler = shaderPackage->Samplers[index];
+            if (sampler.CRC == crc)
+                return sampler.Id;
+        }
+
+        throw new InvalidOperationException("The owned shader has no color-table sampler.");
     }
 
     private static string FormatSelectedBindingMap(
@@ -1241,12 +1286,24 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             SetContextConstant(context, id, values[id]);
     }
 
-    private static MaterialTextureState[] SaveMaterialTextures(byte* context, Material* material)
+    private static MaterialTextureState[] SaveMaterialTextures(
+        byte* context,
+        Material* material,
+        uint additionalId
+    )
     {
-        var states = new List<MaterialTextureState>(material->TextureCount);
-        for (var index = 0; index < material->TextureCount; index++)
+        var ids = new HashSet<uint>();
+        if (material != null)
         {
-            var id = material->Textures[index].Id;
+            for (var index = 0; index < material->TextureCount; index++)
+                ids.Add(material->Textures[index].Id);
+        }
+        if (additionalId != uint.MaxValue)
+            ids.Add(additionalId);
+
+        var states = new List<MaterialTextureState>(ids.Count);
+        foreach (var id in ids)
+        {
             if (id == uint.MaxValue)
                 continue;
             var slot = context + 0x1140 + id * 24;
@@ -1262,8 +1319,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         foreach (var state in states)
         {
             var slot = context + 0x1140 + state.Id * 24;
-            *(nint*)slot = state.Resource;
-            *(nint*)(slot + 8) = state.Sampler;
+            *(nint*)slot = state.Unknown;
+            *(nint*)(slot + 8) = state.Texture;
             *(uint*)(slot + 16) = state.Flags;
         }
     }
@@ -1285,8 +1342,29 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
         if (standaloneInstanceConstant == null)
             standaloneInstanceConstant = device->CreateConstantBuffer(InstanceParameterSize, 2, 0);
-        if (standaloneInstanceConstant == null)
+        if (standaloneModelConstant == null)
+            standaloneModelConstant = device->CreateConstantBuffer(VectorConstantSize, 2, 0);
+        if (standaloneDecalConstant == null)
+            standaloneDecalConstant = device->CreateConstantBuffer(VectorConstantSize, 2, 0);
+        if (
+            standaloneInstanceConstant == null
+            || standaloneModelConstant == null
+            || standaloneDecalConstant == null
+        )
             throw new InvalidOperationException("The game rejected a standalone constant buffer.");
+    }
+
+    private void EnsureStandaloneColorTable()
+    {
+        if (standaloneColorTableTexture != null)
+            return;
+        if (standaloneMaterialResource == null || !standaloneMaterialResource->HasColorTable)
+            throw new InvalidOperationException("The owned material has no color table.");
+        standaloneColorTableTexture = standaloneMaterialResource->PrepareColorTable(0, 0);
+        if (standaloneColorTableTexture == null)
+            throw new InvalidOperationException(
+                "The game rejected the owned material color table."
+            );
     }
 
     private static void WriteDefaultInstanceConstant(ConstantBuffer* constant)
@@ -1305,6 +1383,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         values[3] = Vector4.One;
         values[4] = new Vector4(0, 2, 0, 1);
         values[10] = new Vector4(0, 1, 0, 0);
+    }
+
+    private static void WriteVectorConstant(ConstantBuffer* constant, Vector4 value)
+    {
+        var target = constant->LoadSourcePointer(0, VectorConstantSize);
+        if (target == null)
+            throw new InvalidOperationException("The game did not expose vector-constant storage.");
+        *(Vector4*)target = value;
     }
 
     internal static void WriteWorldConstant(
@@ -1335,6 +1421,13 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     }
 
     internal static void ReleaseNativeResource(ref ConstantBuffer* resource)
+    {
+        var value = (nint)resource;
+        resource = null;
+        ReleaseNativeResource(ref value);
+    }
+
+    internal static void ReleaseNativeResource(ref Texture* resource)
     {
         var value = (nint)resource;
         resource = null;
@@ -1384,7 +1477,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         private readonly uint rasterizerState;
         private bool disposed;
 
-        public NativeContextStateScope(byte* context, Material* material = null)
+        public NativeContextStateScope(
+            byte* context,
+            Material* material = null,
+            uint additionalTextureId = uint.MaxValue
+        )
         {
             this.context = context;
             vertexShader = *(nint*)(context + 0x878);
@@ -1395,7 +1492,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             for (var index = 0; index < streams.Length; index++)
                 streams[index] = *(ulong*)(context + 0x8C0 + index * 8);
             constants = SaveConstants(context);
-            textures = material == null ? [] : SaveMaterialTextures(context, material);
+            textures = SaveMaterialTextures(context, material, additionalTextureId);
             rasterizerState = *(uint*)(context + 0x874);
         }
 
@@ -1419,6 +1516,13 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         public void SetConstant(uint id, ConstantBuffer* constant) =>
             SetContextConstant(context, id, (nint)constant);
 
+        public void SetTexture(uint id, Texture* texture)
+        {
+            var slot = context + 0x1140 + id * 24;
+            *(nint*)slot = 0;
+            *(nint*)(slot + 8) = (nint)texture;
+        }
+
         public void Dispose()
         {
             if (disposed)
@@ -1439,8 +1543,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
     private readonly record struct MaterialTextureState(
         uint Id,
-        nint Resource,
-        nint Sampler,
+        nint Unknown,
+        nint Texture,
         uint Flags
     );
 
