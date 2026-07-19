@@ -39,14 +39,13 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private const string ApplyMaterialSignature =
         "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 41 54 41 56 41 57 48 83 EC 20 44 8B 05 ?? ?? ?? ?? 48 8B F2 65 48 8B 04 25 ?? ?? ?? ?? 48 8B D9";
     private const uint ImmutableBufferFlags = 0x804;
-    private const int Stream0Stride = 20;
-    private const int Stream1Stride = 24;
+    private const int Stream0Stride = 8;
+    private const int Stream1Stride = 16;
     private const string StandaloneMaterialPath =
-        "chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl";
+        "bgcommon/hou/indoor/general/0517/material/fun_b0_m0517_0a.mtrl";
     private const uint StandaloneMaterialFileType = 0x6D74726C;
-    private const uint StandaloneMaterialPathHash = 0x56D3AB97;
-    private const uint InstanceParameterCrc = 0x20A30B34;
-    private const int InstanceParameterSize = 176;
+    private const uint StandaloneMaterialPathHash = 0x5D6A7B3E;
+    private const int ModelObjectParameterSize = 176;
     private const uint SupportedMainPassMask = 0x01000000;
     private const uint SupportedAuxiliaryPassMask = 0x00C00000;
     private const uint SupportedAuxiliaryViewMask = 0x00000003;
@@ -58,30 +57,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     [
         0,
         0,
-        0x13,
+        0x1C,
         0,
-        0,
-        12,
-        0x3C,
-        1,
-        0,
-        16,
-        0x3C,
-        7,
         1,
         0,
         0x1C,
         2,
         1,
         8,
-        0x24,
-        15,
-        1,
-        12,
-        0x24,
-        3,
-        1,
-        16,
         0x1C,
         8,
     ];
@@ -103,7 +86,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private readonly HashSet<NativeGeometry> geometries = [];
     private readonly HashSet<NativeRigidInstance> rigidInstances = [];
     private readonly List<NativeRigidInstance> retiredRigidInstances = [];
-    private ConstantBuffer* standaloneInstanceConstant;
+    private ConstantBuffer* standaloneObjectConstant;
     private MaterialResourceHandle* standaloneMaterialResource;
     private uint standaloneMaterialConstantId = uint.MaxValue;
     private bool disposed;
@@ -313,7 +296,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
 
         expandPassesHook.Disable();
-        ReleaseNativeResource(ref standaloneInstanceConstant);
+        ReleaseNativeResource(ref standaloneObjectConstant);
         ReleaseStandaloneMaterial();
         lock (stateLock)
         {
@@ -474,20 +457,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
         var threadLocals = ThreadLocals.ThreadLocalInstance();
         var context = threadLocals == null ? null : threadLocals->GraphicsKernelContext;
-        var contextBytes = (byte*)context;
         var view = context == null ? -1 : context->ViewIndex;
         var subView = context == null ? -1 : context->CurrentSubViewIndex;
-        var sourceStream0Stride = context == null ? 0 : *(byte*)(contextBytes + 0x8C8);
         var modelParams = *(nint*)materialParameters;
-        var sourceInstanceConstant =
-            modelParams == 0 ? null : *(ConstantBuffer**)(modelParams + 0x10);
         if (
             context == null
             || view != MainRenderViewIndex
             || subView != MainRendezvousSubViewIndex
-            || sourceInstanceConstant == null
-            || *(int*)((byte*)sourceInstanceConstant + 0x20) != InstanceParameterSize
-            || sourceStream0Stride != Stream0Stride
+            || modelParams == 0
         )
             return result;
 
@@ -625,14 +602,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             targetShaderPackageResource == null ? null : targetShaderPackageResource->ShaderPackage;
         if (targetMaterial == null || targetShaderPackage == null)
             throw new InvalidOperationException("The owned native material is not ready.");
-        var instanceConstantId = FindShaderConstantId(
-            targetShaderPackage,
-            InstanceParameterCrc,
-            InstanceParameterSize
-        );
-
         EnsureStandaloneConstants();
-        WriteDefaultInstanceConstant(standaloneInstanceConstant);
+        WriteDefaultObjectConstant(standaloneObjectConstant);
         if (worldConstant == null)
             throw new InvalidOperationException("The native instance has no world constant.");
 
@@ -662,7 +633,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     "The native shader-selection constructor failed."
                 );
             *(nint*)copiedModelParams = (nint)ownedModel;
-            *(nint*)(copiedModelParams + 0x10) = (nint)standaloneInstanceConstant;
+            *(nint*)(copiedModelParams + 0x10) = (nint)standaloneObjectConstant;
             *(nint*)copiedMaterialParams = (nint)copiedModelParams;
             *(nint*)(copiedMaterialParams + 0x30) = (nint)copiedShaderSelection;
             CopyCanonicalSceneKeys(modelRenderer, copiedShaderSelection, out _, out _);
@@ -689,7 +660,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     "The material helper did not bind the owned material constant."
                 );
-            contextState.SetConstant(instanceConstantId, standaloneInstanceConstant);
             SubmitCore(
                 modelRenderer,
                 (nint)copiedMaterialParams,
@@ -713,7 +683,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var resourceManager = ResourceManager.Instance();
         if (resourceManager == null)
             throw new InvalidOperationException("The native resource manager is not available.");
-        var category = ResourceCategory.Chara;
+        var category = ResourceCategory.BgCommon;
         var fileType = StandaloneMaterialFileType;
         var pathHash = StandaloneMaterialPathHash;
         var resource = (MaterialResourceHandle*)
@@ -814,24 +784,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         return uint.MaxValue;
     }
 
-    private static uint FindShaderConstantId(ShaderPackage* shaderPackage, uint crc, int byteSize)
-    {
-        if (shaderPackage == null || shaderPackage->Constants == null)
-            throw new InvalidOperationException("The owned shader constant table is unavailable.");
-        for (var index = 0; index < shaderPackage->ConstantCount; index++)
-        {
-            var constant = shaderPackage->Constants[index];
-            if (constant.CRC != crc)
-                continue;
-            if (constant.Size * 16 != byteSize)
-                throw new InvalidOperationException(
-                    "The owned shader has an unexpected instance-constant size."
-                );
-            return constant.Id;
-        }
-        throw new InvalidOperationException("The owned shader has no instance-parameter constant.");
-    }
-
     private static nint[] SaveConstants(byte* context)
     {
         const int constantSlotCount = (0x1140 - 0x940) / sizeof(ulong);
@@ -889,21 +841,21 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         if (device == null)
             throw new InvalidOperationException("The native graphics device is not available.");
 
-        if (standaloneInstanceConstant == null)
-            standaloneInstanceConstant = device->CreateConstantBuffer(InstanceParameterSize, 2, 0);
-        if (standaloneInstanceConstant == null)
+        if (standaloneObjectConstant == null)
+            standaloneObjectConstant = device->CreateConstantBuffer(ModelObjectParameterSize, 2, 0);
+        if (standaloneObjectConstant == null)
             throw new InvalidOperationException("The game rejected a standalone constant buffer.");
     }
 
-    private static void WriteDefaultInstanceConstant(ConstantBuffer* constant)
+    private static void WriteDefaultObjectConstant(ConstantBuffer* constant)
     {
-        var target = constant->LoadSourcePointer(0, InstanceParameterSize);
+        var target = constant->LoadSourcePointer(0, ModelObjectParameterSize);
         if (target == null)
             throw new InvalidOperationException(
                 "The game did not expose instance-constant storage."
             );
 
-        NativeMemory.Clear(target, InstanceParameterSize);
+        NativeMemory.Clear(target, ModelObjectParameterSize);
         var values = (Vector4*)target;
         values[0] = Vector4.One;
         values[1] = Vector4.One;
@@ -950,9 +902,10 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private readonly struct NativeStream0Vertex(Vector3 position)
     {
-        public readonly Vector3 Position = position;
-        public readonly uint Attribute1 = 0x000000FF;
-        public readonly uint Attribute7 = 0;
+        public readonly Half X = (Half)position.X;
+        public readonly Half Y = (Half)position.Y;
+        public readonly Half Z = (Half)position.Z;
+        public readonly Half W = (Half)1;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -960,23 +913,24 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     {
         public NativeStream1Vertex(Vector2 textureCoordinate)
         {
-            // The test material's 20/24 declaration consumes a half4 normal, packed
-            // bitangent, vertex color and half4 UV. Keep every supplied semantic valid
-            // even though this first backend only exposes position and primary UV.
-            Attribute2 = 0x00003C0000000000;
-            Attribute15 = 0x00800080;
-            Attribute3 = uint.MaxValue;
-            Attribute8 =
-                BitConverter.HalfToUInt16Bits((Half)textureCoordinate.X)
-                | ((ulong)BitConverter.HalfToUInt16Bits((Half)textureCoordinate.Y) << 16)
-                | (0xBC00UL << 32)
-                | (0x4000UL << 48);
+            NormalX = (Half)0;
+            NormalY = (Half)0;
+            NormalZ = (Half)1;
+            NormalW = (Half)0;
+            TextureX = (Half)textureCoordinate.X;
+            TextureY = (Half)textureCoordinate.Y;
+            TextureZ = (Half)0;
+            TextureW = (Half)1;
         }
 
-        public readonly ulong Attribute2;
-        public readonly uint Attribute15;
-        public readonly uint Attribute3;
-        public readonly ulong Attribute8;
+        public readonly Half NormalX;
+        public readonly Half NormalY;
+        public readonly Half NormalZ;
+        public readonly Half NormalW;
+        public readonly Half TextureX;
+        public readonly Half TextureY;
+        public readonly Half TextureZ;
+        public readonly Half TextureW;
     }
 
     private sealed class NativeContextStateScope : IDisposable
