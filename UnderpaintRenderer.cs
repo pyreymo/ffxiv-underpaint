@@ -33,6 +33,11 @@ public sealed class UnderpaintRenderer : IDisposable
         NativePassBuilder submit
     ) => NativeGeometryBackend.Submit(modelRenderer, materialParameters, geometry, submit);
 
+    internal NativeRigidInstance CreateNativeRigidInstance(
+        NativeGeometry geometry,
+        System.Numerics.Matrix4x4 currentWorldView
+    ) => NativeGeometryBackend.CreateRigidInstance(geometry, currentWorldView);
+
     internal void ArmNativeGeometrySubmission(NativeGeometry geometry)
     {
         backend.BeginNativeGeometryDrawCapture(

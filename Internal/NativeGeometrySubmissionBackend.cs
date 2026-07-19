@@ -4,6 +4,7 @@ using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
+using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.FFXIV.Client.System.Resource;
 using FFXIVClientStructs.FFXIV.Client.System.Resource.Handle;
 using FFXIVClientStructs.Interop;
@@ -74,7 +75,11 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     bool MaterialLoaded,
     uint SourceMaterialFlags,
     uint OwnedMaterialFlags,
-    uint SourceMaterialIndex,
+    uint OwnedMaterialIndex,
+    uint SourcePassMask,
+    uint SourceAuxiliaryViewMask,
+    int RendererSceneKeyCount,
+    int SubViewSceneKeyCount,
     uint OwnedMaterialConstantId,
     NativeGeometrySubmissionResult Submission
 );
@@ -164,6 +169,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private readonly Hook<NativePassBuilder> expandPassesHook;
     private readonly IPluginLog log;
     private readonly HashSet<NativeGeometry> geometries = [];
+    private readonly HashSet<NativeRigidInstance> rigidInstances = [];
+    private readonly List<NativeRigidInstance> retiredRigidInstances = [];
     private NativeGeometry? armedStandaloneGeometry;
     private NativeGeometryStandaloneSubmission? completedStandaloneSubmission;
     private ConstantBuffer* standaloneModelConstant;
@@ -172,6 +179,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private string? standaloneMaterialPath;
     private uint standaloneMaterialConstantId = uint.MaxValue;
     private bool disposed;
+    private RendezvousIdentity lastRigidRendezvous;
 
     private delegate nint CreateVertexBufferDelegate(
         Device* device,
@@ -317,6 +325,28 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
     }
 
+    public NativeRigidInstance CreateRigidInstance(
+        NativeGeometry geometry,
+        Matrix4x4 currentWorldView
+    )
+    {
+        lock (stateLock)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (geometry.Owner != this || geometry.IsDisposed)
+                throw new ObjectDisposedException(nameof(geometry));
+            var device = Device.Instance();
+            var worldConstant = device == null ? null : device->CreateConstantBuffer(128, 2, 0);
+            if (worldConstant == null)
+                throw new InvalidOperationException(
+                    "The game rejected a rigid-instance world constant buffer."
+                );
+            var instance = new NativeRigidInstance(this, geometry, worldConstant, currentWorldView);
+            rigidInstances.Add(instance);
+            return instance;
+        }
+    }
+
     public NativeGeometrySubmissionResult Submit(
         nint modelRenderer,
         nint materialParameters,
@@ -343,7 +373,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         NativeGeometry geometry,
         NativePassBuilder submit,
         uint constantId,
-        ConstantBuffer* constant
+        ConstantBuffer* constant,
+        NativeContextStateScope? existingState = null
     )
     {
         var threadLocals = ThreadLocals.ThreadLocalInstance();
@@ -354,27 +385,15 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             );
 
         var contextBytes = (byte*)context;
-        var savedIndexBuffer = *(nint*)(contextBytes + 0x888);
-        var savedVertexDeclaration = *(nint*)(contextBytes + 0x890);
-        Span<ulong> savedStreams = stackalloc ulong[4];
-        for (var index = 0; index < savedStreams.Length; index++)
-            savedStreams[index] = *(ulong*)(contextBytes + 0x8C0 + index * 8);
-        var savedConstant = GetContextConstant(contextBytes, constantId);
+        var state = existingState ?? new NativeContextStateScope(contextBytes);
+        var ownsState = existingState == null;
 
         nint builderResult;
         submitting = true;
         try
         {
-            *(nint*)(contextBytes + 0x888) = geometry.IndexBuffer;
-            *(nint*)(contextBytes + 0x890) = geometry.VertexDeclaration;
-            *(nint*)(contextBytes + 0x8C0) = geometry.VertexBuffer;
-            *(ulong*)(contextBytes + 0x8C8) = PackStreamBinding(0, Stream0Stride);
-            *(nint*)(contextBytes + 0x8D0) = geometry.VertexBuffer;
-            *(ulong*)(contextBytes + 0x8D8) = PackStreamBinding(
-                geometry.Stream1Offset,
-                Stream1Stride
-            );
-            SetContextConstant(contextBytes, constantId, (nint)constant);
+            state.InstallGeometry(geometry);
+            state.SetConstant(constantId, constant);
             builderResult = submit(
                 modelRenderer,
                 materialParameters,
@@ -385,12 +404,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
         finally
         {
-            *(nint*)(contextBytes + 0x888) = savedIndexBuffer;
-            *(nint*)(contextBytes + 0x890) = savedVertexDeclaration;
-            for (var index = 0; index < savedStreams.Length; index++)
-                *(ulong*)(contextBytes + 0x8C0 + index * 8) = savedStreams[index];
-            SetContextConstant(contextBytes, constantId, savedConstant);
             submitting = false;
+            if (ownsState)
+                state.Dispose();
         }
 
         return new NativeGeometrySubmissionResult(
@@ -423,6 +439,10 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         ReleaseStandaloneMaterial();
         lock (stateLock)
         {
+            foreach (var instance in rigidInstances.Concat(retiredRigidInstances).ToArray())
+                instance.DisposeCore();
+            rigidInstances.Clear();
+            retiredRigidInstances.Clear();
             foreach (var geometry in geometries.ToArray())
                 geometry.DisposeCore();
             geometries.Clear();
@@ -446,6 +466,19 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             if (!geometries.Remove(geometry))
                 return;
             geometry.DisposeCore();
+        }
+    }
+
+    internal void Remove(NativeRigidInstance instance)
+    {
+        lock (stateLock)
+        {
+            if (!rigidInstances.Remove(instance))
+                return;
+            instance.MarkRemoved();
+            // Native commands retain these resources beyond builder return. Keep the allocation
+            // alive until backend teardown until a confirmed render-frame completion fence exists.
+            retiredRigidInstances.Add(instance);
         }
     }
 
@@ -598,122 +631,205 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             geometry = armedStandaloneGeometry;
             armedStandaloneGeometry = null;
         }
-        if (geometry == null)
-            return result;
-
-        try
+        if (geometry != null)
         {
-            var submission = SubmitStandaloneWorld(
-                modelRenderer,
-                materialParameters,
-                geometry,
-                expandPassesHook.Original,
-                worldConstantId,
-                out var shaderSelection,
-                out var offsetShaderSelection,
-                out var modelTypeSceneKey,
-                out var donorModelTypeValue,
-                out var offsetModelTypeValue,
-                out var ownedMaterial,
-                out var ownedMaterialResource,
-                out var ownedShaderPackage,
-                out var materialLoaded,
-                out var sourceMaterialFlags,
-                out var ownedMaterialFlags,
-                out var sourceMaterialIndex
-            );
-            var offsetModelConstant = ProbeConstantBuffer((nint)standaloneModelConstant);
-            var offsetWorldConstant = ProbeConstantBuffer((nint)standaloneWorldConstant);
-            lock (stateLock)
+            try
             {
-                completedStandaloneSubmission = new NativeGeometryStandaloneSubmission(
-                    true,
-                    null,
+                var submission = SubmitStandaloneWorld(
                     modelRenderer,
                     materialParameters,
-                    model,
-                    view,
-                    subView,
-                    sourceVertexBuffer,
-                    sourceIndexBuffer,
-                    sourceVertexDeclaration,
-                    sourceStream0Stride,
-                    sourceStream1Stride,
-                    vertexCount,
-                    startIndex,
-                    indexCount,
-                    modelParams,
-                    renderModelCallback,
-                    renderModelCallbackFunction,
-                    modelField38,
-                    onRenderModelConstant,
+                    geometry,
+                    expandPassesHook.Original,
                     worldConstantId,
-                    worldConstant,
-                    instancingConstantId,
-                    instancingConstant,
-                    previousInstancingConstantId,
-                    previousInstancingConstant,
-                    offsetModelConstant,
-                    offsetWorldConstant,
-                    default,
-                    default,
-                    shaderSelection,
-                    offsetShaderSelection,
-                    modelTypeSceneKey,
-                    donorModelTypeValue,
-                    offsetModelTypeValue,
-                    ownedMaterial,
-                    ownedMaterialResource,
-                    ownedShaderPackage,
-                    standaloneMaterialPath,
-                    false,
-                    materialLoaded,
-                    sourceMaterialFlags,
-                    ownedMaterialFlags,
-                    sourceMaterialIndex,
-                    standaloneMaterialConstantId,
-                    submission
+                    null,
+                    out var shaderSelection,
+                    out var offsetShaderSelection,
+                    out var modelTypeSceneKey,
+                    out var donorModelTypeValue,
+                    out var offsetModelTypeValue,
+                    out var ownedMaterial,
+                    out var ownedMaterialResource,
+                    out var ownedShaderPackage,
+                    out var materialLoaded,
+                    out var sourceMaterialFlags,
+                    out var ownedMaterialFlags,
+                    out var ownedMaterialIndex,
+                    out var sourcePassMask,
+                    out var sourceAuxiliaryViewMask,
+                    out var rendererSceneKeyCount,
+                    out var subViewSceneKeyCount
                 );
-            }
-        }
-        catch (Exception exception)
-        {
-            log.Error(exception, "[Underpaint] Standalone native geometry submission failed.");
-            lock (stateLock)
-            {
-                completedStandaloneSubmission = new NativeGeometryStandaloneSubmission
+                var offsetModelConstant = ProbeConstantBuffer((nint)standaloneModelConstant);
+                var offsetWorldConstant = ProbeConstantBuffer((nint)standaloneWorldConstant);
+                lock (stateLock)
                 {
-                    Succeeded = false,
-                    Failure = exception.Message,
-                    ModelRenderer = modelRenderer,
-                    MaterialParameters = materialParameters,
-                    Model = model,
-                    View = view,
-                    SubView = subView,
-                    SourceVertexBuffer = sourceVertexBuffer,
-                    SourceIndexBuffer = sourceIndexBuffer,
-                    SourceVertexDeclaration = sourceVertexDeclaration,
-                    SourceStream0Stride = sourceStream0Stride,
-                    SourceStream1Stride = sourceStream1Stride,
-                    SourceVertexCount = vertexCount,
-                    SourceStartIndex = startIndex,
-                    SourceIndexCount = indexCount,
-                    ModelParams = modelParams,
-                    RenderModelCallback = renderModelCallback,
-                    RenderModelCallbackFunction = renderModelCallbackFunction,
-                    ModelField38 = modelField38,
-                    OnRenderModelConstant = onRenderModelConstant,
-                    WorldConstantId = worldConstantId,
-                    WorldConstant = worldConstant,
-                    InstancingConstantId = instancingConstantId,
-                    InstancingConstant = instancingConstant,
-                    PreviousInstancingConstantId = previousInstancingConstantId,
-                    PreviousInstancingConstant = previousInstancingConstant,
-                };
+                    completedStandaloneSubmission = new NativeGeometryStandaloneSubmission(
+                        true,
+                        null,
+                        modelRenderer,
+                        materialParameters,
+                        model,
+                        view,
+                        subView,
+                        sourceVertexBuffer,
+                        sourceIndexBuffer,
+                        sourceVertexDeclaration,
+                        sourceStream0Stride,
+                        sourceStream1Stride,
+                        vertexCount,
+                        startIndex,
+                        indexCount,
+                        modelParams,
+                        renderModelCallback,
+                        renderModelCallbackFunction,
+                        modelField38,
+                        onRenderModelConstant,
+                        worldConstantId,
+                        worldConstant,
+                        instancingConstantId,
+                        instancingConstant,
+                        previousInstancingConstantId,
+                        previousInstancingConstant,
+                        offsetModelConstant,
+                        offsetWorldConstant,
+                        default,
+                        default,
+                        shaderSelection,
+                        offsetShaderSelection,
+                        modelTypeSceneKey,
+                        donorModelTypeValue,
+                        offsetModelTypeValue,
+                        ownedMaterial,
+                        ownedMaterialResource,
+                        ownedShaderPackage,
+                        standaloneMaterialPath,
+                        false,
+                        materialLoaded,
+                        sourceMaterialFlags,
+                        ownedMaterialFlags,
+                        ownedMaterialIndex,
+                        sourcePassMask,
+                        sourceAuxiliaryViewMask,
+                        rendererSceneKeyCount,
+                        subViewSceneKeyCount,
+                        standaloneMaterialConstantId,
+                        submission
+                    );
+                }
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, "[Underpaint] Standalone native geometry submission failed.");
+                lock (stateLock)
+                {
+                    completedStandaloneSubmission = new NativeGeometryStandaloneSubmission
+                    {
+                        Succeeded = false,
+                        Failure = exception.Message,
+                        ModelRenderer = modelRenderer,
+                        MaterialParameters = materialParameters,
+                        Model = model,
+                        View = view,
+                        SubView = subView,
+                        SourceVertexBuffer = sourceVertexBuffer,
+                        SourceIndexBuffer = sourceIndexBuffer,
+                        SourceVertexDeclaration = sourceVertexDeclaration,
+                        SourceStream0Stride = sourceStream0Stride,
+                        SourceStream1Stride = sourceStream1Stride,
+                        SourceVertexCount = vertexCount,
+                        SourceStartIndex = startIndex,
+                        SourceIndexCount = indexCount,
+                        ModelParams = modelParams,
+                        RenderModelCallback = renderModelCallback,
+                        RenderModelCallbackFunction = renderModelCallbackFunction,
+                        ModelField38 = modelField38,
+                        OnRenderModelConstant = onRenderModelConstant,
+                        WorldConstantId = worldConstantId,
+                        WorldConstant = worldConstant,
+                        InstancingConstantId = instancingConstantId,
+                        InstancingConstant = instancingConstant,
+                        PreviousInstancingConstantId = previousInstancingConstantId,
+                        PreviousInstancingConstant = previousInstancingConstant,
+                    };
+                }
             }
         }
 
+        SubmitRigidInstancesAtRendezvous(
+            modelRenderer,
+            materialParameters,
+            expandPassesHook.Original,
+            worldConstantId,
+            (nint)context,
+            view,
+            subView
+        );
+
         return result;
+    }
+
+    private void SubmitRigidInstancesAtRendezvous(
+        nint modelRenderer,
+        nint materialParameters,
+        NativePassBuilder submit,
+        uint worldConstantId,
+        nint context,
+        int view,
+        int subView
+    )
+    {
+        NativeRigidInstance[] instances;
+        uint frame;
+        lock (stateLock)
+        {
+            if (rigidInstances.Count == 0)
+                return;
+            var framework = Framework.Instance();
+            frame = framework == null ? 0 : framework->FrameCounter;
+            var identity = new RendezvousIdentity(frame, context, view, subView);
+            if (identity == lastRigidRendezvous)
+                return;
+            lastRigidRendezvous = identity;
+            instances = rigidInstances.ToArray();
+        }
+
+        foreach (var instance in instances)
+        {
+            try
+            {
+                if (!instance.PrepareWorld(frame))
+                    continue;
+                SubmitStandaloneWorld(
+                    modelRenderer,
+                    materialParameters,
+                    instance.Geometry,
+                    submit,
+                    worldConstantId,
+                    instance.WorldConstant,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _
+                );
+                instance.MarkSubmitted(frame);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, "[Underpaint] Continuous native rigid submission failed.");
+            }
+        }
     }
 
     private static uint GetConstantId(nint modelRenderer, int wellKnownIndex) =>
@@ -734,6 +850,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         NativeGeometry geometry,
         NativePassBuilder submit,
         uint worldConstantId,
+        ConstantBuffer* worldConstantOverride,
         out nint shaderSelection,
         out nint offsetShaderSelection,
         out uint modelTypeSceneKey,
@@ -745,7 +862,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         out bool materialLoaded,
         out uint sourceMaterialFlags,
         out uint ownedMaterialFlags,
-        out uint sourceMaterialIndex
+        out uint ownedMaterialIndex,
+        out uint sourcePassMask,
+        out uint sourceAuxiliaryViewMask,
+        out int rendererSceneKeyCount,
+        out int subViewSceneKeyCount
     )
     {
         var modelParams = *(nint*)materialParameters;
@@ -761,18 +882,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             );
 
         shaderSelection = *(nint*)(materialParameters + 0x30);
-        if (shaderSelection == 0)
-            throw new InvalidOperationException(
-                "The native material parameters have no shader selection."
-            );
-        var shaderMetadata = *(nint*)(shaderSelection + 0x08);
-        var shaderValues = *(nint*)(shaderSelection + 0x10);
-        if (shaderMetadata == 0 || shaderValues == 0)
-            throw new InvalidOperationException("The shader selection is incomplete.");
-        var keyCount = *(uint*)(shaderMetadata + 0xEC);
-        var shaderKeys = *(nint*)(shaderMetadata + 0x130);
-        if (keyCount is 0 or > 256 || shaderKeys == 0)
-            throw new InvalidOperationException("The shader selection key table is invalid.");
 
         var nonSkinnedSceneKey = (byte*)modelRenderer + 0x68;
         var skinnedSceneKey = nonSkinnedSceneKey + 0x10;
@@ -783,14 +892,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 "The model-type scene keys do not share a key CRC."
             );
 
-        donorModelTypeValue = TryGetSceneKeyValue(
-            shaderMetadata,
-            shaderValues,
-            modelTypeSceneKey,
-            out var sourceModelTypeValue
-        )
-            ? sourceModelTypeValue
-            : 0;
+        donorModelTypeValue = 0;
 
         materialLoaded = EnsureStandaloneMaterial();
         var targetMaterial = standaloneMaterialResource->Material;
@@ -805,7 +907,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
         EnsureStandaloneConstants();
         CopyConstant(modelConstant, standaloneModelConstant);
-        WriteStandaloneWorldConstant();
+        var ownedWorldConstant =
+            worldConstantOverride == null ? standaloneWorldConstant : worldConstantOverride;
+        if (worldConstantOverride == null)
+            WriteWorldConstant(
+                ownedWorldConstant,
+                Matrix4x4.CreateTranslation(0, 0, StandaloneViewDepth),
+                Matrix4x4.CreateTranslation(0, 0, StandaloneViewDepth)
+            );
 
         var copiedModelParams = stackalloc byte[0x20];
         var copiedMaterialParams = stackalloc byte[0x48];
@@ -813,10 +922,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         Buffer.MemoryCopy((void*)modelParams, copiedModelParams, 0x20, 0x20);
         Buffer.MemoryCopy((void*)materialParameters, copiedMaterialParams, 0x48, 0x48);
         sourceMaterialFlags = *(uint*)(copiedMaterialParams + 0x40);
-        sourceMaterialIndex = GetSourceMaterialIndex(copiedMaterialParams);
+        ownedMaterialIndex = 0;
+        sourcePassMask = *(uint*)(copiedMaterialParams + 0x38);
+        sourceAuxiliaryViewMask = *(uint*)(copiedMaterialParams + 0x44);
         NativeMemory.Clear(copiedMaterialParams + 0x10, 0x28);
+        *(uint*)(copiedMaterialParams + 0x38) = sourcePassMask;
+        *(uint*)(copiedMaterialParams + 0x3C) = 0;
         *(uint*)(copiedMaterialParams + 0x40) = 0;
-        *(uint*)(copiedMaterialParams + 0x44) = *(uint*)(copiedModelParams + 0x1C);
+        *(uint*)(copiedMaterialParams + 0x44) = sourceAuxiliaryViewMask;
         NativeMemory.Clear(copiedShaderSelection, 0x28);
         *(nint*)copiedShaderSelection = *(nint*)shaderSelection;
         initializeShaderSelectionHook.Original(copiedShaderSelection, (nint)targetShaderPackage);
@@ -834,7 +947,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             *(nint*)(copiedMaterialParams + 0x30) = (nint)copiedShaderSelection;
             offsetShaderSelection = (nint)copiedShaderSelection;
 
-            CopyMatchingSceneKeys(shaderMetadata, shaderValues, copiedShaderSelection);
+            CopyCanonicalSceneKeys(
+                modelRenderer,
+                copiedShaderSelection,
+                out rendererSceneKeyCount,
+                out subViewSceneKeyCount
+            );
             SetSceneKey(copiedShaderSelection, modelTypeSceneKey, offsetModelTypeValue);
 
             var context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
@@ -843,71 +961,36 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     "The current render thread has no graphics context."
                 );
             var contextBytes = (byte*)context;
-            var savedConstants = SaveConstants(contextBytes);
-            var savedTextures = SaveMaterialTextures(contextBytes, targetMaterial);
-            var savedRasterizerState = *(uint*)(contextBytes + 0x874);
-            try
-            {
-                ((ModelRenderer*)modelRenderer)->OnRenderMaterial(
-                    (ModelRenderer.OnRenderMaterialParams2*)copiedMaterialParams,
-                    targetMaterial,
-                    sourceMaterialIndex
+            using var contextState = new NativeContextStateScope(contextBytes, targetMaterial);
+            ((ModelRenderer*)modelRenderer)->OnRenderMaterial(
+                (ModelRenderer.OnRenderMaterialParams2*)copiedMaterialParams,
+                targetMaterial,
+                0
+            );
+            ownedMaterialFlags = *(uint*)(copiedMaterialParams + 0x40);
+            applyMaterialHook.Original(copiedShaderSelection, targetMaterial);
+            standaloneMaterialConstantId = FindBoundConstantId(
+                contextBytes,
+                targetMaterial->MaterialParameterCBuffer
+            );
+            if (standaloneMaterialConstantId == uint.MaxValue)
+                throw new InvalidOperationException(
+                    "The material helper did not bind the owned material constant."
                 );
-                ownedMaterialFlags = *(uint*)(copiedMaterialParams + 0x40);
-                applyMaterialHook.Original(copiedShaderSelection, targetMaterial);
-                standaloneMaterialConstantId = FindBoundConstantId(
-                    contextBytes,
-                    targetMaterial->MaterialParameterCBuffer
-                );
-                if (standaloneMaterialConstantId == uint.MaxValue)
-                    throw new InvalidOperationException(
-                        "The material helper did not bind the owned material constant."
-                    );
-                return SubmitCore(
-                    modelRenderer,
-                    (nint)copiedMaterialParams,
-                    geometry,
-                    submit,
-                    worldConstantId,
-                    standaloneWorldConstant
-                );
-            }
-            finally
-            {
-                *(uint*)(contextBytes + 0x874) = savedRasterizerState;
-                RestoreConstants(contextBytes, savedConstants);
-                RestoreMaterialTextures(contextBytes, savedTextures);
-            }
+            return SubmitCore(
+                modelRenderer,
+                (nint)copiedMaterialParams,
+                geometry,
+                submit,
+                worldConstantId,
+                ownedWorldConstant,
+                contextState
+            );
         }
         finally
         {
             destroyShaderSelectionHook.Original(copiedShaderSelection);
         }
-    }
-
-    private static uint GetSourceMaterialIndex(byte* materialParameters)
-    {
-        var modelResource = *(nint*)(materialParameters + 0x08);
-        var geometryIndex = *(ushort*)(materialParameters + 0x3C);
-        var geometryTable = modelResource == 0 ? 0 : *(nint*)(modelResource + 0xE8);
-        if (geometryTable == 0)
-            throw new InvalidOperationException("The native model resource has no geometry table.");
-        return *(ushort*)(geometryTable + geometryIndex * 0x24 + 0x08);
-    }
-
-    private static bool TryGetSceneKeyValue(nint metadata, nint values, uint key, out uint value)
-    {
-        var count = *(uint*)(metadata + 0xEC);
-        var keys = *(uint**)(metadata + 0x130);
-        for (var index = 0; index < count; index++)
-        {
-            if (keys[index] != key)
-                continue;
-            value = *(uint*)(values + index * sizeof(uint));
-            return true;
-        }
-        value = 0;
-        return false;
     }
 
     private bool EnsureStandaloneMaterial()
@@ -943,26 +1026,52 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         return true;
     }
 
-    private static void CopyMatchingSceneKeys(nint sourceMetadata, nint sourceValues, byte* target)
+    private static void CopyCanonicalSceneKeys(
+        nint modelRenderer,
+        byte* target,
+        out int rendererKeyCount,
+        out int subViewKeyCount
+    )
     {
-        var sourceCount = *(uint*)(sourceMetadata + 0xEC);
-        var sourceKeys = *(uint**)(sourceMetadata + 0x130);
         var targetMetadata = *(nint*)(target + 0x08);
         var targetValues = *(uint**)(target + 0x10);
         var targetCount = *(uint*)(targetMetadata + 0xEC);
         var targetKeys = *(uint**)(targetMetadata + 0x130);
-        if (sourceCount > 256 || targetCount > 256 || sourceKeys == null || targetKeys == null)
-            throw new InvalidOperationException("A shader scene-key table is invalid.");
+        if (targetCount > 256 || targetKeys == null || targetValues == null)
+            throw new InvalidOperationException("The owned shader scene-key table is invalid.");
+
+        rendererKeyCount = 0;
+        subViewKeyCount = 0;
+        var rendererKeys = (byte*)modelRenderer + 0x68;
+        var subViewKeys = (byte*)modelRenderer + 0x1A8;
         for (var targetIndex = 0; targetIndex < targetCount; targetIndex++)
         {
-            for (var sourceIndex = 0; sourceIndex < sourceCount; sourceIndex++)
+            var targetKey = targetKeys[targetIndex];
+            if (TryGetCanonicalKey(rendererKeys, 20, targetKey, out var value))
             {
-                if (targetKeys[targetIndex] != sourceKeys[sourceIndex])
-                    continue;
-                targetValues[targetIndex] = *(uint*)(sourceValues + sourceIndex * sizeof(uint));
-                break;
+                targetValues[targetIndex] = value;
+                rendererKeyCount++;
+            }
+            else if (TryGetCanonicalKey(subViewKeys, 5, targetKey, out value))
+            {
+                targetValues[targetIndex] = value;
+                subViewKeyCount++;
             }
         }
+    }
+
+    private static bool TryGetCanonicalKey(byte* keys, int count, uint targetKey, out uint value)
+    {
+        for (var index = 0; index < count; index++)
+        {
+            var entry = keys + index * 0x10;
+            if (*(uint*)(entry + 0x08) != targetKey)
+                continue;
+            value = *(uint*)(entry + 0x0C);
+            return true;
+        }
+        value = 0;
+        return false;
     }
 
     private static void SetSceneKey(byte* selection, uint key, uint value)
@@ -1060,15 +1169,18 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             throw new InvalidOperationException("The game rejected a standalone constant buffer.");
     }
 
-    private void WriteStandaloneWorldConstant()
+    internal static void WriteWorldConstant(
+        ConstantBuffer* constant,
+        Matrix4x4 currentWorldView,
+        Matrix4x4 previousWorldView
+    )
     {
-        var target = standaloneWorldConstant->LoadSourcePointer(0, 128);
+        var target = constant->LoadSourcePointer(0, 128);
         if (target == null)
             throw new InvalidOperationException("The game did not expose world-constant storage.");
 
-        var worldView = Matrix4x4.Transpose(Matrix4x4.CreateTranslation(0, 0, StandaloneViewDepth));
-        *(Matrix4x4*)target = worldView;
-        *(Matrix4x4*)((byte*)target + 64) = worldView;
+        *(Matrix4x4*)target = Matrix4x4.Transpose(currentWorldView);
+        *(Matrix4x4*)((byte*)target + 64) = Matrix4x4.Transpose(previousWorldView);
     }
 
     private static void CopyConstant(NativeConstantBufferProbe source, ConstantBuffer* destination)
@@ -1132,7 +1244,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         release(value);
     }
 
-    private static void ReleaseNativeResource(ref ConstantBuffer* resource)
+    internal static void ReleaseNativeResource(ref ConstantBuffer* resource)
     {
         var value = (nint)resource;
         resource = null;
@@ -1176,12 +1288,153 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         public readonly ulong Attribute8;
     }
 
+    private sealed class NativeContextStateScope : IDisposable
+    {
+        private readonly byte* context;
+        private readonly nint indexBuffer;
+        private readonly nint vertexDeclaration;
+        private readonly ulong[] streams = new ulong[4];
+        private readonly nint[] constants;
+        private readonly MaterialTextureState[] textures;
+        private readonly uint rasterizerState;
+        private bool disposed;
+
+        public NativeContextStateScope(byte* context, Material* material = null)
+        {
+            this.context = context;
+            indexBuffer = *(nint*)(context + 0x888);
+            vertexDeclaration = *(nint*)(context + 0x890);
+            for (var index = 0; index < streams.Length; index++)
+                streams[index] = *(ulong*)(context + 0x8C0 + index * 8);
+            constants = SaveConstants(context);
+            textures = material == null ? [] : SaveMaterialTextures(context, material);
+            rasterizerState = *(uint*)(context + 0x874);
+        }
+
+        public void InstallGeometry(NativeGeometry geometry)
+        {
+            *(nint*)(context + 0x888) = geometry.IndexBuffer;
+            *(nint*)(context + 0x890) = geometry.VertexDeclaration;
+            *(nint*)(context + 0x8C0) = geometry.VertexBuffer;
+            *(ulong*)(context + 0x8C8) = PackStreamBinding(0, Stream0Stride);
+            *(nint*)(context + 0x8D0) = geometry.VertexBuffer;
+            *(ulong*)(context + 0x8D8) = PackStreamBinding(geometry.Stream1Offset, Stream1Stride);
+        }
+
+        public void SetConstant(uint id, ConstantBuffer* constant) =>
+            SetContextConstant(context, id, (nint)constant);
+
+        public void Dispose()
+        {
+            if (disposed)
+                return;
+            disposed = true;
+            *(uint*)(context + 0x874) = rasterizerState;
+            *(nint*)(context + 0x888) = indexBuffer;
+            *(nint*)(context + 0x890) = vertexDeclaration;
+            for (var index = 0; index < streams.Length; index++)
+                *(ulong*)(context + 0x8C0 + index * 8) = streams[index];
+            RestoreConstants(context, constants);
+            RestoreMaterialTextures(context, textures);
+        }
+    }
+
     private readonly record struct MaterialTextureState(
         uint Id,
         nint Resource,
         nint Sampler,
         uint Flags
     );
+
+    private readonly record struct RendezvousIdentity(
+        uint Frame,
+        nint Context,
+        int View,
+        int SubView
+    );
+}
+
+internal sealed unsafe class NativeRigidInstance : IDisposable
+{
+    private readonly object stateLock = new();
+    private Matrix4x4 currentWorldView;
+    private Matrix4x4 previousWorldView;
+    private uint preparedFrame = uint.MaxValue;
+    private bool resetHistory = true;
+    private bool removed;
+
+    internal NativeGeometrySubmissionBackend Owner { get; }
+    internal NativeGeometry Geometry { get; }
+    internal ConstantBuffer* WorldConstant { get; private set; }
+
+    internal NativeRigidInstance(
+        NativeGeometrySubmissionBackend owner,
+        NativeGeometry geometry,
+        ConstantBuffer* worldConstant,
+        Matrix4x4 currentWorldView
+    )
+    {
+        Owner = owner;
+        Geometry = geometry;
+        WorldConstant = worldConstant;
+        this.currentWorldView = currentWorldView;
+        previousWorldView = currentWorldView;
+    }
+
+    public void UpdateWorldView(Matrix4x4 worldView, bool resetTemporalHistory = false)
+    {
+        lock (stateLock)
+        {
+            ObjectDisposedException.ThrowIf(removed, this);
+            currentWorldView = worldView;
+            resetHistory |= resetTemporalHistory;
+        }
+    }
+
+    internal bool PrepareWorld(uint frame)
+    {
+        lock (stateLock)
+        {
+            if (removed || Geometry.IsDisposed || WorldConstant == null || preparedFrame == frame)
+                return false;
+            if (resetHistory)
+                previousWorldView = currentWorldView;
+            NativeGeometrySubmissionBackend.WriteWorldConstant(
+                WorldConstant,
+                currentWorldView,
+                previousWorldView
+            );
+            preparedFrame = frame;
+            return true;
+        }
+    }
+
+    internal void MarkSubmitted(uint frame)
+    {
+        lock (stateLock)
+        {
+            if (preparedFrame != frame)
+                return;
+            previousWorldView = currentWorldView;
+            resetHistory = false;
+        }
+    }
+
+    internal void MarkRemoved()
+    {
+        lock (stateLock)
+            removed = true;
+    }
+
+    internal void DisposeCore()
+    {
+        MarkRemoved();
+        var constant = WorldConstant;
+        WorldConstant = null;
+        NativeGeometrySubmissionBackend.ReleaseNativeResource(ref constant);
+    }
+
+    public void Dispose() => Owner.Remove(this);
 }
 
 internal sealed unsafe class NativeGeometry : IDisposable
