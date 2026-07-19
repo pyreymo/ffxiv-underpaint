@@ -925,6 +925,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         ownedMaterialIndex = 0;
         sourcePassMask = *(uint*)(copiedMaterialParams + 0x38);
         sourceAuxiliaryViewMask = *(uint*)(copiedMaterialParams + 0x44);
+        *(nint*)(copiedMaterialParams + 0x08) = 0;
         NativeMemory.Clear(copiedMaterialParams + 0x10, 0x28);
         *(uint*)(copiedMaterialParams + 0x38) = sourcePassMask;
         *(uint*)(copiedMaterialParams + 0x3C) = 0;
