@@ -123,7 +123,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private bool disposed;
     private RendezvousIdentity lastRigidRendezvous;
     private int remainingCommandProbeSubmissions = 4;
-    private int remainingSelectedBindingMapProbes = 1;
 
     private delegate nint CreateVertexBufferDelegate(
         Device* device,
@@ -666,6 +665,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 SubmitOwnedWorld(
                     modelRenderer,
                     materialParameters,
+                    instance,
                     instance.Geometry,
                     submit,
                     worldConstantId,
@@ -717,6 +717,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private void SubmitOwnedWorld(
         nint modelRenderer,
         nint materialParameters,
+        NativeRigidInstance instance,
         NativeGeometry geometry,
         NativePassBuilder submit,
         uint worldConstantId,
@@ -809,7 +810,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     BuildShaderSelectionProbe(contextBytes, copiedShaderSelection, shaderDescriptor)
                 );
-            LogSelectedBindingMap(targetShaderPackage, contextBytes, vertexShader, pixelShader);
+            instance.RecordSelectedBindingMap(
+                FormatSelectedBindingMap(targetShaderPackage, contextBytes, shaderDescriptor)
+            );
             var ownedPassFlags = *(uint*)(copiedMaterialParams + 0x40);
             if (
                 (ownedPassFlags & 0x201) != 0
@@ -975,24 +978,34 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         throw new InvalidOperationException("The owned shader has no instance-parameter constant.");
     }
 
-    private void LogSelectedBindingMap(
+    private static string FormatSelectedBindingMap(
         ShaderPackage* shaderPackage,
         byte* context,
-        nint vertexShader,
-        nint pixelShader
+        nint shaderDescriptor
     )
     {
-        if (Interlocked.Decrement(ref remainingSelectedBindingMapProbes) < 0)
-            return;
+        var families = new Dictionary<(nint Vertex, nint Pixel), List<int>>();
+        for (var pass = 0; pass < 16; pass++)
+        {
+            if (!TryGetPassShaders(shaderDescriptor, pass, out var vertex, out var pixel))
+                continue;
+            if (!families.TryGetValue((vertex, pixel), out var passes))
+            {
+                passes = [];
+                families.Add((vertex, pixel), passes);
+            }
+            passes.Add(pass);
+        }
 
-        log.Information(
-            "[Underpaint] Selected native resource map VSConstants=[{VSConstants}] "
-                + "PSConstants=[{PSConstants}] VSSamplers=[{VSSamplers}] "
-                + "PSSamplers=[{PSSamplers}]",
-            FormatSelectedConstants(shaderPackage, context, vertexShader),
-            FormatSelectedConstants(shaderPackage, context, pixelShader),
-            FormatSelectedSamplers(shaderPackage, context, vertexShader),
-            FormatSelectedSamplers(shaderPackage, context, pixelShader)
+        return string.Join(
+            ';',
+            families.Select(family =>
+                $"passes:{string.Join('/', family.Value)}/vs:0x{family.Key.Vertex:X}/ps:0x{family.Key.Pixel:X}/"
+                + $"vsc:[{FormatSelectedConstants(shaderPackage, context, family.Key.Vertex)}]/"
+                + $"psc:[{FormatSelectedConstants(shaderPackage, context, family.Key.Pixel)}]/"
+                + $"vss:[{FormatSelectedSamplers(shaderPackage, context, family.Key.Vertex)}]/"
+                + $"pss:[{FormatSelectedSamplers(shaderPackage, context, family.Key.Pixel)}]"
+            )
         );
     }
 
@@ -1468,6 +1481,7 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
     private string? failure;
     private List<NativeRigidSubmissionSnapshot>? submissionCapture;
     private int submissionCaptureLimit;
+    private string? selectedBindingMapCapture;
 
     internal NativeGeometrySubmissionBackend Owner { get; }
     internal NativeGeometry Geometry { get; }
@@ -1530,6 +1544,26 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
         {
             submissionCapture = [];
             submissionCaptureLimit = Math.Max(0, limit);
+            selectedBindingMapCapture = null;
+        }
+    }
+
+    internal void RecordSelectedBindingMap(string value)
+    {
+        lock (stateLock)
+        {
+            if (submissionCapture != null)
+                selectedBindingMapCapture ??= value;
+        }
+    }
+
+    internal string? TakeSelectedBindingMapCapture()
+    {
+        lock (stateLock)
+        {
+            var result = selectedBindingMapCapture;
+            selectedBindingMapCapture = null;
+            return result;
         }
     }
 
