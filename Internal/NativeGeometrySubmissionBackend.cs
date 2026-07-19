@@ -108,6 +108,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private const uint ImmutableBufferFlags = 0x804;
     private const int Stream0Stride = 20;
     private const int Stream1Stride = 24;
+    private const int StandaloneProbeSourceStream1Stride = 28;
     private const float StandaloneViewDepth = 5.0f;
     private const string StandaloneMaterialPath =
         "chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl";
@@ -580,7 +581,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         if (submitting || materialParameters == 0)
             return result;
 
-        if (context == null || view != 30 || subView != 11 || onRenderModelConstant.ByteSize != 176)
+        if (
+            context == null
+            || view != 30
+            || subView != 11
+            || onRenderModelConstant.ByteSize != 176
+            || sourceStream0Stride != Stream0Stride
+            || sourceStream1Stride != StandaloneProbeSourceStream1Stride
+        )
             return result;
 
         NativeGeometry? geometry;
