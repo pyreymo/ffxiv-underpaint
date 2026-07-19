@@ -123,6 +123,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private bool disposed;
     private RendezvousIdentity lastRigidRendezvous;
     private int remainingCommandProbeSubmissions = 4;
+    private int remainingSelectedBindingMapProbes = 1;
 
     private delegate nint CreateVertexBufferDelegate(
         Device* device,
@@ -808,6 +809,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     BuildShaderSelectionProbe(contextBytes, copiedShaderSelection, shaderDescriptor)
                 );
+            LogSelectedBindingMap(targetShaderPackage, contextBytes, vertexShader, pixelShader);
             var ownedPassFlags = *(uint*)(copiedMaterialParams + 0x40);
             if (
                 (ownedPassFlags & 0x201) != 0
@@ -971,6 +973,106 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
 
         throw new InvalidOperationException("The owned shader has no instance-parameter constant.");
+    }
+
+    private void LogSelectedBindingMap(
+        ShaderPackage* shaderPackage,
+        byte* context,
+        nint vertexShader,
+        nint pixelShader
+    )
+    {
+        if (Interlocked.Decrement(ref remainingSelectedBindingMapProbes) < 0)
+            return;
+
+        log.Information(
+            "[Underpaint] Selected native resource map VSConstants=[{VSConstants}] "
+                + "PSConstants=[{PSConstants}] VSSamplers=[{VSSamplers}] "
+                + "PSSamplers=[{PSSamplers}]",
+            FormatSelectedConstants(shaderPackage, context, vertexShader),
+            FormatSelectedConstants(shaderPackage, context, pixelShader),
+            FormatSelectedSamplers(shaderPackage, context, vertexShader),
+            FormatSelectedSamplers(shaderPackage, context, pixelShader)
+        );
+    }
+
+    private static string FormatSelectedConstants(
+        ShaderPackage* shaderPackage,
+        byte* context,
+        nint shader
+    )
+    {
+        var entries = *(ShaderResourceEntry**)(shader + 0x28);
+        var count = *(ushort*)(shader + 0x40);
+        var result = new List<string>(count);
+        for (var index = 0; index < count; index++)
+        {
+            var entry = entries[index];
+            var resource = FindShaderResource(
+                shaderPackage->Constants,
+                shaderPackage->ConstantCount,
+                entry.Id
+            );
+            result.Add(
+                $"CB{entry.Slot}=id:{entry.Id}/crc:0x{resource.CRC:X8}/size:{entry.Size * 16}/ctx:0x{GetContextConstant(context, entry.Id):X}"
+            );
+        }
+
+        return string.Join(',', result);
+    }
+
+    private static string FormatSelectedSamplers(
+        ShaderPackage* shaderPackage,
+        byte* context,
+        nint shader
+    )
+    {
+        var entries = *(ShaderResourceEntry**)(shader + 0x30);
+        var count = *(ushort*)(shader + 0x44);
+        var result = new List<string>(count);
+        for (var index = 0; index < count; index++)
+        {
+            var entry = entries[index];
+            var resource = FindShaderResource(
+                shaderPackage->Samplers,
+                shaderPackage->SamplerCount,
+                entry.Id
+            );
+            var slot = context + 0x1140 + entry.Id * 24;
+            result.Add(
+                $"S{entry.Slot}=id:{entry.Id}/crc:0x{resource.CRC:X8}/class:{resource.Slot}/ctx:0x{*(nint*)slot:X}/0x{*(nint*)(slot + 8):X}/0x{*(uint*)(slot + 16):X8}"
+            );
+        }
+
+        return string.Join(',', result);
+    }
+
+    private static ShaderPackage.ConstantSamplerUnknown FindShaderResource(
+        ShaderPackage.ConstantSamplerUnknown* resources,
+        int count,
+        uint id
+    )
+    {
+        for (var index = 0; index < count; index++)
+        {
+            if (resources[index].Id == id)
+                return resources[index];
+        }
+
+        return new ShaderPackage.ConstantSamplerUnknown { Id = id };
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 0x8)]
+    private struct ShaderResourceEntry
+    {
+        [FieldOffset(0x0)]
+        public ushort Slot;
+
+        [FieldOffset(0x2)]
+        public ushort Size;
+
+        [FieldOffset(0x4)]
+        public uint Id;
     }
 
     private static string BuildShaderSelectionProbe(
