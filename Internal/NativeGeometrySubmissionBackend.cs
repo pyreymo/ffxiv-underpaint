@@ -40,6 +40,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 41 54 41 56 41 57 48 83 EC 20 44 8B 05 ?? ?? ?? ?? 48 8B F2 65 48 8B 04 25 ?? ?? ?? ?? 48 8B D9";
     private const string ResolveShaderSelectionSignature =
         "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 41 56 48 83 EC 30 48 8B F2 48 8B F9 48 39 4A 08";
+    private const string SnapshotCommandSignature =
+        "48 89 5C 24 ?? 48 89 6C 24 ?? 56 57 41 57 48 83 EC 30 48 8B 81 58 08 00 00";
     private const uint ImmutableBufferFlags = 0x804;
     private const int Stream0Stride = 8;
     private const int Stream1Stride = 16;
@@ -72,6 +74,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     [ThreadStatic]
     private static bool submitting;
 
+    [ThreadStatic]
+    private static string? rejectedSnapshot;
+
     private readonly object stateLock = new();
     private readonly Hook<CreateVertexBufferDelegate> createVertexBufferHook;
     private readonly Hook<InitializeBufferDelegate> initializeVertexBufferHook;
@@ -82,12 +87,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private readonly Hook<DestroyShaderSelectionDelegate> destroyShaderSelectionHook;
     private readonly Hook<ApplyMaterialDelegate> applyMaterialHook;
     private readonly Hook<ResolveShaderSelectionDelegate> resolveShaderSelectionHook;
+    private readonly Hook<SnapshotCommandDelegate> snapshotCommandHook;
     private readonly Hook<NativePassBuilder> expandPassesHook;
     private readonly IPluginLog log;
     private readonly HashSet<NativeGeometry> geometries = [];
     private readonly HashSet<NativeRigidInstance> rigidInstances = [];
     private readonly List<NativeRigidInstance> retiredRigidInstances = [];
-    private readonly bool shaderSelectionProbeOnly = true;
     private ConstantBuffer* standaloneObjectConstant;
     private MaterialResourceHandle* standaloneMaterialResource;
     private uint standaloneMaterialConstantId = uint.MaxValue;
@@ -124,6 +129,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private delegate void ApplyMaterialDelegate(byte* selection, Material* material);
 
     private delegate nint ResolveShaderSelectionDelegate(nint shaderPackage, byte* selection);
+
+    private delegate byte SnapshotCommandDelegate(nint context, nint commandState);
 
     public NativeGeometrySubmissionBackend(IGameInteropProvider gameInteropProvider, IPluginLog log)
     {
@@ -169,10 +176,15 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 ResolveShaderSelectionSignature,
                 (_, _) => 0
             );
+        snapshotCommandHook = gameInteropProvider.HookFromSignature<SnapshotCommandDelegate>(
+            SnapshotCommandSignature,
+            SnapshotCommandDetour
+        );
         expandPassesHook = gameInteropProvider.HookFromSignature<NativePassBuilder>(
             ExpandPassesSignature,
             ExpandPassesDetour
         );
+        snapshotCommandHook.Enable();
         expandPassesHook.Enable();
     }
 
@@ -281,14 +293,18 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var ownsState = existingState == null;
 
         submitting = true;
+        rejectedSnapshot = null;
         try
         {
             state.InstallGeometry(geometry);
             state.SetConstant(constantId, constant);
             submit(modelRenderer, materialParameters, geometry.VertexCount, 0, geometry.IndexCount);
+            if (rejectedSnapshot is { } rejection)
+                throw new InvalidOperationException(rejection);
         }
         finally
         {
+            rejectedSnapshot = null;
             submitting = false;
             if (ownsState)
                 state.Dispose();
@@ -319,6 +335,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
 
         createVertexDeclarationHook.Dispose();
+        snapshotCommandHook.Dispose();
         resolveShaderSelectionHook.Dispose();
         applyMaterialHook.Dispose();
         destroyShaderSelectionHook.Dispose();
@@ -489,6 +506,35 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         );
 
         return result;
+    }
+
+    private byte SnapshotCommandDetour(nint context, nint commandState)
+    {
+        if (!submitting || context == 0)
+            return snapshotCommandHook.Original(context, commandState);
+
+        var contextBytes = (byte*)context;
+        var descriptor = *(nint*)(contextBytes + 0x8B8);
+        if (descriptor != 0)
+        {
+            if (TryGetActivePassShaders(contextBytes, descriptor, out _, out _))
+                return snapshotCommandHook.Original(context, commandState);
+
+            rejectedSnapshot ??=
+                $"Native BG command snapshot rejected before submission: ActivePass={contextBytes[0x0B] & 0x0F} "
+                + $"Descriptor=0x{descriptor:X} has no complete VS/PS pair.";
+            return 0;
+        }
+
+        var vertexShader = *(nint*)(contextBytes + 0x878);
+        var pixelShader = *(nint*)(contextBytes + 0x880);
+        if (vertexShader != 0 && pixelShader != 0)
+            return snapshotCommandHook.Original(context, commandState);
+
+        rejectedSnapshot ??=
+            $"Native BG command snapshot rejected before submission: ActivePass={contextBytes[0x0B] & 0x0F} "
+            + $"Descriptor=null CurrentVS=0x{vertexShader:X} CurrentPS=0x{pixelShader:X}.";
+        return 0;
     }
 
     private void SubmitRigidInstancesAtRendezvous(
@@ -668,12 +714,18 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 (nint)targetShaderPackage,
                 copiedShaderSelection
             );
-            if (shaderSelectionProbeOnly)
-            {
+            if (
+                !TryGetActivePassShaders(
+                    contextBytes,
+                    shaderDescriptor,
+                    out var vertexShader,
+                    out var pixelShader
+                )
+            )
                 throw new InvalidOperationException(
                     BuildShaderSelectionProbe(contextBytes, copiedShaderSelection, shaderDescriptor)
                 );
-            }
+            contextState.InstallShaders(vertexShader, pixelShader, shaderDescriptor);
             standaloneMaterialConstantId = FindBoundConstantId(
                 contextBytes,
                 targetMaterial->MaterialParameterCBuffer
@@ -858,6 +910,55 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             + $"Descriptor=0x{descriptorAddress:X} ActivePass={activePass} Passes=[{string.Join(',', entries)}].";
     }
 
+    private static bool TryGetActivePassShaders(
+        byte* context,
+        nint descriptorAddress,
+        out nint vertexShader,
+        out nint pixelShader
+    )
+    {
+        vertexShader = 0;
+        pixelShader = 0;
+        if (context == null || descriptorAddress == 0)
+            return false;
+
+        var descriptor = (byte*)descriptorAddress;
+        var shaderTable = *(byte**)descriptor;
+        if (shaderTable == null)
+            return false;
+
+        var pass = context[0x0B] & 0x0F;
+        var mappings = *(int**)(shaderTable + 0x170);
+        var mappedPass = mappings == null ? pass : mappings[pass];
+        if ((uint)mappedPass >= 16)
+            return false;
+
+        var slot = *(sbyte*)(descriptor + 0x08 + mappedPass);
+        var slotCount = descriptor[0x20];
+        if (slot < 0 || slot >= slotCount)
+            return false;
+
+        var entry = descriptor + 0x28 + slot * 8;
+        var vertexIndex = *(ushort*)entry;
+        var pixelIndex = *(ushort*)(entry + 2);
+        var vertexStart = *(nint*)(shaderTable + 0x18);
+        var vertexEnd = *(nint*)(shaderTable + 0x20);
+        var pixelStart = *(nint*)(shaderTable + 0x38);
+        var pixelEnd = *(nint*)(shaderTable + 0x40);
+        var vertexCount =
+            vertexStart != 0 && vertexEnd >= vertexStart
+                ? (vertexEnd - vertexStart) / sizeof(nint)
+                : 0;
+        var pixelCount =
+            pixelStart != 0 && pixelEnd >= pixelStart ? (pixelEnd - pixelStart) / sizeof(nint) : 0;
+        if (vertexIndex >= vertexCount || pixelIndex >= pixelCount)
+            return false;
+
+        vertexShader = *(nint*)(vertexStart + vertexIndex * sizeof(nint));
+        pixelShader = *(nint*)(pixelStart + pixelIndex * sizeof(nint));
+        return vertexShader != 0 && pixelShader != 0;
+    }
+
     private static nint[] SaveConstants(byte* context)
     {
         const int constantSlotCount = (0x1140 - 0x940) / sizeof(ulong);
@@ -1010,8 +1111,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private sealed class NativeContextStateScope : IDisposable
     {
         private readonly byte* context;
+        private readonly nint vertexShader;
+        private readonly nint pixelShader;
         private readonly nint indexBuffer;
         private readonly nint vertexDeclaration;
+        private readonly nint shaderSelection;
         private readonly ulong[] streams = new ulong[4];
         private readonly nint[] constants;
         private readonly MaterialTextureState[] textures;
@@ -1021,8 +1125,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         public NativeContextStateScope(byte* context, Material* material = null)
         {
             this.context = context;
+            vertexShader = *(nint*)(context + 0x878);
+            pixelShader = *(nint*)(context + 0x880);
             indexBuffer = *(nint*)(context + 0x888);
             vertexDeclaration = *(nint*)(context + 0x890);
+            shaderSelection = *(nint*)(context + 0x8B8);
             for (var index = 0; index < streams.Length; index++)
                 streams[index] = *(ulong*)(context + 0x8C0 + index * 8);
             constants = SaveConstants(context);
@@ -1040,6 +1147,13 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             *(ulong*)(context + 0x8D8) = PackStreamBinding(geometry.Stream1Offset, Stream1Stride);
         }
 
+        public void InstallShaders(nint vertex, nint pixel, nint selection)
+        {
+            *(nint*)(context + 0x878) = vertex;
+            *(nint*)(context + 0x880) = pixel;
+            *(nint*)(context + 0x8B8) = selection;
+        }
+
         public void SetConstant(uint id, ConstantBuffer* constant) =>
             SetContextConstant(context, id, (nint)constant);
 
@@ -1049,8 +1163,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 return;
             disposed = true;
             *(uint*)(context + 0x874) = rasterizerState;
+            *(nint*)(context + 0x878) = vertexShader;
+            *(nint*)(context + 0x880) = pixelShader;
             *(nint*)(context + 0x888) = indexBuffer;
             *(nint*)(context + 0x890) = vertexDeclaration;
+            *(nint*)(context + 0x8B8) = shaderSelection;
             for (var index = 0; index < streams.Length; index++)
                 *(ulong*)(context + 0x8C0 + index * 8) = streams[index];
             RestoreConstants(context, constants);
