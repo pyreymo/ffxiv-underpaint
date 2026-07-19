@@ -14,6 +14,12 @@ internal readonly record struct NativeGeometryConstantBufferBinding(
     ulong? ContentHash
 );
 
+internal readonly record struct NativeGeometryShaderResourceBinding(
+    int Slot,
+    nint View,
+    nint Resource
+);
+
 internal readonly record struct NativeGeometryDrawMatch(
     long Sequence,
     long Timestamp,
@@ -33,7 +39,9 @@ internal readonly record struct NativeGeometryDrawMatch(
     nint IndexBuffer,
     string IndexFormat,
     int IndexOffset,
-    IReadOnlyList<NativeGeometryConstantBufferBinding> VertexConstantBuffers
+    IReadOnlyList<NativeGeometryConstantBufferBinding> VertexConstantBuffers,
+    IReadOnlyList<NativeGeometryConstantBufferBinding> PixelConstantBuffers,
+    IReadOnlyList<NativeGeometryShaderResourceBinding> ShaderResources
 );
 
 internal sealed record NativeGeometryDrawCapture(

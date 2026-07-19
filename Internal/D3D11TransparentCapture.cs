@@ -272,6 +272,8 @@ internal sealed unsafe partial class D3D11GBufferBackend
             using (nativeInputLayout)
                 inputLayout = nativeInputLayout?.NativePointer ?? 0;
             var vertexConstants = CaptureConstantBuffers(immediateContext.VertexShader);
+            var pixelConstants = CaptureConstantBuffers(immediateContext.PixelShader);
+            var shaderResources = CaptureShaderResources();
 
             var pass =
                 activePass?.Kind.ToString()
@@ -309,6 +311,21 @@ internal sealed unsafe partial class D3D11GBufferBackend
                             item.Buffer,
                             item.ByteWidth,
                             item.ContentHash
+                        ))
+                        .ToArray(),
+                    pixelConstants
+                        .Select(item => new NativeGeometryConstantBufferBinding(
+                            item.Slot,
+                            item.Buffer,
+                            item.ByteWidth,
+                            item.ContentHash
+                        ))
+                        .ToArray(),
+                    shaderResources
+                        .Select(item => new NativeGeometryShaderResourceBinding(
+                            item.Slot,
+                            item.View,
+                            item.Resource
                         ))
                         .ToArray()
                 )
