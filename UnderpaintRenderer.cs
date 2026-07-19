@@ -26,56 +26,16 @@ public sealed class UnderpaintRenderer : IDisposable
         ReadOnlySpan<ushort> indices
     ) => NativeGeometryBackend.CreateGeometry(positions, indices);
 
-    internal NativeGeometrySubmissionResult SubmitNativeGeometry(
-        nint modelRenderer,
-        nint materialParameters,
-        NativeGeometry geometry,
-        NativePassBuilder submit
-    ) => NativeGeometryBackend.Submit(modelRenderer, materialParameters, geometry, submit);
+    internal NativeGeometry CreateNativeGeometry(
+        ReadOnlySpan<System.Numerics.Vector3> positions,
+        ReadOnlySpan<System.Numerics.Vector2> textureCoordinates,
+        ReadOnlySpan<ushort> indices
+    ) => NativeGeometryBackend.CreateGeometry(positions, textureCoordinates, indices);
 
     internal NativeRigidInstance CreateNativeRigidInstance(
         NativeGeometry geometry,
         System.Numerics.Matrix4x4 currentWorldView
     ) => NativeGeometryBackend.CreateRigidInstance(geometry, currentWorldView);
-
-    internal void ArmNativeGeometrySubmission(NativeGeometry geometry)
-    {
-        backend.BeginNativeGeometryDrawCapture(
-            geometry.VertexBufferResource,
-            geometry.IndexBufferResource
-        );
-        try
-        {
-            NativeGeometryBackend.ArmStandalone(geometry);
-        }
-        catch
-        {
-            backend.CompleteNativeGeometryDrawCapture("arm-failed");
-            throw;
-        }
-    }
-
-    internal void BeginNativeGeometryDrawCapture(NativeGeometry geometry) =>
-        backend.BeginNativeGeometryDrawCapture(
-            geometry.VertexBufferResource,
-            geometry.IndexBufferResource
-        );
-
-    internal void CompleteNativeGeometryDrawCapture(string reason) =>
-        backend.CompleteNativeGeometryDrawCapture(reason);
-
-    internal void CancelNativeGeometrySubmission(string reason = "cancelled")
-    {
-        nativeGeometryBackend?.CancelStandalone();
-        backend.CompleteNativeGeometryDrawCapture(reason);
-    }
-
-    internal bool TryTakeNativeGeometrySubmission(
-        out NativeGeometryStandaloneSubmission submission
-    ) => NativeGeometryBackend.TryTakeStandalone(out submission);
-
-    internal bool TryTakeNativeGeometryDrawCapture(out NativeGeometryDrawCapture capture) =>
-        backend.TryTakeNativeGeometryDrawCapture(out capture);
 
     private NativeGeometrySubmissionBackend NativeGeometryBackend =>
         nativeGeometryBackend ??= new NativeGeometrySubmissionBackend(gameInteropProvider, log);
