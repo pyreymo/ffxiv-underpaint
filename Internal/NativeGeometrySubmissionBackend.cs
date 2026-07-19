@@ -42,14 +42,18 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 41 56 48 83 EC 30 48 8B F2 48 8B F9 48 39 4A 08";
     private const string SnapshotCommandSignature =
         "48 89 5C 24 ?? 48 89 6C 24 ?? 56 57 41 57 48 83 EC 30 48 8B 81 58 08 00 00";
+    private const string PushBackCommandSignature = "48 63 41 ?? 4C 8B DA";
     private const uint ImmutableBufferFlags = 0x804;
-    private const int Stream0Stride = 8;
-    private const int Stream1Stride = 16;
+    private const int Stream0Stride = 20;
+    private const int Stream1Stride = 24;
     private const string StandaloneMaterialPath =
-        "bgcommon/hou/indoor/general/0517/material/fun_b0_m0517_0a.mtrl";
+        "chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl";
     private const uint StandaloneMaterialFileType = 0x6D74726C;
-    private const uint StandaloneMaterialPathHash = 0x5D6A7B3E;
-    private const int ModelObjectParameterSize = 176;
+    private const uint StandaloneMaterialPathHash = 0x56D3AB97;
+    private const uint InstanceParameterCrc = 0x20A30B34;
+    private const int InstanceParameterSize = 176;
+    private const uint SupportedMainPassMask = 0x01000000;
+    private const uint SupportedAuxiliaryPassMask = 0x00C00000;
     private const uint SupportedAuxiliaryViewMask = 0x00000003;
     private const int MainRenderViewIndex = 30;
     private const int MainRendezvousSubViewIndex = 11;
@@ -59,14 +63,30 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     [
         0,
         0,
-        0x1C,
+        0x13,
         0,
+        0,
+        12,
+        0x3C,
+        1,
+        0,
+        16,
+        0x3C,
+        7,
         1,
         0,
         0x1C,
         2,
         1,
         8,
+        0x24,
+        15,
+        1,
+        12,
+        0x24,
+        3,
+        1,
+        16,
         0x1C,
         8,
     ];
@@ -76,6 +96,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
     [ThreadStatic]
     private static string? rejectedSnapshot;
+
+    [ThreadStatic]
+    private static List<NativeCommandProbe>? commandProbe;
 
     private readonly object stateLock = new();
     private readonly Hook<CreateVertexBufferDelegate> createVertexBufferHook;
@@ -88,16 +111,18 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private readonly Hook<ApplyMaterialDelegate> applyMaterialHook;
     private readonly Hook<ResolveShaderSelectionDelegate> resolveShaderSelectionHook;
     private readonly Hook<SnapshotCommandDelegate> snapshotCommandHook;
+    private readonly Hook<PushBackCommandDelegate> pushBackCommandHook;
     private readonly Hook<NativePassBuilder> expandPassesHook;
     private readonly IPluginLog log;
     private readonly HashSet<NativeGeometry> geometries = [];
     private readonly HashSet<NativeRigidInstance> rigidInstances = [];
     private readonly List<NativeRigidInstance> retiredRigidInstances = [];
-    private ConstantBuffer* standaloneObjectConstant;
+    private ConstantBuffer* standaloneInstanceConstant;
     private MaterialResourceHandle* standaloneMaterialResource;
     private uint standaloneMaterialConstantId = uint.MaxValue;
     private bool disposed;
     private RendezvousIdentity lastRigidRendezvous;
+    private int remainingCommandProbeSubmissions = 4;
 
     private delegate nint CreateVertexBufferDelegate(
         Device* device,
@@ -131,6 +156,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private delegate nint ResolveShaderSelectionDelegate(nint shaderPackage, byte* selection);
 
     private delegate byte SnapshotCommandDelegate(nint context, nint commandState);
+
+    private delegate void PushBackCommandDelegate(nint context, nint command);
 
     public NativeGeometrySubmissionBackend(IGameInteropProvider gameInteropProvider, IPluginLog log)
     {
@@ -180,11 +207,16 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             SnapshotCommandSignature,
             SnapshotCommandDetour
         );
+        pushBackCommandHook = gameInteropProvider.HookFromSignature<PushBackCommandDelegate>(
+            PushBackCommandSignature,
+            PushBackCommandDetour
+        );
         expandPassesHook = gameInteropProvider.HookFromSignature<NativePassBuilder>(
             ExpandPassesSignature,
             ExpandPassesDetour
         );
         snapshotCommandHook.Enable();
+        pushBackCommandHook.Enable();
         expandPassesHook.Enable();
     }
 
@@ -298,12 +330,36 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         {
             state.InstallGeometry(geometry);
             state.SetConstant(constantId, constant);
-            submit(modelRenderer, materialParameters, geometry.VertexCount, 0, geometry.IndexCount);
+            var captureCommands = Interlocked.Decrement(ref remainingCommandProbeSubmissions) >= 0;
+            commandProbe = captureCommands ? [] : null;
+            var result = submit(
+                modelRenderer,
+                materialParameters,
+                geometry.VertexCount,
+                0,
+                geometry.IndexCount
+            );
             if (rejectedSnapshot is { } rejection)
                 throw new InvalidOperationException(rejection);
+            if (commandProbe is { } commands)
+            {
+                log.Information(
+                    "[Underpaint] Minimal ModelRenderer submission Result=0x{Result:X} "
+                        + "Params38=0x{Params38:X8} Flags=0x{Flags:X8} Aux=0x{Aux:X8} "
+                        + "Commands={CommandCount} Items=[{Commands}] SourceObjectInputs=none "
+                        + "RendezvousInputs=renderer/view/TLS/arena",
+                    result,
+                    *(uint*)(materialParameters + 0x38),
+                    *(uint*)(materialParameters + 0x40),
+                    *(uint*)(materialParameters + 0x44),
+                    commands.Count,
+                    string.Join(',', commands)
+                );
+            }
         }
         finally
         {
+            commandProbe = null;
             rejectedSnapshot = null;
             submitting = false;
             if (ownsState)
@@ -321,7 +377,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
 
         expandPassesHook.Disable();
-        ReleaseNativeResource(ref standaloneObjectConstant);
+        pushBackCommandHook.Disable();
+        ReleaseNativeResource(ref standaloneInstanceConstant);
         ReleaseStandaloneMaterial();
         lock (stateLock)
         {
@@ -335,6 +392,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
 
         createVertexDeclarationHook.Dispose();
+        pushBackCommandHook.Dispose();
         snapshotCommandHook.Dispose();
         resolveShaderSelectionHook.Dispose();
         applyMaterialHook.Dispose();
@@ -521,7 +579,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 return snapshotCommandHook.Original(context, commandState);
 
             rejectedSnapshot ??=
-                $"Native BG command snapshot rejected before submission: ActivePass={contextBytes[0x0B] & 0x0F} "
+                $"Native ModelRenderer command snapshot rejected before submission: ActivePass={contextBytes[0x0B] & 0x0F} "
                 + $"Descriptor=0x{descriptor:X} has no complete VS/PS pair.";
             return 0;
         }
@@ -532,9 +590,31 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             return snapshotCommandHook.Original(context, commandState);
 
         rejectedSnapshot ??=
-            $"Native BG command snapshot rejected before submission: ActivePass={contextBytes[0x0B] & 0x0F} "
+            $"Native ModelRenderer command snapshot rejected before submission: ActivePass={contextBytes[0x0B] & 0x0F} "
             + $"Descriptor=null CurrentVS=0x{vertexShader:X} CurrentPS=0x{pixelShader:X}.";
         return 0;
+    }
+
+    private void PushBackCommandDetour(nint context, nint command)
+    {
+        if (submitting && context != 0 && command != 0 && commandProbe is { Count: < 16 } commands)
+        {
+            var contextBytes = (byte*)context;
+            commands.Add(
+                new NativeCommandProbe(
+                    *(uint*)(contextBytes + 0x08),
+                    contextBytes[0x0B] & 0x0F,
+                    ((Context*)context)->ViewIndex,
+                    ((Context*)context)->CurrentSubViewIndex,
+                    command,
+                    *(nint*)(contextBytes + 0x878),
+                    *(nint*)(contextBytes + 0x880),
+                    *(nint*)(contextBytes + 0x8B8)
+                )
+            );
+        }
+
+        pushBackCommandHook.Original(context, command);
     }
 
     private void SubmitRigidInstancesAtRendezvous(
@@ -636,10 +716,13 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         ConstantBuffer* worldConstant
     )
     {
-        var modelParams = *(nint*)materialParameters;
-        if (modelParams == 0)
+        var nonSkinnedSceneKey = (byte*)modelRenderer + 0x68;
+        var skinnedSceneKey = nonSkinnedSceneKey + 0x10;
+        var modelTypeSceneKey = *(uint*)(nonSkinnedSceneKey + 0x08);
+        var modelTypeValue = *(uint*)(nonSkinnedSceneKey + 0x0C);
+        if (*(uint*)(skinnedSceneKey + 0x08) != modelTypeSceneKey)
             throw new InvalidOperationException(
-                "The native material parameters have no model input."
+                "The model-type scene keys do not share a key CRC."
             );
 
         EnsureStandaloneMaterial();
@@ -649,8 +732,13 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             targetShaderPackageResource == null ? null : targetShaderPackageResource->ShaderPackage;
         if (targetMaterial == null || targetShaderPackage == null)
             throw new InvalidOperationException("The owned native material is not ready.");
+        var instanceConstantId = FindShaderConstantId(
+            targetShaderPackage,
+            InstanceParameterCrc,
+            InstanceParameterSize
+        );
         EnsureStandaloneConstants();
-        WriteDefaultObjectConstant(standaloneObjectConstant);
+        WriteDefaultInstanceConstant(standaloneInstanceConstant);
         if (worldConstant == null)
             throw new InvalidOperationException("The native instance has no world constant.");
 
@@ -660,21 +748,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var copiedShaderSelection = stackalloc byte[0x28];
         NativeMemory.Clear(ownedModel, 0x180);
         NativeMemory.Clear(copiedModelParams, 0x20);
-        Buffer.MemoryCopy((void*)materialParameters, copiedMaterialParams, 0x48, 0x48);
-        *(nint*)(copiedMaterialParams + 0x08) = 0;
-        NativeMemory.Clear(copiedMaterialParams + 0x10, 0x28);
+        NativeMemory.Clear(copiedMaterialParams, 0x48);
+        *(uint*)(copiedMaterialParams + 0x38) = SupportedMainPassMask | SupportedAuxiliaryPassMask;
         *(uint*)(copiedMaterialParams + 0x3C) = 0;
         *(uint*)(copiedMaterialParams + 0x40) = 0;
         *(uint*)(copiedMaterialParams + 0x44) = SupportedAuxiliaryViewMask;
         NativeMemory.Clear(copiedShaderSelection, 0x28);
-        var sourceShaderSelection = *(nint*)(materialParameters + 0x30);
-        if (sourceShaderSelection == 0 || *(nint*)sourceShaderSelection == 0)
-            throw new InvalidOperationException(
-                "The render rendezvous has no shader-selection descriptor."
-            );
-        // The first field is the selection descriptor. Params2+0x30 points to the
-        // source selection object, not to that descriptor directly.
-        *(nint*)copiedShaderSelection = *(nint*)sourceShaderSelection;
         initializeShaderSelectionHook.Original(copiedShaderSelection, (nint)targetShaderPackage);
         try
         {
@@ -686,10 +765,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     "The native shader-selection constructor failed."
                 );
             *(nint*)copiedModelParams = (nint)ownedModel;
-            *(nint*)(copiedModelParams + 0x10) = (nint)standaloneObjectConstant;
+            *(nint*)(copiedModelParams + 0x10) = (nint)standaloneInstanceConstant;
             *(nint*)copiedMaterialParams = (nint)copiedModelParams;
             *(nint*)(copiedMaterialParams + 0x30) = (nint)copiedShaderSelection;
             CopyCanonicalSceneKeys(modelRenderer, copiedShaderSelection, out _, out _);
+            SetSceneKey(copiedShaderSelection, modelTypeSceneKey, modelTypeValue);
 
             var context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
             if (context == null)
@@ -743,6 +823,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     "The material helper did not bind the owned material constant."
                 );
+            contextState.SetConstant(instanceConstantId, standaloneInstanceConstant);
             SubmitCore(
                 modelRenderer,
                 (nint)copiedMaterialParams,
@@ -766,7 +847,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var resourceManager = ResourceManager.Instance();
         if (resourceManager == null)
             throw new InvalidOperationException("The native resource manager is not available.");
-        var category = ResourceCategory.BgCommon;
+        var category = ResourceCategory.Chara;
         var fileType = StandaloneMaterialFileType;
         var pathHash = StandaloneMaterialPathHash;
         var resource = (MaterialResourceHandle*)
@@ -838,6 +919,23 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         return false;
     }
 
+    private static void SetSceneKey(byte* selection, uint key, uint value)
+    {
+        var metadata = *(nint*)(selection + 0x08);
+        var values = *(uint**)(selection + 0x10);
+        var count = *(uint*)(metadata + 0xEC);
+        var keys = *(uint**)(metadata + 0x130);
+        for (var index = 0; index < count; index++)
+        {
+            if (keys[index] != key)
+                continue;
+            values[index] = value;
+            return;
+        }
+
+        throw new InvalidOperationException("The owned material has no model-type scene key.");
+    }
+
     private static uint FindBoundConstantId(byte* context, ConstantBuffer* constant)
     {
         if (context == null || constant == null)
@@ -849,6 +947,25 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 return id;
         }
         return uint.MaxValue;
+    }
+
+    private static uint FindShaderConstantId(ShaderPackage* shaderPackage, uint crc, int byteSize)
+    {
+        if (shaderPackage == null || shaderPackage->Constants == null)
+            throw new InvalidOperationException("The owned shader constant table is unavailable.");
+        for (var index = 0; index < shaderPackage->ConstantCount; index++)
+        {
+            var constant = shaderPackage->Constants[index];
+            if (constant.CRC != crc)
+                continue;
+            if (constant.Size * 16 != byteSize)
+                throw new InvalidOperationException(
+                    "The owned shader has an unexpected instance-constant size."
+                );
+            return constant.Id;
+        }
+
+        throw new InvalidOperationException("The owned shader has no instance-parameter constant.");
     }
 
     private static string BuildShaderSelectionProbe(
@@ -863,7 +980,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var activePass = context == null ? -1 : context[0x0B] & 0x0F;
         if (descriptorAddress == 0)
         {
-            return $"Native BG selection probe stopped before submission: Package=0x{package:X} "
+            return $"Native ModelRenderer selection probe stopped before submission: Package=0x{package:X} "
                 + $"SceneValues=0x{sceneValues:X} MaterialValues=0x{materialValues:X} "
                 + $"SubView=0x{*(uint*)(selection + 0x20):X8}/0x{*(uint*)(selection + 0x24):X8} "
                 + $"ActivePass={activePass} Descriptor=null.";
@@ -872,7 +989,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var descriptor = (byte*)descriptorAddress;
         var shaderTable = *(byte**)descriptor;
         if (shaderTable == null)
-            return $"Native BG selection probe stopped before submission: Descriptor=0x{descriptorAddress:X} has no shader table.";
+            return $"Native ModelRenderer selection probe stopped before submission: Descriptor=0x{descriptorAddress:X} has no shader table.";
 
         var mappings = *(int**)(shaderTable + 0x170);
         var entries = new List<string>(16);
@@ -915,7 +1032,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             );
         }
 
-        return $"Native BG selection probe stopped before submission: Package=0x{package:X} "
+        return $"Native ModelRenderer selection probe stopped before submission: Package=0x{package:X} "
             + $"Descriptor=0x{descriptorAddress:X} ActivePass={activePass} Passes=[{string.Join(',', entries)}].";
     }
 
@@ -1046,21 +1163,21 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         if (device == null)
             throw new InvalidOperationException("The native graphics device is not available.");
 
-        if (standaloneObjectConstant == null)
-            standaloneObjectConstant = device->CreateConstantBuffer(ModelObjectParameterSize, 2, 0);
-        if (standaloneObjectConstant == null)
+        if (standaloneInstanceConstant == null)
+            standaloneInstanceConstant = device->CreateConstantBuffer(InstanceParameterSize, 2, 0);
+        if (standaloneInstanceConstant == null)
             throw new InvalidOperationException("The game rejected a standalone constant buffer.");
     }
 
-    private static void WriteDefaultObjectConstant(ConstantBuffer* constant)
+    private static void WriteDefaultInstanceConstant(ConstantBuffer* constant)
     {
-        var target = constant->LoadSourcePointer(0, ModelObjectParameterSize);
+        var target = constant->LoadSourcePointer(0, InstanceParameterSize);
         if (target == null)
             throw new InvalidOperationException(
                 "The game did not expose instance-constant storage."
             );
 
-        NativeMemory.Clear(target, ModelObjectParameterSize);
+        NativeMemory.Clear(target, InstanceParameterSize);
         var values = (Vector4*)target;
         values[0] = Vector4.One;
         values[1] = Vector4.One;
@@ -1107,10 +1224,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private readonly struct NativeStream0Vertex(Vector3 position)
     {
-        public readonly Half X = (Half)position.X;
-        public readonly Half Y = (Half)position.Y;
-        public readonly Half Z = (Half)position.Z;
-        public readonly Half W = (Half)1;
+        public readonly Vector3 Position = position;
+        public readonly uint Attribute1 = 0x000000FF;
+        public readonly uint Attribute7 = 0;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -1118,24 +1234,20 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     {
         public NativeStream1Vertex(Vector2 textureCoordinate)
         {
-            NormalX = (Half)0;
-            NormalY = (Half)0;
-            NormalZ = (Half)1;
-            NormalW = (Half)0;
-            TextureX = (Half)textureCoordinate.X;
-            TextureY = (Half)textureCoordinate.Y;
-            TextureZ = (Half)0;
-            TextureW = (Half)1;
+            Attribute2 = 0x00003C0000000000;
+            Attribute15 = 0x00800080;
+            Attribute3 = uint.MaxValue;
+            Attribute8 =
+                BitConverter.HalfToUInt16Bits((Half)textureCoordinate.X)
+                | ((ulong)BitConverter.HalfToUInt16Bits((Half)textureCoordinate.Y) << 16)
+                | (0xBC00UL << 32)
+                | (0x4000UL << 48);
         }
 
-        public readonly Half NormalX;
-        public readonly Half NormalY;
-        public readonly Half NormalZ;
-        public readonly Half NormalW;
-        public readonly Half TextureX;
-        public readonly Half TextureY;
-        public readonly Half TextureZ;
-        public readonly Half TextureW;
+        public readonly ulong Attribute2;
+        public readonly uint Attribute15;
+        public readonly uint Attribute3;
+        public readonly ulong Attribute8;
     }
 
     private sealed class NativeContextStateScope : IDisposable
@@ -1211,6 +1323,22 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         nint Sampler,
         uint Flags
     );
+
+    private readonly record struct NativeCommandProbe(
+        uint SortKey,
+        int ActivePass,
+        int View,
+        int SubView,
+        nint Command,
+        nint VertexShader,
+        nint PixelShader,
+        nint ShaderDescriptor
+    )
+    {
+        public override string ToString() =>
+            $"sort=0x{SortKey:X8}/pass={ActivePass}/view={View}:{SubView}/cmd=0x{Command:X}/"
+            + $"vs=0x{VertexShader:X}/ps=0x{PixelShader:X}/desc=0x{ShaderDescriptor:X}";
+    }
 
     private readonly record struct RendezvousIdentity(
         uint Frame,
