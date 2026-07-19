@@ -725,6 +725,15 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     BuildShaderSelectionProbe(contextBytes, copiedShaderSelection, shaderDescriptor)
                 );
+            var ownedPassFlags = *(uint*)(copiedMaterialParams + 0x40);
+            if (
+                (ownedPassFlags & 0x201) != 0
+                && !TryGetPassShaders(shaderDescriptor, 6, out _, out _)
+            )
+                throw new InvalidOperationException(
+                    $"The owned material is incompatible with the ModelRenderer pass builder: "
+                        + $"Flags=0x{ownedPassFlags:X8} require pass 6, but the selected shader descriptor does not provide it."
+                );
             contextState.InstallShaders(vertexShader, pixelShader, shaderDescriptor);
             standaloneMaterialConstantId = FindBoundConstantId(
                 contextBytes,
@@ -917,9 +926,31 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         out nint pixelShader
     )
     {
+        if (context == null || descriptorAddress == 0)
+        {
+            vertexShader = 0;
+            pixelShader = 0;
+            return false;
+        }
+
+        return TryGetPassShaders(
+            descriptorAddress,
+            context[0x0B] & 0x0F,
+            out vertexShader,
+            out pixelShader
+        );
+    }
+
+    private static bool TryGetPassShaders(
+        nint descriptorAddress,
+        int pass,
+        out nint vertexShader,
+        out nint pixelShader
+    )
+    {
         vertexShader = 0;
         pixelShader = 0;
-        if (context == null || descriptorAddress == 0)
+        if (descriptorAddress == 0 || (uint)pass >= 16)
             return false;
 
         var descriptor = (byte*)descriptorAddress;
@@ -927,7 +958,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         if (shaderTable == null)
             return false;
 
-        var pass = context[0x0B] & 0x0F;
         var mappings = *(int**)(shaderTable + 0x170);
         var mappedPass = mappings == null ? pass : mappings[pass];
         if ((uint)mappedPass >= 16)
