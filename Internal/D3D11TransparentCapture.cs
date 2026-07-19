@@ -1,6 +1,7 @@
 #if DEBUG
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using SharpDX;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
@@ -28,6 +29,19 @@ internal sealed unsafe partial class D3D11GBufferBackend
     private TransparentDrawCapture? completedTransparentCapture;
     private long transparentCaptureSequence;
     private bool transparentStageCActive;
+    private NativeGeometryDrawCaptureSession? nativeGeometryDrawCapture;
+    private NativeGeometryDrawCapture? completedNativeGeometryDrawCapture;
+    private long nativeGeometryDrawSequence;
+
+    private sealed class NativeGeometryDrawCaptureSession(
+        nint targetVertexBuffer,
+        nint targetIndexBuffer
+    )
+    {
+        public nint TargetVertexBuffer { get; } = targetVertexBuffer;
+        public nint TargetIndexBuffer { get; } = targetIndexBuffer;
+        public List<NativeGeometryDrawMatch> Draws { get; } = [];
+    }
 
     private sealed class TransparentCaptureSession(
         int maxDraws,
@@ -59,6 +73,55 @@ internal sealed unsafe partial class D3D11GBufferBackend
         {
             transparentCapture = new TransparentCaptureSession(maxDraws, maxStageAFrames, modules);
             completedTransparentCapture = null;
+        }
+    }
+
+    public void BeginNativeGeometryDrawCapture(nint vertexBuffer, nint indexBuffer)
+    {
+        if (vertexBuffer == 0)
+            throw new ArgumentNullException(nameof(vertexBuffer));
+        if (indexBuffer == 0)
+            throw new ArgumentNullException(nameof(indexBuffer));
+
+        lock (stateLock)
+        {
+            nativeGeometryDrawCapture = new NativeGeometryDrawCaptureSession(
+                vertexBuffer,
+                indexBuffer
+            );
+            completedNativeGeometryDrawCapture = null;
+        }
+    }
+
+    public void CompleteNativeGeometryDrawCapture(string reason)
+    {
+        lock (stateLock)
+        {
+            if (nativeGeometryDrawCapture is not { } capture)
+                return;
+            completedNativeGeometryDrawCapture = new NativeGeometryDrawCapture(
+                capture.TargetVertexBuffer,
+                capture.TargetIndexBuffer,
+                reason,
+                capture.Draws.ToArray()
+            );
+            nativeGeometryDrawCapture = null;
+        }
+    }
+
+    public bool TryTakeNativeGeometryDrawCapture(out NativeGeometryDrawCapture capture)
+    {
+        lock (stateLock)
+        {
+            if (completedNativeGeometryDrawCapture == null)
+            {
+                capture = null!;
+                return false;
+            }
+
+            capture = completedNativeGeometryDrawCapture;
+            completedNativeGeometryDrawCapture = null;
+            return true;
         }
     }
 
@@ -176,6 +239,86 @@ internal sealed unsafe partial class D3D11GBufferBackend
                 log.Warning(exception, "[Underpaint] Transparent draw capture failed.");
                 CompleteTransparentCapture($"capture-error:{exception.GetType().Name}");
             }
+        }
+    }
+
+    private void TryCaptureNativeGeometryDraw(nint context, TransparentDrawArguments arguments)
+    {
+        if (detouring || context != immediateContextPointer)
+            return;
+
+        lock (stateLock)
+        {
+            var capture = nativeGeometryDrawCapture;
+            if (capture == null || capture.Draws.Count >= 32)
+                return;
+
+            var vertexBuffers = CaptureVertexBuffers();
+            var indexBuffer = CaptureIndexBuffer();
+            if (
+                vertexBuffers.All(item => item.Buffer != capture.TargetVertexBuffer)
+                || indexBuffer?.Buffer != capture.TargetIndexBuffer
+            )
+            {
+                return;
+            }
+
+            nint vertexShader;
+            nint pixelShader;
+            nint inputLayout;
+            using (var shader = immediateContext.VertexShader.Get())
+                vertexShader = shader?.NativePointer ?? 0;
+            using (var shader = immediateContext.PixelShader.Get())
+                pixelShader = shader?.NativePointer ?? 0;
+            var nativeInputLayout = immediateContext.InputAssembler.InputLayout;
+            using (nativeInputLayout)
+                inputLayout = nativeInputLayout?.NativePointer ?? 0;
+            var vertexConstants = CaptureNativeConstantBuffers(immediateContext.VertexShader);
+            var pixelConstants = CaptureNativeConstantBuffers(immediateContext.PixelShader);
+            var shaderResources = CaptureShaderResources();
+
+            var pass =
+                activePass?.Kind.ToString()
+                ?? (transparentStageCActive ? "SemitransparentStageC" : "Other");
+            capture.Draws.Add(
+                new NativeGeometryDrawMatch(
+                    Interlocked.Increment(ref nativeGeometryDrawSequence),
+                    Stopwatch.GetTimestamp(),
+                    Environment.CurrentManagedThreadId,
+                    pass,
+                    arguments.DrawType,
+                    arguments.ElementCount,
+                    arguments.InstanceCount,
+                    arguments.StartIndex,
+                    arguments.BaseVertex,
+                    arguments.StartVertex,
+                    arguments.StartInstance,
+                    vertexShader,
+                    pixelShader,
+                    inputLayout,
+                    vertexBuffers
+                        .Select(item => new NativeGeometryVertexBufferBinding(
+                            item.Slot,
+                            item.Buffer,
+                            item.Stride,
+                            item.Offset
+                        ))
+                        .ToArray(),
+                    indexBuffer.Value.Buffer,
+                    indexBuffer.Value.Format,
+                    indexBuffer.Value.Offset,
+                    vertexConstants,
+                    pixelConstants,
+                    shaderResources
+                        .Select(item => new NativeGeometryShaderResourceBinding(
+                            item.Slot,
+                            item.View,
+                            item.Resource
+                        ))
+                        .ToArray(),
+                    CaptureNativePipelineState()
+                )
+            );
         }
     }
 
@@ -316,6 +459,157 @@ internal sealed unsafe partial class D3D11GBufferBackend
         }
     }
 
+    private NativeGeometryConstantBufferBinding[] CaptureNativeConstantBuffers(
+        CommonShaderStage stage
+    )
+    {
+        var buffers = stage.GetConstantBuffers(0, TransparentCaptureConstantBufferSlots);
+        try
+        {
+            var snapshots = new List<NativeGeometryConstantBufferBinding>(buffers.Length);
+            for (var slot = 0; slot < buffers.Length; slot++)
+            {
+                var buffer = buffers[slot];
+                if (buffer == null)
+                    continue;
+
+                var byteWidth = buffer.Description.SizeInBytes;
+                ulong? hash = null;
+                ulong? firstHalfHash = null;
+                ulong? secondHalfHash = null;
+                if (byteWidth <= TransparentCaptureMaxHashedBufferBytes)
+                {
+                    var bytes = ReadConstantBuffer(buffer);
+                    hash = ComputeFnv1A64(bytes);
+                    if (bytes.Length == 128)
+                    {
+                        firstHalfHash = ComputeFnv1A64(bytes[..64]);
+                        secondHalfHash = ComputeFnv1A64(bytes[64..]);
+                    }
+                }
+
+                snapshots.Add(
+                    new NativeGeometryConstantBufferBinding(
+                        slot,
+                        buffer.NativePointer,
+                        byteWidth,
+                        hash,
+                        firstHalfHash,
+                        secondHalfHash
+                    )
+                );
+            }
+            return snapshots.ToArray();
+        }
+        finally
+        {
+            foreach (var buffer in buffers)
+                buffer?.Dispose();
+        }
+    }
+
+    private string CaptureNativePipelineState()
+    {
+        var result = new StringBuilder();
+        var renderTargets = immediateContext.OutputMerger.GetRenderTargets(8, out var depthStencil);
+        try
+        {
+            result.Append("RTV=");
+            for (var slot = 0; slot < renderTargets.Length; slot++)
+            {
+                var view = renderTargets[slot];
+                if (view == null)
+                    continue;
+                using var resource = view.ResourceAs<Texture2D>();
+                var texture = resource.Description;
+                result.Append(
+                    $"{slot}:0x{view.NativePointer:X}/0x{resource.NativePointer:X}/{view.Description.Format}/{texture.Format}/{texture.Width}x{texture.Height},"
+                );
+            }
+
+            result.Append("DSV=");
+            if (depthStencil != null)
+            {
+                using var resource = depthStencil.ResourceAs<Texture2D>();
+                var texture = resource.Description;
+                result.Append(
+                    $"0x{depthStencil.NativePointer:X}/0x{resource.NativePointer:X}/{depthStencil.Description.Format}/{texture.Format}/{texture.Width}x{texture.Height}"
+                );
+            }
+        }
+        finally
+        {
+            foreach (var target in renderTargets)
+                target?.Dispose();
+            depthStencil?.Dispose();
+        }
+
+        var viewports = immediateContext.Rasterizer.GetViewports<ViewportF>();
+        result.Append(" VP=");
+        foreach (var viewport in viewports)
+        {
+            result.Append(
+                $"{viewport.X:R},{viewport.Y:R},{viewport.Width:R},{viewport.Height:R},{viewport.MinDepth:R},{viewport.MaxDepth:R};"
+            );
+        }
+
+        using (
+            var blendState = immediateContext.OutputMerger.GetBlendState(
+                out var blendFactor,
+                out var sampleMask
+            )
+        )
+        {
+            result.Append(
+                $" Blend=0x{blendState?.NativePointer ?? 0:X}/{blendFactor.R:R},{blendFactor.G:R},{blendFactor.B:R},{blendFactor.A:R}/0x{sampleMask:X8}"
+            );
+            if (blendState != null)
+            {
+                var description = blendState.Description;
+                result.Append(
+                    $"/ATC={description.AlphaToCoverageEnable}/Independent={description.IndependentBlendEnable}/Targets="
+                );
+                for (var slot = 0; slot < description.RenderTarget.Length; slot++)
+                {
+                    var target = description.RenderTarget[slot];
+                    result.Append(
+                        $"{slot}:{target.IsBlendEnabled},{target.SourceBlend},{target.DestinationBlend},{target.BlendOperation},{target.SourceAlphaBlend},{target.DestinationAlphaBlend},{target.AlphaBlendOperation},{target.RenderTargetWriteMask};"
+                    );
+                }
+            }
+        }
+
+        using (
+            var depthState = immediateContext.OutputMerger.GetDepthStencilState(
+                out var stencilReference
+            )
+        )
+        {
+            result.Append($" Depth=0x{depthState?.NativePointer ?? 0:X}/Ref={stencilReference}");
+            if (depthState != null)
+            {
+                var description = depthState.Description;
+                result.Append(
+                    $"/{description.IsDepthEnabled},{description.DepthWriteMask},{description.DepthComparison},Stencil={description.IsStencilEnabled},Read=0x{description.StencilReadMask:X2},Write=0x{description.StencilWriteMask:X2}"
+                );
+            }
+        }
+
+        using (var rasterizer = immediateContext.Rasterizer.State)
+        {
+            result.Append($" Raster=0x{rasterizer?.NativePointer ?? 0:X}");
+            if (rasterizer != null)
+            {
+                var description = rasterizer.Description;
+                result.Append(
+                    $"/{description.FillMode},{description.CullMode},CCW={description.IsFrontCounterClockwise},Bias={description.DepthBias}/{description.DepthBiasClamp:R}/{description.SlopeScaledDepthBias:R},Clip={description.IsDepthClipEnabled},Scissor={description.IsScissorEnabled},MSAA={description.IsMultisampleEnabled}"
+                );
+            }
+        }
+        result.Append($" Topology={immediateContext.InputAssembler.PrimitiveTopology}");
+        return result.ToString();
+    }
+
     private TransparentShaderResourceSnapshot[] CaptureShaderResources()
     {
         var views = immediateContext.PixelShader.GetShaderResources(
@@ -429,6 +723,18 @@ internal readonly record struct TransparentDrawArguments(
 
 internal sealed unsafe partial class D3D11GBufferBackend
 {
+    public void BeginNativeGeometryDrawCapture(nint vertexBuffer, nint indexBuffer) { }
+
+    public void CompleteNativeGeometryDrawCapture(string reason) { }
+
+    public bool TryTakeNativeGeometryDrawCapture(out NativeGeometryDrawCapture capture)
+    {
+        capture = null!;
+        return false;
+    }
+
+    private void TryCaptureNativeGeometryDraw(nint context, TransparentDrawArguments arguments) { }
+
     private static void TryCaptureTransparentDraw(
         nint context,
         TransparentDrawArguments arguments

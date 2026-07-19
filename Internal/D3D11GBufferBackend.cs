@@ -981,6 +981,18 @@ internal sealed unsafe partial class D3D11GBufferBackend : IDisposable
     )
     {
         TryCapturePassContext(context);
+        TryCaptureNativeGeometryDraw(
+            context,
+            new TransparentDrawArguments(
+                "DrawIndexed",
+                indexCount,
+                1,
+                startIndexLocation,
+                baseVertexLocation,
+                0,
+                0
+            )
+        );
         TryCaptureOpaqueDrawSnapshot(context);
         TryCaptureTransparentDraw(
             context,
@@ -1001,6 +1013,10 @@ internal sealed unsafe partial class D3D11GBufferBackend : IDisposable
     private void DrawDetour(nint context, uint vertexCount, uint startVertexLocation)
     {
         TryCapturePassContext(context);
+        TryCaptureNativeGeometryDraw(
+            context,
+            new TransparentDrawArguments("Draw", vertexCount, 1, 0, 0, startVertexLocation, 0)
+        );
         TryCaptureOpaqueDrawSnapshot(context);
         TryCaptureTransparentDraw(
             context,
@@ -1020,6 +1036,18 @@ internal sealed unsafe partial class D3D11GBufferBackend : IDisposable
     )
     {
         TryCapturePassContext(context);
+        TryCaptureNativeGeometryDraw(
+            context,
+            new TransparentDrawArguments(
+                "DrawIndexedInstanced",
+                indexCountPerInstance,
+                instanceCount,
+                startIndexLocation,
+                baseVertexLocation,
+                0,
+                startInstanceLocation
+            )
+        );
         TryCaptureOpaqueDrawSnapshot(context);
         TryCaptureTransparentDraw(
             context,
@@ -1053,6 +1081,18 @@ internal sealed unsafe partial class D3D11GBufferBackend : IDisposable
     )
     {
         TryCapturePassContext(context);
+        TryCaptureNativeGeometryDraw(
+            context,
+            new TransparentDrawArguments(
+                "DrawInstanced",
+                vertexCountPerInstance,
+                instanceCount,
+                0,
+                0,
+                startVertexLocation,
+                startInstanceLocation
+            )
+        );
         TryCaptureOpaqueDrawSnapshot(context);
         TryCaptureTransparentDraw(
             context,
