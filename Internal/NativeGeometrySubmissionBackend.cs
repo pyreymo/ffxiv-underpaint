@@ -48,6 +48,11 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     int SourceStartIndex,
     int SourceIndexCount,
     nint ModelParams,
+    nint OwnedModelFacade,
+    uint SourceModelFlags,
+    nint SourceMaterialCallback,
+    nint SourceSkeleton,
+    byte SourceRendererVariant,
     nint RenderModelCallback,
     nint RenderModelCallbackFunction,
     nint ModelField38,
@@ -672,7 +677,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     out var ownedAuxiliaryViewMask,
                     out var rendererSceneKeyCount,
                     out var subViewSceneKeyCount,
-                    out var instanceConstantId
+                    out var instanceConstantId,
+                    out var ownedModelFacade,
+                    out var sourceModelFlags,
+                    out var sourceMaterialCallback,
+                    out var sourceSkeleton,
+                    out var sourceRendererVariant
                 );
                 var ownedInstanceConstant = ProbeConstantBuffer((nint)standaloneInstanceConstant);
                 var offsetWorldConstant = ProbeConstantBuffer((nint)standaloneWorldConstant);
@@ -695,6 +705,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                         startIndex,
                         indexCount,
                         modelParams,
+                        ownedModelFacade,
+                        sourceModelFlags,
+                        sourceMaterialCallback,
+                        sourceSkeleton,
+                        sourceRendererVariant,
                         renderModelCallback,
                         renderModelCallbackFunction,
                         modelField38,
@@ -843,6 +858,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     out _,
                     out _,
                     out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
                     out _
                 );
                 instance.MarkSubmitted(frame);
@@ -891,7 +911,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         out uint ownedAuxiliaryViewMask,
         out int rendererSceneKeyCount,
         out int subViewSceneKeyCount,
-        out uint instanceConstantId
+        out uint instanceConstantId,
+        out nint ownedModelFacade,
+        out uint sourceModelFlags,
+        out nint sourceMaterialCallback,
+        out nint sourceSkeleton,
+        out byte sourceRendererVariant
     )
     {
         var modelParams = *(nint*)materialParameters;
@@ -940,11 +965,20 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 Matrix4x4.CreateTranslation(0, 0, StandaloneViewDepth)
             );
 
+        var sourceModel = *(nint*)modelParams;
+        sourceModelFlags = sourceModel == 0 ? 0 : *(uint*)(sourceModel + 0x28);
+        sourceMaterialCallback = sourceModel == 0 ? 0 : *(nint*)(sourceModel + 0x50);
+        sourceSkeleton = sourceModel == 0 ? 0 : *(nint*)(sourceModel + 0x40);
+        sourceRendererVariant = sourceModel == 0 ? (byte)0 : *(byte*)(sourceModel + 0x178);
+
+        var ownedModel = stackalloc byte[0x180];
         var copiedModelParams = stackalloc byte[0x20];
         var copiedMaterialParams = stackalloc byte[0x48];
         var copiedShaderSelection = stackalloc byte[0x28];
-        Buffer.MemoryCopy((void*)modelParams, copiedModelParams, 0x20, 0x20);
+        NativeMemory.Clear(ownedModel, 0x180);
+        NativeMemory.Clear(copiedModelParams, 0x20);
         Buffer.MemoryCopy((void*)materialParameters, copiedMaterialParams, 0x48, 0x48);
+        ownedModelFacade = (nint)ownedModel;
         sourceMaterialFlags = *(uint*)(copiedMaterialParams + 0x40);
         ownedMaterialIndex = 0;
         sourcePassMask = *(uint*)(copiedMaterialParams + 0x38);
@@ -969,6 +1003,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     "The native shader-selection constructor failed."
                 );
+            *(nint*)copiedModelParams = ownedModelFacade;
             *(nint*)(copiedModelParams + 0x10) = (nint)standaloneInstanceConstant;
             *(nint*)copiedMaterialParams = (nint)copiedModelParams;
             *(nint*)(copiedMaterialParams + 0x30) = (nint)copiedShaderSelection;
