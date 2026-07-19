@@ -4,6 +4,7 @@ using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
+using FFXIVClientStructs.FFXIV.Client.System.Resource;
 using FFXIVClientStructs.FFXIV.Client.System.Resource.Handle;
 using FFXIVClientStructs.Interop;
 
@@ -71,6 +72,7 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     nint OwnedShaderPackage,
     string? OwnedMaterialPath,
     bool MaterialCaptured,
+    bool MaterialLoaded,
     uint OwnedMaterialConstantId,
     NativeGeometrySubmissionResult Submission
 );
@@ -110,6 +112,10 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private const int Stream0Stride = 20;
     private const int Stream1Stride = 24;
     private const float StandaloneViewDepth = 5.0f;
+    private const string StandaloneMaterialPath =
+        "chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl";
+    private const uint StandaloneMaterialFileType = 0x6D74726C;
+    private const uint StandaloneMaterialPathHash = 0x56D3AB97;
 
     private static readonly byte[] VertexDeclarationElements =
     [
@@ -635,7 +641,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 out var ownedMaterial,
                 out var ownedMaterialResource,
                 out var ownedShaderPackage,
-                out var materialCaptured
+                out var materialLoaded
             );
             var offsetModelConstant = ProbeConstantBuffer((nint)standaloneModelConstant);
             var offsetWorldConstant = ProbeConstantBuffer((nint)standaloneWorldConstant);
@@ -682,7 +688,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     ownedMaterialResource,
                     ownedShaderPackage,
                     standaloneMaterialPath,
-                    materialCaptured,
+                    false,
+                    materialLoaded,
                     standaloneMaterialConstantId,
                     submission
                 );
@@ -720,6 +727,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     instancingConstant,
                     previousInstancingConstantId,
                     previousInstancingConstant,
+                    default,
                     default,
                     default,
                     default,
@@ -789,7 +797,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         out nint ownedMaterial,
         out nint ownedMaterialResource,
         out nint ownedShaderPackage,
-        out bool materialCaptured
+        out bool materialLoaded
     )
     {
         var modelParams = *(nint*)materialParameters;
@@ -848,7 +856,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 "The compatible donor is not using the skinned shader variant."
             );
 
-        materialCaptured = EnsureStandaloneMaterial(sourceMaterial);
+        materialLoaded = EnsureStandaloneMaterial();
         var targetMaterial = standaloneMaterialResource->Material;
         var targetShaderPackageResource = standaloneMaterialResource->ShaderPackageResourceHandle;
         var targetShaderPackage =
@@ -897,7 +905,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             if (standaloneMaterialConstantId == uint.MaxValue)
                 standaloneMaterialConstantId = FindBoundConstantId(
                     contextBytes,
-                    targetMaterial->MaterialParameterCBuffer
+                    sourceMaterial == null
+                        ? targetMaterial->MaterialParameterCBuffer
+                        : sourceMaterial->MaterialParameterCBuffer
                 );
             if (standaloneMaterialConstantId == uint.MaxValue)
                 throw new InvalidOperationException(
@@ -936,25 +946,36 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
     }
 
-    private bool EnsureStandaloneMaterial(Material* sourceMaterial)
+    private bool EnsureStandaloneMaterial()
     {
         if (standaloneMaterialResource != null)
             return false;
-        var resource = sourceMaterial == null ? null : sourceMaterial->MaterialResourceHandle;
+        var resourceManager = ResourceManager.Instance();
+        if (resourceManager == null)
+            throw new InvalidOperationException("The native resource manager is not available.");
+        var category = ResourceCategory.Chara;
+        var fileType = StandaloneMaterialFileType;
+        var pathHash = StandaloneMaterialPathHash;
+        var resource = (MaterialResourceHandle*)
+            resourceManager->GetResourceSync(
+                &category,
+                &fileType,
+                &pathHash,
+                StandaloneMaterialPath,
+                null,
+                null,
+                0
+            );
         if (
             resource == null
             || resource->Material == null
             || resource->ShaderPackageResourceHandle == null
         )
             throw new InvalidOperationException(
-                "The native submission site has no capturable material."
+                "The standalone native material could not be loaded."
             );
-        standaloneMaterialResource = (MaterialResourceHandle*)resource->IncRef();
-        if (standaloneMaterialResource == null)
-            throw new InvalidOperationException(
-                "The native material resource could not be retained."
-            );
-        standaloneMaterialPath = ((ResourceHandle*)standaloneMaterialResource)->FileName.ToString();
+        standaloneMaterialResource = resource;
+        standaloneMaterialPath = StandaloneMaterialPath;
         return true;
     }
 
