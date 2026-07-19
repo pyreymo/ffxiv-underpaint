@@ -529,7 +529,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             }
             catch (Exception exception)
             {
-                log.Error(exception, "[Underpaint] Continuous native rigid submission failed.");
+                if (instance.MarkFailed(exception.Message))
+                    log.Error(exception, "[Underpaint] Native rigid submission stopped.");
             }
         }
     }
@@ -1001,10 +1002,19 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
     private uint preparedFrame = uint.MaxValue;
     private bool resetHistory = true;
     private bool removed;
+    private string? failure;
 
     internal NativeGeometrySubmissionBackend Owner { get; }
     internal NativeGeometry Geometry { get; }
     internal ConstantBuffer* WorldConstant { get; private set; }
+    internal string? Failure
+    {
+        get
+        {
+            lock (stateLock)
+                return failure;
+        }
+    }
 
     internal NativeRigidInstance(
         NativeGeometrySubmissionBackend owner,
@@ -1034,7 +1044,13 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
     {
         lock (stateLock)
         {
-            if (removed || Geometry.IsDisposed || WorldConstant == null || preparedFrame == frame)
+            if (
+                removed
+                || failure != null
+                || Geometry.IsDisposed
+                || WorldConstant == null
+                || preparedFrame == frame
+            )
                 return false;
             if (resetHistory)
                 previousWorldView = currentWorldView;
@@ -1044,6 +1060,17 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
                 previousWorldView
             );
             preparedFrame = frame;
+            return true;
+        }
+    }
+
+    internal bool MarkFailed(string message)
+    {
+        lock (stateLock)
+        {
+            if (failure != null)
+                return false;
+            failure = message;
             return true;
         }
     }
