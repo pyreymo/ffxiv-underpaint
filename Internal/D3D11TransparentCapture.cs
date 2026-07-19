@@ -41,6 +41,7 @@ internal sealed unsafe partial class D3D11GBufferBackend
         public nint TargetVertexBuffer { get; } = targetVertexBuffer;
         public nint TargetIndexBuffer { get; } = targetIndexBuffer;
         public List<NativeGeometryDrawMatch> Draws { get; } = [];
+        public int PendingOutputCaptureIndex { get; set; } = -1;
     }
 
     private sealed class TransparentCaptureSession(
@@ -252,6 +253,7 @@ internal sealed unsafe partial class D3D11GBufferBackend
             var capture = nativeGeometryDrawCapture;
             if (capture == null || capture.Draws.Count >= 32)
                 return;
+            capture.PendingOutputCaptureIndex = -1;
 
             var vertexBuffers = CaptureVertexBuffers();
             var indexBuffer = CaptureIndexBuffer();
@@ -280,6 +282,7 @@ internal sealed unsafe partial class D3D11GBufferBackend
             var pass =
                 activePass?.Kind.ToString()
                 ?? (transparentStageCActive ? "SemitransparentStageC" : "Other");
+            capture.PendingOutputCaptureIndex = capture.Draws.Count;
             capture.Draws.Add(
                 new NativeGeometryDrawMatch(
                     Interlocked.Increment(ref nativeGeometryDrawSequence),
@@ -316,11 +319,133 @@ internal sealed unsafe partial class D3D11GBufferBackend
                             item.Resource
                         ))
                         .ToArray(),
-                    CaptureNativePipelineState()
+                    CaptureNativePipelineState(),
+                    []
                 )
             );
         }
     }
+
+    private void TryCaptureNativeGeometryOutput(nint context)
+    {
+        if (detouring || context != immediateContextPointer)
+            return;
+
+        lock (stateLock)
+        {
+            var capture = nativeGeometryDrawCapture;
+            if (
+                capture == null
+                || capture.PendingOutputCaptureIndex < 0
+                || capture.PendingOutputCaptureIndex >= capture.Draws.Count
+            )
+                return;
+
+            var index = capture.PendingOutputCaptureIndex;
+            capture.PendingOutputCaptureIndex = -1;
+            try
+            {
+                capture.Draws[index] = capture.Draws[index] with
+                {
+                    RenderTargetSamples = CaptureNativeRenderTargetSamples(),
+                };
+            }
+            catch (Exception exception)
+            {
+                log.Warning(exception, "[Underpaint] Native geometry output capture failed.");
+            }
+        }
+    }
+
+    private NativeGeometryRenderTargetSample[] CaptureNativeRenderTargetSamples()
+    {
+        const int sampleSize = 128;
+        var renderTargets = immediateContext.OutputMerger.GetRenderTargets(8);
+        try
+        {
+            var samples = new List<NativeGeometryRenderTargetSample>(renderTargets.Length);
+            for (var slot = 0; slot < renderTargets.Length; slot++)
+            {
+                var view = renderTargets[slot];
+                if (view == null)
+                    continue;
+                using var source = view.ResourceAs<Texture2D>();
+                var sourceDescription = source.Description;
+                var width = Math.Min(sampleSize, sourceDescription.Width);
+                var height = Math.Min(sampleSize, sourceDescription.Height);
+                var left = (sourceDescription.Width - width) / 2;
+                var top = (sourceDescription.Height - height) / 2;
+                var bytesPerPixel = BytesPerPixel(sourceDescription.Format);
+                if (bytesPerPixel == 0 || sourceDescription.SampleDescription.Count != 1)
+                    continue;
+
+                using var staging = new Texture2D(
+                    device,
+                    new Texture2DDescription
+                    {
+                        Width = width,
+                        Height = height,
+                        MipLevels = 1,
+                        ArraySize = 1,
+                        Format = sourceDescription.Format,
+                        SampleDescription = new SampleDescription(1, 0),
+                        Usage = ResourceUsage.Staging,
+                        BindFlags = BindFlags.None,
+                        CpuAccessFlags = CpuAccessFlags.Read,
+                        OptionFlags = ResourceOptionFlags.None,
+                    }
+                );
+                var region = new ResourceRegion(left, top, 0, left + width, top + height, 1);
+                immediateContext.CopySubresourceRegion(staging, 0, region, source, 0, 0, 0, 0);
+                var data = immediateContext.MapSubresource(
+                    staging,
+                    0,
+                    MapMode.Read,
+                    SharpDX.Direct3D11.MapFlags.None
+                );
+                try
+                {
+                    var hash = 14695981039346656037UL;
+                    var rowBytes = width * bytesPerPixel;
+                    for (var y = 0; y < height; y++)
+                    {
+                        var row = (byte*)data.DataPointer + y * data.RowPitch;
+                        for (var x = 0; x < rowBytes; x++)
+                        {
+                            hash ^= row[x];
+                            hash *= 1099511628211UL;
+                        }
+                    }
+                    samples.Add(
+                        new NativeGeometryRenderTargetSample(
+                            slot,
+                            source.NativePointer,
+                            sourceDescription.Format.ToString(),
+                            hash
+                        )
+                    );
+                }
+                finally
+                {
+                    immediateContext.UnmapSubresource(staging, 0);
+                }
+            }
+            return samples.ToArray();
+        }
+        finally
+        {
+            foreach (var target in renderTargets)
+                target?.Dispose();
+        }
+    }
+
+    private static int BytesPerPixel(Format format) =>
+        format switch
+        {
+            Format.B8G8R8A8_UNorm => 4,
+            Format.R16G16B16A16_Float => 8,
+            _ => 0,
+        };
 
     private TransparentNativeDrawSnapshot CaptureTransparentDraw(
         TransparentDrawStage stage,
@@ -734,6 +859,8 @@ internal sealed unsafe partial class D3D11GBufferBackend
     }
 
     private void TryCaptureNativeGeometryDraw(nint context, TransparentDrawArguments arguments) { }
+
+    private static void TryCaptureNativeGeometryOutput(nint context) { }
 
     private static void TryCaptureTransparentDraw(
         nint context,

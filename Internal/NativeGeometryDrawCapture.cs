@@ -42,6 +42,13 @@ internal readonly record struct NativeGeometryShaderResourceBinding(
     nint Resource
 );
 
+internal readonly record struct NativeGeometryRenderTargetSample(
+    int Slot,
+    nint Resource,
+    string Format,
+    ulong ContentHash
+);
+
 internal readonly record struct NativeGeometryDrawMatch(
     long Sequence,
     long Timestamp,
@@ -64,7 +71,8 @@ internal readonly record struct NativeGeometryDrawMatch(
     IReadOnlyList<NativeGeometryConstantBufferBinding> VertexConstantBuffers,
     IReadOnlyList<NativeGeometryConstantBufferBinding> PixelConstantBuffers,
     IReadOnlyList<NativeGeometryShaderResourceBinding> ShaderResources,
-    string PipelineState
+    string PipelineState,
+    IReadOnlyList<NativeGeometryRenderTargetSample> RenderTargetSamples
 );
 
 internal sealed record NativeGeometryDrawCapture(
