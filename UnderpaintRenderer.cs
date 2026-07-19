@@ -37,6 +37,23 @@ public sealed class UnderpaintRenderer : IDisposable
         System.Numerics.Matrix4x4 currentWorldView
     ) => NativeGeometryBackend.CreateRigidInstance(geometry, currentWorldView);
 
+    internal NativeRigidInstance CreateNativeWorldRigidInstance(
+        NativeGeometry geometry,
+        System.Numerics.Matrix4x4 world
+    ) => NativeGeometryBackend.CreateWorldRigidInstance(geometry, world);
+
+    internal void BeginNativeGeometryDrawCapture(NativeGeometry geometry) =>
+        backend.BeginNativeGeometryDrawCapture(
+            geometry.VertexBufferResource,
+            geometry.IndexBufferResource
+        );
+
+    internal void CompleteNativeGeometryDrawCapture(string reason) =>
+        backend.CompleteNativeGeometryDrawCapture(reason);
+
+    internal bool TryTakeNativeGeometryDrawCapture(out NativeGeometryDrawCapture capture) =>
+        backend.TryTakeNativeGeometryDrawCapture(out capture);
+
     private NativeGeometrySubmissionBackend NativeGeometryBackend =>
         nativeGeometryBackend ??= new NativeGeometrySubmissionBackend(gameInteropProvider, log);
 

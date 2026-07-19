@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
@@ -230,6 +231,15 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     public NativeRigidInstance CreateRigidInstance(
         NativeGeometry geometry,
         Matrix4x4 currentWorldView
+    ) => CreateRigidInstance(geometry, currentWorldView, null);
+
+    public NativeRigidInstance CreateWorldRigidInstance(NativeGeometry geometry, Matrix4x4 world) =>
+        CreateRigidInstance(geometry, Matrix4x4.Identity, world);
+
+    private NativeRigidInstance CreateRigidInstance(
+        NativeGeometry geometry,
+        Matrix4x4 currentWorldView,
+        Matrix4x4? fixedWorld
     )
     {
         lock (stateLock)
@@ -243,7 +253,13 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     "The game rejected a rigid-instance world constant buffer."
                 );
-            var instance = new NativeRigidInstance(this, geometry, worldConstant, currentWorldView);
+            var instance = new NativeRigidInstance(
+                this,
+                geometry,
+                worldConstant,
+                currentWorldView,
+                fixedWorld
+            );
             rigidInstances.Add(instance);
             return instance;
         }
@@ -515,7 +531,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         {
             try
             {
-                if (!instance.PrepareWorld(frame))
+                Matrix4x4? renderWorldView = null;
+                if (instance.FixedWorld is { } world)
+                {
+                    if (!TryGetActiveView(out var viewMatrix))
+                        continue;
+                    renderWorldView = world * viewMatrix;
+                }
+                if (!instance.PrepareWorld(frame, renderWorldView))
                     continue;
                 SubmitOwnedWorld(
                     modelRenderer,
@@ -533,6 +556,17 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     log.Error(exception, "[Underpaint] Native rigid submission stopped.");
             }
         }
+    }
+
+    private static bool TryGetActiveView(out Matrix4x4 view)
+    {
+        view = default;
+        var control = Control.Instance();
+        var camera = control == null ? null : control->CameraManager.GetActiveCamera();
+        if (camera == null)
+            return false;
+        view = *(Matrix4x4*)&camera->SceneCamera.ViewMatrix;
+        return true;
     }
 
     private static uint GetConstantId(nint modelRenderer, int wellKnownIndex) =>
@@ -1009,6 +1043,7 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
     internal NativeGeometrySubmissionBackend Owner { get; }
     internal NativeGeometry Geometry { get; }
     internal ConstantBuffer* WorldConstant { get; private set; }
+    internal Matrix4x4? FixedWorld { get; }
     internal bool HasSubmitted
     {
         get
@@ -1038,12 +1073,14 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
         NativeGeometrySubmissionBackend owner,
         NativeGeometry geometry,
         ConstantBuffer* worldConstant,
-        Matrix4x4 currentWorldView
+        Matrix4x4 currentWorldView,
+        Matrix4x4? fixedWorld
     )
     {
         Owner = owner;
         Geometry = geometry;
         WorldConstant = worldConstant;
+        FixedWorld = fixedWorld;
         this.currentWorldView = currentWorldView;
         previousWorldView = currentWorldView;
     }
@@ -1058,7 +1095,7 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
         }
     }
 
-    internal bool PrepareWorld(uint frame)
+    internal bool PrepareWorld(uint frame, Matrix4x4? renderWorldView)
     {
         lock (stateLock)
         {
@@ -1070,6 +1107,8 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
                 || preparedFrame == frame
             )
                 return false;
+            if (renderWorldView is { } value)
+                currentWorldView = value;
             if (resetHistory)
                 previousWorldView = currentWorldView;
             NativeGeometrySubmissionBackend.WriteWorldConstant(
