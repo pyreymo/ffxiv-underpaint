@@ -2,7 +2,6 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
-using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
@@ -51,6 +50,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private const uint SupportedMainPassMask = 0x01000000;
     private const uint SupportedAuxiliaryPassMask = 0x00C00000;
     private const uint SupportedAuxiliaryViewMask = 0x00000003;
+    private const int MainRenderViewIndex = 30;
+    private const int MainRendezvousSubViewIndex = 11;
+    private const int MainTransformSubViewIndex = 12;
 
     private static readonly byte[] VertexDeclarationElements =
     [
@@ -481,8 +483,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             modelParams == 0 ? null : *(ConstantBuffer**)(modelParams + 0x10);
         if (
             context == null
-            || view != 30
-            || subView != 11
+            || view != MainRenderViewIndex
+            || subView != MainRendezvousSubViewIndex
             || sourceInstanceConstant == null
             || *(int*)((byte*)sourceInstanceConstant + 0x20) != InstanceParameterSize
             || sourceStream0Stride != Stream0Stride
@@ -561,11 +563,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private static bool TryGetActiveView(out Matrix4x4 view)
     {
         view = default;
-        var control = Control.Instance();
-        var camera = control == null ? null : control->CameraManager.GetActiveCamera();
+        var manager = Manager.Instance();
+        var camera =
+            manager == null
+                ? null
+                : manager->Views[MainRenderViewIndex].SubViews[MainTransformSubViewIndex].Camera;
         if (camera == null)
             return false;
-        view = *(Matrix4x4*)&camera->SceneCamera.ViewMatrix;
+        view = *(Matrix4x4*)&camera->ViewMatrix;
         return true;
     }
 
