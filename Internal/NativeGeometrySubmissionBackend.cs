@@ -46,8 +46,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private const uint StandaloneMaterialFileType = 0x6D74726C;
     private const uint StandaloneMaterialPathHash = 0x5D6A7B3E;
     private const int ModelObjectParameterSize = 176;
-    private const uint SupportedMainPassMask = 0x01000000;
-    private const uint SupportedAuxiliaryPassMask = 0x00C00000;
     private const uint SupportedAuxiliaryViewMask = 0x00000003;
     private const int MainRenderViewIndex = 30;
     private const int MainRendezvousSubViewIndex = 11;
@@ -607,12 +605,18 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         Buffer.MemoryCopy((void*)materialParameters, copiedMaterialParams, 0x48, 0x48);
         *(nint*)(copiedMaterialParams + 0x08) = 0;
         NativeMemory.Clear(copiedMaterialParams + 0x10, 0x28);
-        *(uint*)(copiedMaterialParams + 0x38) = SupportedMainPassMask | SupportedAuxiliaryPassMask;
         *(uint*)(copiedMaterialParams + 0x3C) = 0;
         *(uint*)(copiedMaterialParams + 0x40) = 0;
         *(uint*)(copiedMaterialParams + 0x44) = SupportedAuxiliaryViewMask;
         NativeMemory.Clear(copiedShaderSelection, 0x28);
-        *(nint*)copiedShaderSelection = *(nint*)(materialParameters + 0x30);
+        var sourceShaderSelection = *(nint*)(materialParameters + 0x30);
+        if (sourceShaderSelection == 0 || *(nint*)sourceShaderSelection == 0)
+            throw new InvalidOperationException(
+                "The render rendezvous has no shader-selection descriptor."
+            );
+        // The first field is the selection descriptor. Params2+0x30 points to the
+        // source selection object, not to that descriptor directly.
+        *(nint*)copiedShaderSelection = *(nint*)sourceShaderSelection;
         initializeShaderSelectionHook.Original(copiedShaderSelection, (nint)targetShaderPackage);
         try
         {
@@ -641,6 +645,10 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 targetMaterial,
                 0
             );
+            if (*(nint*)copiedShaderSelection == 0)
+                throw new InvalidOperationException(
+                    "The owned material did not select a native shader descriptor."
+                );
             applyMaterialHook.Original(copiedShaderSelection, targetMaterial);
             standaloneMaterialConstantId = FindBoundConstantId(
                 contextBytes,
