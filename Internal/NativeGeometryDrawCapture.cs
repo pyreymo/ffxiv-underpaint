@@ -63,7 +63,8 @@ internal readonly record struct NativeGeometryDrawMatch(
     int IndexOffset,
     IReadOnlyList<NativeGeometryConstantBufferBinding> VertexConstantBuffers,
     IReadOnlyList<NativeGeometryConstantBufferBinding> PixelConstantBuffers,
-    IReadOnlyList<NativeGeometryShaderResourceBinding> ShaderResources
+    IReadOnlyList<NativeGeometryShaderResourceBinding> ShaderResources,
+    string PipelineState
 );
 
 internal sealed record NativeGeometryDrawCapture(

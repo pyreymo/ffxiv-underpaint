@@ -1,6 +1,8 @@
 #if DEBUG
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
+using SharpDX;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using D3D11Buffer = SharpDX.Direct3D11.Buffer;
@@ -313,7 +315,8 @@ internal sealed unsafe partial class D3D11GBufferBackend
                             item.View,
                             item.Resource
                         ))
-                        .ToArray()
+                        .ToArray(),
+                    CaptureNativePipelineState()
                 )
             );
         }
@@ -503,6 +506,108 @@ internal sealed unsafe partial class D3D11GBufferBackend
             foreach (var buffer in buffers)
                 buffer?.Dispose();
         }
+    }
+
+    private string CaptureNativePipelineState()
+    {
+        var result = new StringBuilder();
+        var renderTargets = immediateContext.OutputMerger.GetRenderTargets(8, out var depthStencil);
+        try
+        {
+            result.Append("RTV=");
+            for (var slot = 0; slot < renderTargets.Length; slot++)
+            {
+                var view = renderTargets[slot];
+                if (view == null)
+                    continue;
+                using var resource = view.ResourceAs<Texture2D>();
+                var texture = resource.Description;
+                result.Append(
+                    $"{slot}:0x{view.NativePointer:X}/0x{resource.NativePointer:X}/{view.Description.Format}/{texture.Format}/{texture.Width}x{texture.Height},"
+                );
+            }
+
+            result.Append("DSV=");
+            if (depthStencil != null)
+            {
+                using var resource = depthStencil.ResourceAs<Texture2D>();
+                var texture = resource.Description;
+                result.Append(
+                    $"0x{depthStencil.NativePointer:X}/0x{resource.NativePointer:X}/{depthStencil.Description.Format}/{texture.Format}/{texture.Width}x{texture.Height}"
+                );
+            }
+        }
+        finally
+        {
+            foreach (var target in renderTargets)
+                target?.Dispose();
+            depthStencil?.Dispose();
+        }
+
+        var viewports = immediateContext.Rasterizer.GetViewports<ViewportF>();
+        result.Append(" VP=");
+        foreach (var viewport in viewports)
+        {
+            result.Append(
+                $"{viewport.X:R},{viewport.Y:R},{viewport.Width:R},{viewport.Height:R},{viewport.MinDepth:R},{viewport.MaxDepth:R};"
+            );
+        }
+
+        using (
+            var blendState = immediateContext.OutputMerger.GetBlendState(
+                out var blendFactor,
+                out var sampleMask
+            )
+        )
+        {
+            result.Append(
+                $" Blend=0x{blendState?.NativePointer ?? 0:X}/{blendFactor.R:R},{blendFactor.G:R},{blendFactor.B:R},{blendFactor.A:R}/0x{sampleMask:X8}"
+            );
+            if (blendState != null)
+            {
+                var description = blendState.Description;
+                result.Append(
+                    $"/ATC={description.AlphaToCoverageEnable}/Independent={description.IndependentBlendEnable}/Targets="
+                );
+                for (var slot = 0; slot < description.RenderTarget.Length; slot++)
+                {
+                    var target = description.RenderTarget[slot];
+                    result.Append(
+                        $"{slot}:{target.IsBlendEnabled},{target.SourceBlend},{target.DestinationBlend},{target.BlendOperation},{target.SourceAlphaBlend},{target.DestinationAlphaBlend},{target.AlphaBlendOperation},{target.RenderTargetWriteMask};"
+                    );
+                }
+            }
+        }
+
+        using (
+            var depthState = immediateContext.OutputMerger.GetDepthStencilState(
+                out var stencilReference
+            )
+        )
+        {
+            result.Append($" Depth=0x{depthState?.NativePointer ?? 0:X}/Ref={stencilReference}");
+            if (depthState != null)
+            {
+                var description = depthState.Description;
+                result.Append(
+                    $"/{description.IsDepthEnabled},{description.DepthWriteMask},{description.DepthComparison},Stencil={description.IsStencilEnabled},Read=0x{description.StencilReadMask:X2},Write=0x{description.StencilWriteMask:X2}"
+                );
+            }
+        }
+
+        using (var rasterizer = immediateContext.Rasterizer.State)
+        {
+            result.Append($" Raster=0x{rasterizer?.NativePointer ?? 0:X}");
+            if (rasterizer != null)
+            {
+                var description = rasterizer.Description;
+                result.Append(
+                    $"/{description.FillMode},{description.CullMode},CCW={description.IsFrontCounterClockwise},Bias={description.DepthBias}/{description.DepthBiasClamp:R}/{description.SlopeScaledDepthBias:R},Clip={description.IsDepthClipEnabled},Scissor={description.IsScissorEnabled},MSAA={description.IsMultisampleEnabled}"
+                );
+            }
+        }
+        result.Append($" Topology={immediateContext.InputAssembler.PrimitiveTopology}");
+        return result.ToString();
     }
 
     private TransparentShaderResourceSnapshot[] CaptureShaderResources()
