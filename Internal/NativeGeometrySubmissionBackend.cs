@@ -573,6 +573,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         if (camera == null)
             return false;
         view = *(Matrix4x4*)&camera->ViewMatrix;
+        // The native affine multiply reads only the 3x4 payload and supplies the
+        // homogeneous column itself. These four storage slots are not initialized.
+        view.M14 = 0;
+        view.M24 = 0;
+        view.M34 = 0;
+        view.M44 = 1;
         return true;
     }
 
