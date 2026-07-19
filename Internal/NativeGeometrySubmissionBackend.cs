@@ -78,7 +78,9 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     uint OwnedMaterialFlags,
     uint OwnedMaterialIndex,
     uint SourcePassMask,
+    uint OwnedPassMask,
     uint SourceAuxiliaryViewMask,
+    uint OwnedAuxiliaryViewMask,
     int RendererSceneKeyCount,
     int SubViewSceneKeyCount,
     uint OwnedMaterialConstantId,
@@ -124,6 +126,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private const uint StandaloneMaterialPathHash = 0x56D3AB97;
     private const uint InstanceParameterCrc = 0x20A30B34;
     private const int InstanceParameterSize = 176;
+    private const uint SupportedMainPassMask = 0x01000000;
+    private const uint SupportedAuxiliaryPassMask = 0x00C00000;
+    private const uint SupportedAuxiliaryViewMask = 0x00000003;
 
     private static readonly byte[] VertexDeclarationElements =
     [
@@ -662,7 +667,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     out var ownedMaterialFlags,
                     out var ownedMaterialIndex,
                     out var sourcePassMask,
+                    out var ownedPassMask,
                     out var sourceAuxiliaryViewMask,
+                    out var ownedAuxiliaryViewMask,
                     out var rendererSceneKeyCount,
                     out var subViewSceneKeyCount,
                     out var instanceConstantId
@@ -718,7 +725,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                         ownedMaterialFlags,
                         ownedMaterialIndex,
                         sourcePassMask,
+                        ownedPassMask,
                         sourceAuxiliaryViewMask,
+                        ownedAuxiliaryViewMask,
                         rendererSceneKeyCount,
                         subViewSceneKeyCount,
                         standaloneMaterialConstantId,
@@ -832,6 +841,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     out _,
                     out _,
                     out _,
+                    out _,
+                    out _,
                     out _
                 );
                 instance.MarkSubmitted(frame);
@@ -875,7 +886,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         out uint ownedMaterialFlags,
         out uint ownedMaterialIndex,
         out uint sourcePassMask,
+        out uint ownedPassMask,
         out uint sourceAuxiliaryViewMask,
+        out uint ownedAuxiliaryViewMask,
         out int rendererSceneKeyCount,
         out int subViewSceneKeyCount,
         out uint instanceConstantId
@@ -936,12 +949,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         ownedMaterialIndex = 0;
         sourcePassMask = *(uint*)(copiedMaterialParams + 0x38);
         sourceAuxiliaryViewMask = *(uint*)(copiedMaterialParams + 0x44);
+        ownedPassMask = SupportedMainPassMask | SupportedAuxiliaryPassMask;
+        ownedAuxiliaryViewMask = SupportedAuxiliaryViewMask;
         *(nint*)(copiedMaterialParams + 0x08) = 0;
         NativeMemory.Clear(copiedMaterialParams + 0x10, 0x28);
-        *(uint*)(copiedMaterialParams + 0x38) = sourcePassMask;
+        *(uint*)(copiedMaterialParams + 0x38) = ownedPassMask;
         *(uint*)(copiedMaterialParams + 0x3C) = 0;
         *(uint*)(copiedMaterialParams + 0x40) = 0;
-        *(uint*)(copiedMaterialParams + 0x44) = sourceAuxiliaryViewMask;
+        *(uint*)(copiedMaterialParams + 0x44) = ownedAuxiliaryViewMask;
         NativeMemory.Clear(copiedShaderSelection, 0x28);
         *(nint*)copiedShaderSelection = *(nint*)shaderSelection;
         initializeShaderSelectionHook.Original(copiedShaderSelection, (nint)targetShaderPackage);
