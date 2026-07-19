@@ -51,14 +51,15 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     nint RenderModelCallback,
     nint RenderModelCallbackFunction,
     nint ModelField38,
-    NativeConstantBufferProbe OnRenderModelConstant,
+    uint InstanceConstantId,
+    NativeConstantBufferProbe SourceInstanceConstant,
     uint WorldConstantId,
     NativeConstantBufferProbe WorldConstant,
     uint InstancingConstantId,
     NativeConstantBufferProbe InstancingConstant,
     uint PreviousInstancingConstantId,
     NativeConstantBufferProbe PreviousInstancingConstant,
-    NativeConstantBufferProbe OffsetModelConstant,
+    NativeConstantBufferProbe OwnedInstanceConstant,
     NativeConstantBufferProbe OffsetWorldConstant,
     NativeConstantBufferProbe OffsetInstancingConstant,
     NativeConstantBufferProbe OffsetPreviousInstancingConstant,
@@ -121,6 +122,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         "chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl";
     private const uint StandaloneMaterialFileType = 0x6D74726C;
     private const uint StandaloneMaterialPathHash = 0x56D3AB97;
+    private const uint InstanceParameterCrc = 0x20A30B34;
+    private const int InstanceParameterSize = 176;
 
     private static readonly byte[] VertexDeclarationElements =
     [
@@ -173,7 +176,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private readonly List<NativeRigidInstance> retiredRigidInstances = [];
     private NativeGeometry? armedStandaloneGeometry;
     private NativeGeometryStandaloneSubmission? completedStandaloneSubmission;
-    private ConstantBuffer* standaloneModelConstant;
+    private ConstantBuffer* standaloneInstanceConstant;
     private ConstantBuffer* standaloneWorldConstant;
     private MaterialResourceHandle* standaloneMaterialResource;
     private string? standaloneMaterialPath;
@@ -435,7 +438,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
         expandPassesHook.Disable();
         ReleaseNativeResource(ref standaloneWorldConstant);
-        ReleaseNativeResource(ref standaloneModelConstant);
+        ReleaseNativeResource(ref standaloneInstanceConstant);
         ReleaseStandaloneMaterial();
         lock (stateLock)
         {
@@ -593,8 +596,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var renderModelCallbackFunction =
             renderModelCallback == 0 ? 0 : *(nint*)renderModelCallback;
         var modelField38 = model == 0 ? 0 : *(nint*)(model + 0x38);
-        var onRenderModelConstant = ProbeConstantBuffer(
+        var sourceInstanceConstant = ProbeConstantBuffer(
             modelParams == 0 ? 0 : *(nint*)(modelParams + 0x10)
+        );
+        var sourceInstanceConstantId = FindBoundConstantId(
+            contextBytes,
+            (ConstantBuffer*)sourceInstanceConstant.Buffer
         );
         var worldConstantId = GetConstantId(modelRenderer, 1);
         var instancingConstantId = GetConstantId(modelRenderer, 11);
@@ -620,7 +627,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             context == null
             || view != 30
             || subView != 11
-            || onRenderModelConstant.ByteSize != 176
+            || sourceInstanceConstant.ByteSize != InstanceParameterSize
             || sourceStream0Stride != Stream0Stride
         )
             return result;
@@ -657,9 +664,10 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     out var sourcePassMask,
                     out var sourceAuxiliaryViewMask,
                     out var rendererSceneKeyCount,
-                    out var subViewSceneKeyCount
+                    out var subViewSceneKeyCount,
+                    out var instanceConstantId
                 );
-                var offsetModelConstant = ProbeConstantBuffer((nint)standaloneModelConstant);
+                var ownedInstanceConstant = ProbeConstantBuffer((nint)standaloneInstanceConstant);
                 var offsetWorldConstant = ProbeConstantBuffer((nint)standaloneWorldConstant);
                 lock (stateLock)
                 {
@@ -683,14 +691,15 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                         renderModelCallback,
                         renderModelCallbackFunction,
                         modelField38,
-                        onRenderModelConstant,
+                        instanceConstantId,
+                        sourceInstanceConstant,
                         worldConstantId,
                         worldConstant,
                         instancingConstantId,
                         instancingConstant,
                         previousInstancingConstantId,
                         previousInstancingConstant,
-                        offsetModelConstant,
+                        ownedInstanceConstant,
                         offsetWorldConstant,
                         default,
                         default,
@@ -743,7 +752,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                         RenderModelCallback = renderModelCallback,
                         RenderModelCallbackFunction = renderModelCallbackFunction,
                         ModelField38 = modelField38,
-                        OnRenderModelConstant = onRenderModelConstant,
+                        InstanceConstantId = sourceInstanceConstantId,
+                        SourceInstanceConstant = sourceInstanceConstant,
                         WorldConstantId = worldConstantId,
                         WorldConstant = worldConstant,
                         InstancingConstantId = instancingConstantId,
@@ -821,6 +831,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     out _,
                     out _,
                     out _,
+                    out _,
                     out _
                 );
                 instance.MarkSubmitted(frame);
@@ -866,19 +877,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         out uint sourcePassMask,
         out uint sourceAuxiliaryViewMask,
         out int rendererSceneKeyCount,
-        out int subViewSceneKeyCount
+        out int subViewSceneKeyCount,
+        out uint instanceConstantId
     )
     {
         var modelParams = *(nint*)materialParameters;
         if (modelParams == 0)
             throw new InvalidOperationException(
                 "The native material parameters have no model input."
-            );
-
-        var modelConstant = ProbeConstantBuffer(*(nint*)(modelParams + 0x10));
-        if (modelConstant.ByteSize != 176 || modelConstant.SourcePointer == 0)
-            throw new InvalidOperationException(
-                "The native model constant is not a readable 176-byte input."
             );
 
         shaderSelection = *(nint*)(materialParameters + 0x30);
@@ -904,9 +910,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         ownedMaterial = (nint)targetMaterial;
         ownedMaterialResource = (nint)standaloneMaterialResource;
         ownedShaderPackage = (nint)targetShaderPackage;
+        instanceConstantId = FindShaderConstantId(
+            targetShaderPackage,
+            InstanceParameterCrc,
+            InstanceParameterSize
+        );
 
         EnsureStandaloneConstants();
-        CopyConstant(modelConstant, standaloneModelConstant);
+        WriteDefaultInstanceConstant(standaloneInstanceConstant);
         var ownedWorldConstant =
             worldConstantOverride == null ? standaloneWorldConstant : worldConstantOverride;
         if (worldConstantOverride == null)
@@ -943,7 +954,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     "The native shader-selection constructor failed."
                 );
-            *(nint*)(copiedModelParams + 0x10) = (nint)standaloneModelConstant;
+            *(nint*)(copiedModelParams + 0x10) = (nint)standaloneInstanceConstant;
             *(nint*)copiedMaterialParams = (nint)copiedModelParams;
             *(nint*)(copiedMaterialParams + 0x30) = (nint)copiedShaderSelection;
             offsetShaderSelection = (nint)copiedShaderSelection;
@@ -978,6 +989,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     "The material helper did not bind the owned material constant."
                 );
+            contextState.SetConstant(instanceConstantId, standaloneInstanceConstant);
             return SubmitCore(
                 modelRenderer,
                 (nint)copiedMaterialParams,
@@ -1104,6 +1116,24 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         return uint.MaxValue;
     }
 
+    private static uint FindShaderConstantId(ShaderPackage* shaderPackage, uint crc, int byteSize)
+    {
+        if (shaderPackage == null || shaderPackage->Constants == null)
+            throw new InvalidOperationException("The owned shader constant table is unavailable.");
+        for (var index = 0; index < shaderPackage->ConstantCount; index++)
+        {
+            var constant = shaderPackage->Constants[index];
+            if (constant.CRC != crc)
+                continue;
+            if (constant.Size * 16 != byteSize)
+                throw new InvalidOperationException(
+                    "The owned shader has an unexpected instance-constant size."
+                );
+            return constant.Id;
+        }
+        throw new InvalidOperationException("The owned shader has no instance-parameter constant.");
+    }
+
     private static nint[] SaveConstants(byte* context)
     {
         const int constantSlotCount = (0x1140 - 0x940) / sizeof(ulong);
@@ -1162,12 +1192,30 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         if (device == null)
             throw new InvalidOperationException("The native graphics device is not available.");
 
-        if (standaloneModelConstant == null)
-            standaloneModelConstant = device->CreateConstantBuffer(176, 2, 0);
+        if (standaloneInstanceConstant == null)
+            standaloneInstanceConstant = device->CreateConstantBuffer(InstanceParameterSize, 2, 0);
         if (standaloneWorldConstant == null)
             standaloneWorldConstant = device->CreateConstantBuffer(128, 2, 0);
-        if (standaloneModelConstant == null || standaloneWorldConstant == null)
+        if (standaloneInstanceConstant == null || standaloneWorldConstant == null)
             throw new InvalidOperationException("The game rejected a standalone constant buffer.");
+    }
+
+    private static void WriteDefaultInstanceConstant(ConstantBuffer* constant)
+    {
+        var target = constant->LoadSourcePointer(0, InstanceParameterSize);
+        if (target == null)
+            throw new InvalidOperationException(
+                "The game did not expose instance-constant storage."
+            );
+
+        NativeMemory.Clear(target, InstanceParameterSize);
+        var values = (Vector4*)target;
+        values[0] = Vector4.One;
+        values[1] = Vector4.One;
+        values[2] = Vector4.One;
+        values[3] = Vector4.One;
+        values[4] = new Vector4(0, 2, 0, 1);
+        values[10] = new Vector4(0, 1, 0, 0);
     }
 
     internal static void WriteWorldConstant(
@@ -1182,14 +1230,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
         *(Matrix4x4*)target = Matrix4x4.Transpose(currentWorldView);
         *(Matrix4x4*)((byte*)target + 64) = Matrix4x4.Transpose(previousWorldView);
-    }
-
-    private static void CopyConstant(NativeConstantBufferProbe source, ConstantBuffer* destination)
-    {
-        var target = destination->LoadSourcePointer(0, source.ByteSize);
-        if (target == null)
-            throw new InvalidOperationException("The game did not expose constant-buffer storage.");
-        Buffer.MemoryCopy((void*)source.SourcePointer, target, source.ByteSize, source.ByteSize);
     }
 
     private static NativeConstantBufferProbe ProbeConstantBuffer(nint buffer)
