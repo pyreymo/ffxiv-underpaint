@@ -1008,7 +1008,6 @@ internal sealed unsafe partial class D3D11GBufferBackend : IDisposable
         );
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawIndexedHook.Original(context, indexCount, startIndexLocation, baseVertexLocation);
-        TryCaptureNativeGeometryOutput(context);
     }
 
     private void DrawDetour(nint context, uint vertexCount, uint startVertexLocation)
@@ -1025,7 +1024,6 @@ internal sealed unsafe partial class D3D11GBufferBackend : IDisposable
         );
         TryIssueSemitransparentCompositeBeforeNativeDraw(context);
         drawHook.Original(context, vertexCount, startVertexLocation);
-        TryCaptureNativeGeometryOutput(context);
     }
 
     private void DrawIndexedInstancedDetour(
@@ -1072,7 +1070,6 @@ internal sealed unsafe partial class D3D11GBufferBackend : IDisposable
             baseVertexLocation,
             startInstanceLocation
         );
-        TryCaptureNativeGeometryOutput(context);
     }
 
     private void DrawInstancedDetour(
@@ -1117,7 +1114,6 @@ internal sealed unsafe partial class D3D11GBufferBackend : IDisposable
             startVertexLocation,
             startInstanceLocation
         );
-        TryCaptureNativeGeometryOutput(context);
     }
 
     private void TryCapturePassContext(nint context)
