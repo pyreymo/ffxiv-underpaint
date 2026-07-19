@@ -3,6 +3,8 @@ using System.Runtime.InteropServices;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
+using FFXIVClientStructs.FFXIV.Client.System.Resource.Handle;
 using FFXIVClientStructs.Interop;
 
 namespace Underpaint.Internal;
@@ -63,6 +65,12 @@ internal readonly record struct NativeGeometryStandaloneSubmission(
     uint ModelTypeSceneKey,
     uint DonorModelTypeValue,
     uint OffsetModelTypeValue,
+    nint SourceMaterial,
+    nint OwnedMaterial,
+    nint OwnedMaterialResource,
+    nint OwnedShaderPackage,
+    string? OwnedMaterialPath,
+    bool MaterialCaptured,
     NativeGeometrySubmissionResult Submission
 );
 
@@ -89,6 +97,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         "48 8B 49 ?? E9 ?? ?? ?? ?? CC CC CC CC CC CC CC 40 53 55 57";
     private const string ExpandPassesSignature =
         "44 89 4C 24 ?? 44 89 44 24 ?? 53 56 57 41 54 41 55";
+    private const string OnRenderMaterialSignature =
+        "48 89 5C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 70 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 ?? 65 48 8B 2C 25";
+    private const string InitializeShaderSelectionSignature =
+        "48 85 D2 0F 84 ?? ?? ?? ?? 48 89 5C 24 ?? 57 48 83 EC 20 48 89 74 24";
+    private const string DestroyShaderSelectionSignature =
+        "40 53 48 83 EC 20 48 83 79 ?? ?? 48 8B D9 74 ?? 4C 8B 41";
+    private const string ApplyMaterialSignature =
+        "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 41 54 41 56 41 57 48 83 EC 20 44 8B 05 ?? ?? ?? ?? 48 8B F2 65 48 8B 04 25 ?? ?? ?? ?? 48 8B D9";
     private const uint ImmutableBufferFlags = 0x804;
     private const int Stream0Stride = 20;
     private const int Stream1Stride = 24;
@@ -129,12 +145,22 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     [ThreadStatic]
     private static bool submitting;
 
+    [ThreadStatic]
+    private static nint currentMaterialParameters;
+
+    [ThreadStatic]
+    private static Material* currentMaterial;
+
     private readonly object stateLock = new();
     private readonly Hook<CreateVertexBufferDelegate> createVertexBufferHook;
     private readonly Hook<InitializeBufferDelegate> initializeVertexBufferHook;
     private readonly Hook<CreateIndexBufferDelegate> createIndexBufferHook;
     private readonly Hook<InitializeBufferDelegate> initializeIndexBufferHook;
     private readonly Hook<CreateVertexDeclarationDelegate> createVertexDeclarationHook;
+    private readonly Hook<OnRenderMaterialDelegate> onRenderMaterialHook;
+    private readonly Hook<InitializeShaderSelectionDelegate> initializeShaderSelectionHook;
+    private readonly Hook<DestroyShaderSelectionDelegate> destroyShaderSelectionHook;
+    private readonly Hook<ApplyMaterialDelegate> applyMaterialHook;
     private readonly Hook<NativePassBuilder> expandPassesHook;
     private readonly IPluginLog log;
     private readonly HashSet<NativeGeometry> geometries = [];
@@ -142,6 +168,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private NativeGeometryStandaloneSubmission? completedStandaloneSubmission;
     private ConstantBuffer* standaloneModelConstant;
     private ConstantBuffer* standaloneWorldConstant;
+    private MaterialResourceHandle* standaloneMaterialResource;
+    private string? standaloneMaterialPath;
     private bool disposed;
 
     private delegate nint CreateVertexBufferDelegate(
@@ -166,6 +194,19 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         byte* elements,
         uint elementCount
     );
+
+    private delegate ushort* OnRenderMaterialDelegate(
+        nint modelRenderer,
+        nint materialParameters,
+        Material* material,
+        uint materialIndex
+    );
+
+    private delegate void InitializeShaderSelectionDelegate(byte* selection, nint shaderPackage);
+
+    private delegate void DestroyShaderSelectionDelegate(byte* selection);
+
+    private delegate void ApplyMaterialDelegate(byte* selection, Material* material);
 
     public NativeGeometrySubmissionBackend(IGameInteropProvider gameInteropProvider, IPluginLog log)
     {
@@ -192,10 +233,29 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 CreateVertexDeclarationSignature,
                 (_, _, _) => 0
             );
+        onRenderMaterialHook = gameInteropProvider.HookFromSignature<OnRenderMaterialDelegate>(
+            OnRenderMaterialSignature,
+            OnRenderMaterialDetour
+        );
+        initializeShaderSelectionHook =
+            gameInteropProvider.HookFromSignature<InitializeShaderSelectionDelegate>(
+                InitializeShaderSelectionSignature,
+                (_, _) => { }
+            );
+        destroyShaderSelectionHook =
+            gameInteropProvider.HookFromSignature<DestroyShaderSelectionDelegate>(
+                DestroyShaderSelectionSignature,
+                _ => { }
+            );
+        applyMaterialHook = gameInteropProvider.HookFromSignature<ApplyMaterialDelegate>(
+            ApplyMaterialSignature,
+            (_, _) => { }
+        );
         expandPassesHook = gameInteropProvider.HookFromSignature<NativePassBuilder>(
             ExpandPassesSignature,
             ExpandPassesDetour
         );
+        onRenderMaterialHook.Enable();
         expandPassesHook.Enable();
     }
 
@@ -369,8 +429,10 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
 
         expandPassesHook.Disable();
+        onRenderMaterialHook.Disable();
         ReleaseNativeResource(ref standaloneWorldConstant);
         ReleaseNativeResource(ref standaloneModelConstant);
+        ReleaseStandaloneMaterial();
         lock (stateLock)
         {
             foreach (var geometry in geometries.ToArray())
@@ -379,6 +441,10 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
 
         createVertexDeclarationHook.Dispose();
+        applyMaterialHook.Dispose();
+        destroyShaderSelectionHook.Dispose();
+        initializeShaderSelectionHook.Dispose();
+        onRenderMaterialHook.Dispose();
         initializeIndexBufferHook.Dispose();
         createIndexBufferHook.Dispose();
         initializeVertexBufferHook.Dispose();
@@ -550,9 +616,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
         try
         {
+            var sourceMaterial =
+                currentMaterialParameters == materialParameters ? currentMaterial : null;
             var submission = SubmitStandaloneWorld(
                 modelRenderer,
                 materialParameters,
+                sourceMaterial,
                 geometry,
                 expandPassesHook.Original,
                 worldConstantId,
@@ -560,7 +629,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 out var offsetShaderSelection,
                 out var modelTypeSceneKey,
                 out var donorModelTypeValue,
-                out var offsetModelTypeValue
+                out var offsetModelTypeValue,
+                out var ownedMaterial,
+                out var ownedMaterialResource,
+                out var ownedShaderPackage,
+                out var materialCaptured
             );
             var offsetModelConstant = ProbeConstantBuffer((nint)standaloneModelConstant);
             var offsetWorldConstant = ProbeConstantBuffer((nint)standaloneWorldConstant);
@@ -602,6 +675,12 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     modelTypeSceneKey,
                     donorModelTypeValue,
                     offsetModelTypeValue,
+                    (nint)sourceMaterial,
+                    ownedMaterial,
+                    ownedMaterialResource,
+                    ownedShaderPackage,
+                    standaloneMaterialPath,
+                    materialCaptured,
                     submission
                 );
             }
@@ -647,11 +726,35 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     default,
                     default,
                     default,
+                    default,
+                    default,
+                    default,
+                    default,
+                    default,
+                    default,
                     default
                 );
             }
         }
 
+        return result;
+    }
+
+    private ushort* OnRenderMaterialDetour(
+        nint modelRenderer,
+        nint materialParameters,
+        Material* material,
+        uint materialIndex
+    )
+    {
+        var result = onRenderMaterialHook.Original(
+            modelRenderer,
+            materialParameters,
+            material,
+            materialIndex
+        );
+        currentMaterialParameters = materialParameters;
+        currentMaterial = material;
         return result;
     }
 
@@ -670,6 +773,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private NativeGeometrySubmissionResult SubmitStandaloneWorld(
         nint modelRenderer,
         nint materialParameters,
+        Material* sourceMaterial,
         NativeGeometry geometry,
         NativePassBuilder submit,
         uint worldConstantId,
@@ -677,7 +781,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         out nint offsetShaderSelection,
         out uint modelTypeSceneKey,
         out uint donorModelTypeValue,
-        out uint offsetModelTypeValue
+        out uint offsetModelTypeValue,
+        out nint ownedMaterial,
+        out nint ownedMaterialResource,
+        out nint ownedShaderPackage,
+        out bool materialCaptured
     )
     {
         var modelParams = *(nint*)materialParameters;
@@ -736,6 +844,17 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 "The compatible donor is not using the skinned shader variant."
             );
 
+        materialCaptured = EnsureStandaloneMaterial(sourceMaterial);
+        var targetMaterial = standaloneMaterialResource->Material;
+        var targetShaderPackageResource = standaloneMaterialResource->ShaderPackageResourceHandle;
+        var targetShaderPackage =
+            targetShaderPackageResource == null ? null : targetShaderPackageResource->ShaderPackage;
+        if (targetMaterial == null || targetShaderPackage == null)
+            throw new InvalidOperationException("The owned native material is not ready.");
+        ownedMaterial = (nint)targetMaterial;
+        ownedMaterialResource = (nint)standaloneMaterialResource;
+        ownedShaderPackage = (nint)targetShaderPackage;
+
         EnsureStandaloneConstants();
         CopyConstant(modelConstant, standaloneModelConstant);
         WriteStandaloneWorldConstant();
@@ -743,31 +862,173 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         var copiedModelParams = stackalloc byte[0x20];
         var copiedMaterialParams = stackalloc byte[0x48];
         var copiedShaderSelection = stackalloc byte[0x28];
-        var copiedShaderValues = stackalloc uint[(int)keyCount];
         Buffer.MemoryCopy((void*)modelParams, copiedModelParams, 0x20, 0x20);
         Buffer.MemoryCopy((void*)materialParameters, copiedMaterialParams, 0x48, 0x48);
-        Buffer.MemoryCopy((void*)shaderSelection, copiedShaderSelection, 0x28, 0x28);
-        Buffer.MemoryCopy(
-            (void*)shaderValues,
-            copiedShaderValues,
-            keyCount * sizeof(uint),
-            keyCount * sizeof(uint)
-        );
-        *(nint*)(copiedModelParams + 0x10) = (nint)standaloneModelConstant;
-        *(nint*)copiedMaterialParams = (nint)copiedModelParams;
-        copiedShaderValues[modelTypeKeyIndex] = offsetModelTypeValue;
-        *(nint*)(copiedShaderSelection + 0x10) = (nint)copiedShaderValues;
-        *(nint*)(copiedMaterialParams + 0x30) = (nint)copiedShaderSelection;
-        offsetShaderSelection = (nint)copiedShaderSelection;
+        NativeMemory.Clear(copiedShaderSelection, 0x28);
+        *(nint*)copiedShaderSelection = *(nint*)shaderSelection;
+        initializeShaderSelectionHook.Original(copiedShaderSelection, (nint)targetShaderPackage);
+        try
+        {
+            if (
+                *(nint*)(copiedShaderSelection + 0x08) == 0
+                || *(nint*)(copiedShaderSelection + 0x10) == 0
+            )
+                throw new InvalidOperationException(
+                    "The native shader-selection constructor failed."
+                );
+            *(nint*)(copiedModelParams + 0x10) = (nint)standaloneModelConstant;
+            *(nint*)copiedMaterialParams = (nint)copiedModelParams;
+            *(nint*)(copiedMaterialParams + 0x30) = (nint)copiedShaderSelection;
+            offsetShaderSelection = (nint)copiedShaderSelection;
 
-        return SubmitCore(
-            modelRenderer,
-            (nint)copiedMaterialParams,
-            geometry,
-            submit,
-            worldConstantId,
-            standaloneWorldConstant
-        );
+            CopyMatchingSceneKeys(shaderMetadata, shaderValues, copiedShaderSelection);
+            SetSceneKey(copiedShaderSelection, modelTypeSceneKey, offsetModelTypeValue);
+
+            var context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
+            if (context == null)
+                throw new InvalidOperationException(
+                    "The current render thread has no graphics context."
+                );
+            var contextBytes = (byte*)context;
+            var materialConstantId = FindMaterialConstantId(targetShaderPackage);
+            if (
+                targetMaterial->MaterialParameterCBuffer != null
+                && materialConstantId == uint.MaxValue
+            )
+                throw new InvalidOperationException(
+                    "The owned shader package has no material constant slot."
+                );
+            var savedMaterialConstant = GetContextConstant(contextBytes, materialConstantId);
+            var savedTextures = SaveMaterialTextures(contextBytes, targetMaterial);
+            try
+            {
+                applyMaterialHook.Original(copiedShaderSelection, targetMaterial);
+                return SubmitCore(
+                    modelRenderer,
+                    (nint)copiedMaterialParams,
+                    geometry,
+                    submit,
+                    worldConstantId,
+                    standaloneWorldConstant
+                );
+            }
+            finally
+            {
+                SetContextConstant(contextBytes, materialConstantId, savedMaterialConstant);
+                RestoreMaterialTextures(contextBytes, savedTextures);
+            }
+        }
+        finally
+        {
+            destroyShaderSelectionHook.Original(copiedShaderSelection);
+        }
+    }
+
+    private bool EnsureStandaloneMaterial(Material* sourceMaterial)
+    {
+        if (standaloneMaterialResource != null)
+            return false;
+        var resource = sourceMaterial == null ? null : sourceMaterial->MaterialResourceHandle;
+        if (
+            resource == null
+            || resource->Material == null
+            || resource->ShaderPackageResourceHandle == null
+        )
+            throw new InvalidOperationException(
+                "The native submission site has no capturable material."
+            );
+        standaloneMaterialResource = (MaterialResourceHandle*)resource->IncRef();
+        if (standaloneMaterialResource == null)
+            throw new InvalidOperationException(
+                "The native material resource could not be retained."
+            );
+        standaloneMaterialPath = ((ResourceHandle*)standaloneMaterialResource)->FileName.ToString();
+        return true;
+    }
+
+    private static void CopyMatchingSceneKeys(nint sourceMetadata, nint sourceValues, byte* target)
+    {
+        var sourceCount = *(uint*)(sourceMetadata + 0xEC);
+        var sourceKeys = *(uint**)(sourceMetadata + 0x130);
+        var targetMetadata = *(nint*)(target + 0x08);
+        var targetValues = *(uint**)(target + 0x10);
+        var targetCount = *(uint*)(targetMetadata + 0xEC);
+        var targetKeys = *(uint**)(targetMetadata + 0x130);
+        if (sourceCount > 256 || targetCount > 256 || sourceKeys == null || targetKeys == null)
+            throw new InvalidOperationException("A shader scene-key table is invalid.");
+        for (var targetIndex = 0; targetIndex < targetCount; targetIndex++)
+        {
+            for (var sourceIndex = 0; sourceIndex < sourceCount; sourceIndex++)
+            {
+                if (targetKeys[targetIndex] != sourceKeys[sourceIndex])
+                    continue;
+                targetValues[targetIndex] = *(uint*)(sourceValues + sourceIndex * sizeof(uint));
+                break;
+            }
+        }
+    }
+
+    private static void SetSceneKey(byte* selection, uint key, uint value)
+    {
+        var metadata = *(nint*)(selection + 0x08);
+        var values = *(uint**)(selection + 0x10);
+        var count = *(uint*)(metadata + 0xEC);
+        var keys = *(uint**)(metadata + 0x130);
+        for (var index = 0; index < count; index++)
+        {
+            if (keys[index] != key)
+                continue;
+            values[index] = value;
+            return;
+        }
+        throw new InvalidOperationException("The owned material has no model-type scene key.");
+    }
+
+    private static uint FindMaterialConstantId(ShaderPackage* shaderPackage)
+    {
+        for (var index = 0; index < shaderPackage->ConstantCount; index++)
+        {
+            var constant = shaderPackage->Constants + index;
+            if (constant->Slot == ShaderPackage.SamplerSlotMaterial)
+                return constant->Id;
+        }
+        return uint.MaxValue;
+    }
+
+    private static MaterialTextureState[] SaveMaterialTextures(byte* context, Material* material)
+    {
+        var states = new List<MaterialTextureState>(material->TextureCount);
+        for (var index = 0; index < material->TextureCount; index++)
+        {
+            var id = material->Textures[index].Id;
+            if (id == uint.MaxValue)
+                continue;
+            var slot = context + 0x1140 + id * 24;
+            states.Add(
+                new MaterialTextureState(id, *(nint*)slot, *(nint*)(slot + 8), *(uint*)(slot + 16))
+            );
+        }
+        return states.ToArray();
+    }
+
+    private static void RestoreMaterialTextures(byte* context, MaterialTextureState[] states)
+    {
+        foreach (var state in states)
+        {
+            var slot = context + 0x1140 + state.Id * 24;
+            *(nint*)slot = state.Resource;
+            *(nint*)(slot + 8) = state.Sampler;
+            *(uint*)(slot + 16) = state.Flags;
+        }
+    }
+
+    private void ReleaseStandaloneMaterial()
+    {
+        var resource = standaloneMaterialResource;
+        standaloneMaterialResource = null;
+        standaloneMaterialPath = null;
+        if (resource != null)
+            resource->DecRef();
     }
 
     private void EnsureStandaloneConstants()
@@ -899,6 +1160,13 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         public readonly uint Attribute3;
         public readonly ulong Attribute8;
     }
+
+    private readonly record struct MaterialTextureState(
+        uint Id,
+        nint Resource,
+        nint Sampler,
+        uint Flags
+    );
 }
 
 internal sealed unsafe class NativeGeometry : IDisposable
