@@ -586,15 +586,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 "The native material parameters have no model input."
             );
 
-        var nonSkinnedSceneKey = (byte*)modelRenderer + 0x68;
-        var skinnedSceneKey = nonSkinnedSceneKey + 0x10;
-        var modelTypeSceneKey = *(uint*)(nonSkinnedSceneKey + 0x08);
-        var modelTypeValue = *(uint*)(nonSkinnedSceneKey + 0x0C);
-        if (*(uint*)(skinnedSceneKey + 0x08) != modelTypeSceneKey)
-            throw new InvalidOperationException(
-                "The model-type scene keys do not share a key CRC."
-            );
-
         EnsureStandaloneMaterial();
         var targetMaterial = standaloneMaterialResource->Material;
         var targetShaderPackageResource = standaloneMaterialResource->ShaderPackageResourceHandle;
@@ -637,7 +628,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             *(nint*)copiedMaterialParams = (nint)copiedModelParams;
             *(nint*)(copiedMaterialParams + 0x30) = (nint)copiedShaderSelection;
             CopyCanonicalSceneKeys(modelRenderer, copiedShaderSelection, out _, out _);
-            SetSceneKey(copiedShaderSelection, modelTypeSceneKey, modelTypeValue);
 
             var context = ThreadLocals.ThreadLocalInstance()->GraphicsKernelContext;
             if (context == null)
@@ -753,22 +743,6 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         }
         value = 0;
         return false;
-    }
-
-    private static void SetSceneKey(byte* selection, uint key, uint value)
-    {
-        var metadata = *(nint*)(selection + 0x08);
-        var values = *(uint**)(selection + 0x10);
-        var count = *(uint*)(metadata + 0xEC);
-        var keys = *(uint**)(metadata + 0x130);
-        for (var index = 0; index < count; index++)
-        {
-            if (keys[index] != key)
-                continue;
-            values[index] = value;
-            return;
-        }
-        throw new InvalidOperationException("The owned material has no model-type scene key.");
     }
 
     private static uint FindBoundConstantId(byte* context, ConstantBuffer* constant)
