@@ -542,6 +542,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 }
                 if (!instance.PrepareWorld(frame, renderWorldView))
                     continue;
+                instance.RecordSubmission("before", frame, context, view, subView);
                 SubmitOwnedWorld(
                     modelRenderer,
                     materialParameters,
@@ -550,6 +551,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                     worldConstantId,
                     instance.WorldConstant
                 );
+                instance.RecordSubmission("after", frame, context, view, subView);
                 instance.MarkSubmitted(frame);
             }
             catch (Exception exception)
@@ -1044,6 +1046,8 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
     private bool hasSubmitted;
     private long submissionCount;
     private string? failure;
+    private List<NativeRigidSubmissionSnapshot>? submissionCapture;
+    private int submissionCaptureLimit;
 
     internal NativeGeometrySubmissionBackend Owner { get; }
     internal NativeGeometry Geometry { get; }
@@ -1098,6 +1102,71 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
             currentWorldView = worldView;
             resetHistory |= resetTemporalHistory;
         }
+    }
+
+    internal void BeginSubmissionCapture(int limit)
+    {
+        lock (stateLock)
+        {
+            submissionCapture = [];
+            submissionCaptureLimit = Math.Max(0, limit);
+        }
+    }
+
+    internal IReadOnlyList<NativeRigidSubmissionSnapshot> TakeSubmissionCapture()
+    {
+        lock (stateLock)
+        {
+            var result = submissionCapture?.ToArray() ?? [];
+            submissionCapture = null;
+            submissionCaptureLimit = 0;
+            return result;
+        }
+    }
+
+    internal void RecordSubmission(string phase, uint frame, nint context, int view, int subView)
+    {
+        lock (stateLock)
+        {
+            if (
+                submissionCapture == null
+                || submissionCapture.Count >= submissionCaptureLimit
+                || WorldConstant == null
+            )
+                return;
+
+            var source = (byte*)WorldConstant->UnsafeSourcePointer;
+            submissionCapture.Add(
+                new NativeRigidSubmissionSnapshot(
+                    phase,
+                    submissionCount + 1,
+                    frame,
+                    context,
+                    view,
+                    subView,
+                    Environment.CurrentManagedThreadId,
+                    (nint)WorldConstant,
+                    (nint)source,
+                    WorldConstant->Flags,
+                    source == null ? null : HashBytes(source, 128),
+                    source == null ? null : HashBytes(source, 64),
+                    source == null ? null : HashBytes(source + 64, 64),
+                    currentWorldView,
+                    previousWorldView
+                )
+            );
+        }
+    }
+
+    private static ulong HashBytes(byte* bytes, int length)
+    {
+        var hash = 14695981039346656037UL;
+        for (var index = 0; index < length; index++)
+        {
+            hash ^= bytes[index];
+            hash *= 1099511628211UL;
+        }
+        return hash;
     }
 
     internal bool PrepareWorld(uint frame, Matrix4x4? renderWorldView)

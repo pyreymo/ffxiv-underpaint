@@ -271,8 +271,8 @@ internal sealed unsafe partial class D3D11GBufferBackend
             var nativeInputLayout = immediateContext.InputAssembler.InputLayout;
             using (nativeInputLayout)
                 inputLayout = nativeInputLayout?.NativePointer ?? 0;
-            var vertexConstants = CaptureConstantBuffers(immediateContext.VertexShader);
-            var pixelConstants = CaptureConstantBuffers(immediateContext.PixelShader);
+            var vertexConstants = CaptureNativeConstantBuffers(immediateContext.VertexShader);
+            var pixelConstants = CaptureNativeConstantBuffers(immediateContext.PixelShader);
             var shaderResources = CaptureShaderResources();
 
             var pass =
@@ -305,22 +305,8 @@ internal sealed unsafe partial class D3D11GBufferBackend
                     indexBuffer.Value.Buffer,
                     indexBuffer.Value.Format,
                     indexBuffer.Value.Offset,
-                    vertexConstants
-                        .Select(item => new NativeGeometryConstantBufferBinding(
-                            item.Slot,
-                            item.Buffer,
-                            item.ByteWidth,
-                            item.ContentHash
-                        ))
-                        .ToArray(),
-                    pixelConstants
-                        .Select(item => new NativeGeometryConstantBufferBinding(
-                            item.Slot,
-                            item.Buffer,
-                            item.ByteWidth,
-                            item.ContentHash
-                        ))
-                        .ToArray(),
+                    vertexConstants,
+                    pixelConstants,
                     shaderResources
                         .Select(item => new NativeGeometryShaderResourceBinding(
                             item.Slot,
@@ -458,6 +444,55 @@ internal sealed unsafe partial class D3D11GBufferBackend
                         buffer.NativePointer,
                         byteWidth,
                         hash
+                    )
+                );
+            }
+            return snapshots.ToArray();
+        }
+        finally
+        {
+            foreach (var buffer in buffers)
+                buffer?.Dispose();
+        }
+    }
+
+    private NativeGeometryConstantBufferBinding[] CaptureNativeConstantBuffers(
+        CommonShaderStage stage
+    )
+    {
+        var buffers = stage.GetConstantBuffers(0, TransparentCaptureConstantBufferSlots);
+        try
+        {
+            var snapshots = new List<NativeGeometryConstantBufferBinding>(buffers.Length);
+            for (var slot = 0; slot < buffers.Length; slot++)
+            {
+                var buffer = buffers[slot];
+                if (buffer == null)
+                    continue;
+
+                var byteWidth = buffer.Description.SizeInBytes;
+                ulong? hash = null;
+                ulong? firstHalfHash = null;
+                ulong? secondHalfHash = null;
+                if (byteWidth <= TransparentCaptureMaxHashedBufferBytes)
+                {
+                    var bytes = ReadConstantBuffer(buffer);
+                    hash = ComputeFnv1A64(bytes);
+                    if (bytes.Length == 128)
+                    {
+                        firstHalfHash = ComputeFnv1A64(bytes[..64]);
+                        secondHalfHash = ComputeFnv1A64(bytes[64..]);
+                    }
+                }
+
+                snapshots.Add(
+                    new NativeGeometryConstantBufferBinding(
+                        slot,
+                        buffer.NativePointer,
+                        byteWidth,
+                        hash,
+                        firstHalfHash,
+                        secondHalfHash
                     )
                 );
             }

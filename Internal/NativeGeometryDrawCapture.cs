@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace Underpaint.Internal;
 
 internal readonly record struct NativeGeometryVertexBufferBinding(
@@ -11,7 +13,27 @@ internal readonly record struct NativeGeometryConstantBufferBinding(
     int Slot,
     nint Buffer,
     int ByteWidth,
-    ulong? ContentHash
+    ulong? ContentHash,
+    ulong? FirstHalfHash,
+    ulong? SecondHalfHash
+);
+
+internal readonly record struct NativeRigidSubmissionSnapshot(
+    string Phase,
+    long Sequence,
+    uint Frame,
+    nint Context,
+    int View,
+    int SubView,
+    int ThreadId,
+    nint WorldConstant,
+    nint SourcePointer,
+    int ConstantFlags,
+    ulong? ContentHash,
+    ulong? CurrentHash,
+    ulong? PreviousHash,
+    Matrix4x4 CurrentWorldView,
+    Matrix4x4 PreviousWorldView
 );
 
 internal readonly record struct NativeGeometryShaderResourceBinding(
