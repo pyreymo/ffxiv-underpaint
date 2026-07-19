@@ -310,6 +310,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         NativePassBuilder submit,
         uint constantId,
         ConstantBuffer* constant,
+        nint onRenderMaterialResult,
+        nint shaderDescriptor,
         NativeContextStateScope? existingState = null
     )
     {
@@ -346,12 +348,16 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 log.Information(
                     "[Underpaint] Minimal ModelRenderer submission Result=0x{Result:X} "
                         + "Params38=0x{Params38:X8} Flags=0x{Flags:X8} Aux=0x{Aux:X8} "
+                        + "OnRenderMaterialResult=0x{MaterialResult:X} SelectionSlot0=0 "
+                        + "ResolvedDescriptor=0x{Descriptor:X} "
                         + "Commands={CommandCount} Items=[{Commands}] SourceObjectInputs=none "
                         + "RendezvousInputs=renderer/view/TLS/arena",
                     result,
                     *(uint*)(materialParameters + 0x38),
                     *(uint*)(materialParameters + 0x40),
                     *(uint*)(materialParameters + 0x44),
+                    onRenderMaterialResult,
+                    shaderDescriptor,
                     commands.Count,
                     string.Join(',', commands)
                 );
@@ -778,14 +784,11 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 );
             var contextBytes = (byte*)context;
             using var contextState = new NativeContextStateScope(contextBytes, targetMaterial);
-            ((ModelRenderer*)modelRenderer)->OnRenderMaterial(
-                (ModelRenderer.OnRenderMaterialParams2*)copiedMaterialParams,
-                targetMaterial,
-                0
-            );
-            if (*(nint*)copiedShaderSelection == 0)
-                throw new InvalidOperationException(
-                    "The owned material did not select a native shader descriptor."
+            var onRenderMaterialResult = (nint)
+                ((ModelRenderer*)modelRenderer)->OnRenderMaterial(
+                    (ModelRenderer.OnRenderMaterialParams2*)copiedMaterialParams,
+                    targetMaterial,
+                    0
                 );
             applyMaterialHook.Original(copiedShaderSelection, targetMaterial);
             *(uint*)(copiedShaderSelection + 0x20) = *(uint*)(modelRenderer + 0x1B0);
@@ -831,6 +834,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 submit,
                 worldConstantId,
                 worldConstant,
+                onRenderMaterialResult,
+                shaderDescriptor,
                 contextState
             );
         }
