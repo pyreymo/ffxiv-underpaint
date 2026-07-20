@@ -4,7 +4,6 @@ using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
-using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.FFXIV.Client.System.Resource;
 using FFXIVClientStructs.FFXIV.Client.System.Resource.Handle;
@@ -51,12 +50,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         "chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl";
     private const uint StandaloneMaterialFileType = 0x6D74726C;
     private const uint StandaloneMaterialPathHash = 0x56D3AB97;
+    private const string StandaloneWhiteTexturePath = "chara/common/texture/white.tex";
+    private const uint StandaloneTextureFileType = 0x00786574;
+    private const uint StandaloneWhiteTexturePathHash = 0x84815A1A;
     private const uint InstanceParameterCrc = 0x20A30B34;
     private const uint ModelParameterCrc = 0x4E0A5472;
     private const uint DecalColorCrc = 0x5B0F708C;
     private const uint DecalSamplerCrc = 0x0237CB94;
     private const uint TableSamplerCrc = 0x2005679F;
-    private const int TransparentTextureResourceIndex = 79;
     private const int InstanceParameterSize = 176;
     private const int VectorConstantSize = 16;
     private const uint SupportedMainPassMask = 0x01000000;
@@ -129,9 +130,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private byte[]? standaloneMaterialConstantData;
     private ConstantBuffer* standaloneInstanceConstant;
     private ConstantBuffer* standaloneModelConstant;
-    private ConstantBuffer* standaloneDecalConstant;
     private Texture* standaloneColorTableTexture;
     private MaterialResourceHandle* standaloneMaterialResource;
+    private TextureResourceHandle* standaloneWhiteTextureResource;
     private uint standaloneMaterialConstantId = uint.MaxValue;
     private bool disposed;
     private RendezvousIdentity lastRigidRendezvous;
@@ -281,16 +282,21 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
 
     public NativeRigidInstance CreateRigidInstance(
         NativeGeometry geometry,
-        Matrix4x4 currentWorldView
-    ) => CreateRigidInstance(geometry, currentWorldView, null);
+        Matrix4x4 currentWorldView,
+        Vector4 color
+    ) => CreateRigidInstance(geometry, currentWorldView, null, color);
 
-    public NativeRigidInstance CreateWorldRigidInstance(NativeGeometry geometry, Matrix4x4 world) =>
-        CreateRigidInstance(geometry, Matrix4x4.Identity, world);
+    public NativeRigidInstance CreateWorldRigidInstance(
+        NativeGeometry geometry,
+        Matrix4x4 world,
+        Vector4 color
+    ) => CreateRigidInstance(geometry, Matrix4x4.Identity, world, color);
 
     private NativeRigidInstance CreateRigidInstance(
         NativeGeometry geometry,
         Matrix4x4 currentWorldView,
-        Matrix4x4? fixedWorld
+        Matrix4x4? fixedWorld,
+        Vector4 color
     )
     {
         lock (stateLock)
@@ -300,16 +306,23 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new ObjectDisposedException(nameof(geometry));
             var device = Device.Instance();
             var worldConstant = device == null ? null : device->CreateConstantBuffer(128, 2, 0);
-            if (worldConstant == null)
+            var colorConstant = device == null ? null : device->CreateConstantBuffer(16, 2, 0);
+            if (worldConstant == null || colorConstant == null)
+            {
+                ReleaseNativeResource(ref worldConstant);
+                ReleaseNativeResource(ref colorConstant);
                 throw new InvalidOperationException(
-                    "The game rejected a rigid-instance world constant buffer."
+                    "The game rejected a rigid-instance constant buffer."
                 );
+            }
             var instance = new NativeRigidInstance(
                 this,
                 geometry,
                 worldConstant,
+                colorConstant,
                 currentWorldView,
-                fixedWorld
+                fixedWorld,
+                color
             );
             rigidInstances.Add(instance);
             return instance;
@@ -398,10 +411,10 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         expandPassesHook.Disable();
         pushBackCommandHook.Disable();
         ReleaseNativeResource(ref standaloneColorTableTexture);
-        ReleaseNativeResource(ref standaloneDecalConstant);
         ReleaseNativeResource(ref standaloneModelConstant);
         ReleaseNativeResource(ref standaloneInstanceConstant);
         ReleaseNativeResource(ref standaloneMaterialConstant);
+        ReleaseStandaloneWhiteTexture();
         ReleaseStandaloneMaterial();
         lock (stateLock)
         {
@@ -781,9 +794,8 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         EnsureStandaloneMaterialConstant(targetMaterial);
         WriteDefaultInstanceConstant(standaloneInstanceConstant);
         WriteVectorConstant(standaloneModelConstant, new Vector4(1, 0, 0, 0));
-        WriteVectorConstant(standaloneDecalConstant, Vector4.One);
         EnsureStandaloneColorTable();
-        var transparentDecal = GetTransparentDecalTexture();
+        EnsureStandaloneWhiteTexture();
         if (worldConstant == null)
             throw new InvalidOperationException("The native instance has no world constant.");
 
@@ -873,9 +885,9 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             contextState.SetConstant(standaloneMaterialConstantId, standaloneMaterialConstant);
             contextState.SetConstant(instanceConstantId, standaloneInstanceConstant);
             contextState.SetConstant(modelConstantId, standaloneModelConstant);
-            contextState.SetConstant(decalConstantId, standaloneDecalConstant);
+            contextState.SetConstant(decalConstantId, instance.ColorConstant);
             contextState.SetTexture(tableSamplerId, standaloneColorTableTexture);
-            contextState.SetTexture(decalSamplerId, transparentDecal);
+            contextState.SetTexture(decalSamplerId, standaloneWhiteTextureResource->Texture);
             instance.RecordSelectedBindingMap(
                 FormatSelectedBindingMap(targetShaderPackage, contextBytes, shaderDescriptor)
             );
@@ -1354,6 +1366,14 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             resource->DecRef();
     }
 
+    private void ReleaseStandaloneWhiteTexture()
+    {
+        var resource = standaloneWhiteTextureResource;
+        standaloneWhiteTextureResource = null;
+        if (resource != null)
+            resource->DecRef();
+    }
+
     private void EnsureStandaloneConstants()
     {
         var device = Device.Instance();
@@ -1364,13 +1384,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             standaloneInstanceConstant = device->CreateConstantBuffer(InstanceParameterSize, 2, 0);
         if (standaloneModelConstant == null)
             standaloneModelConstant = device->CreateConstantBuffer(VectorConstantSize, 2, 0);
-        if (standaloneDecalConstant == null)
-            standaloneDecalConstant = device->CreateConstantBuffer(VectorConstantSize, 2, 0);
-        if (
-            standaloneInstanceConstant == null
-            || standaloneModelConstant == null
-            || standaloneDecalConstant == null
-        )
+        if (standaloneInstanceConstant == null || standaloneModelConstant == null)
             throw new InvalidOperationException("The game rejected a standalone constant buffer.");
     }
 
@@ -1430,19 +1444,38 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             Buffer.MemoryCopy(data, target, source->ByteSize, source->ByteSize);
     }
 
-    private static Texture* GetTransparentDecalTexture()
+    private void EnsureStandaloneWhiteTexture()
     {
-        var utility = CharacterUtility.Instance();
-        var resource =
-            utility == null
-                ? null
-                : (TextureResourceHandle*)
-                    utility->ResourceHandles[TransparentTextureResourceIndex].Value;
-        if (resource == null || resource->Texture == null)
-            throw new InvalidOperationException(
-                "The native transparent decal texture is not available."
+        if (standaloneWhiteTextureResource != null)
+            return;
+        var resourceManager = ResourceManager.Instance();
+        if (resourceManager == null)
+            throw new InvalidOperationException("The native resource manager is not available.");
+        var category = ResourceCategory.Chara;
+        var fileType = StandaloneTextureFileType;
+        var pathHash = StandaloneWhiteTexturePathHash;
+        var resource = (TextureResourceHandle*)
+            resourceManager->GetResourceSync(
+                &category,
+                &fileType,
+                &pathHash,
+                StandaloneWhiteTexturePath,
+                null,
+                null,
+                0
             );
-        return resource->Texture;
+        if (resource == null)
+            throw new InvalidOperationException(
+                "The standalone native white texture could not be loaded."
+            );
+        if (resource->Texture == null)
+        {
+            resource->DecRef();
+            throw new InvalidOperationException(
+                "The standalone native white texture is not ready."
+            );
+        }
+        standaloneWhiteTextureResource = resource;
     }
 
     private void EnsureStandaloneColorTable()
@@ -1476,7 +1509,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         values[10] = new Vector4(0, 1, 0, 0);
     }
 
-    private static void WriteVectorConstant(ConstantBuffer* constant, Vector4 value)
+    internal static void WriteVectorConstant(ConstantBuffer* constant, Vector4 value)
     {
         var target = constant->LoadSourcePointer(0, VectorConstantSize);
         if (target == null)
@@ -1675,6 +1708,7 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
     private readonly object stateLock = new();
     private Matrix4x4 currentWorldView;
     private Matrix4x4 previousWorldView;
+    private Vector4 color;
     private uint preparedFrame = uint.MaxValue;
     private bool resetHistory = true;
     private bool removed;
@@ -1688,6 +1722,7 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
     internal NativeGeometrySubmissionBackend Owner { get; }
     internal NativeGeometry Geometry { get; }
     internal ConstantBuffer* WorldConstant { get; private set; }
+    internal ConstantBuffer* ColorConstant { get; private set; }
     internal Matrix4x4? FixedWorld { get; }
     internal bool HasSubmitted
     {
@@ -1718,16 +1753,20 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
         NativeGeometrySubmissionBackend owner,
         NativeGeometry geometry,
         ConstantBuffer* worldConstant,
+        ConstantBuffer* colorConstant,
         Matrix4x4 currentWorldView,
-        Matrix4x4? fixedWorld
+        Matrix4x4? fixedWorld,
+        Vector4 color
     )
     {
         Owner = owner;
         Geometry = geometry;
         WorldConstant = worldConstant;
+        ColorConstant = colorConstant;
         FixedWorld = fixedWorld;
         this.currentWorldView = currentWorldView;
         previousWorldView = currentWorldView;
+        this.color = color;
     }
 
     public void UpdateWorldView(Matrix4x4 worldView, bool resetTemporalHistory = false)
@@ -1737,6 +1776,15 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
             ObjectDisposedException.ThrowIf(removed, this);
             currentWorldView = worldView;
             resetHistory |= resetTemporalHistory;
+        }
+    }
+
+    public void UpdateColor(Vector4 value)
+    {
+        lock (stateLock)
+        {
+            ObjectDisposedException.ThrowIf(removed, this);
+            color = value;
         }
     }
 
@@ -1834,6 +1882,7 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
                 || failure != null
                 || Geometry.IsDisposed
                 || WorldConstant == null
+                || ColorConstant == null
                 || preparedFrame == frame
             )
                 return false;
@@ -1846,6 +1895,7 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
                 currentWorldView,
                 previousWorldView
             );
+            NativeGeometrySubmissionBackend.WriteVectorConstant(ColorConstant, color);
             preparedFrame = frame;
             return true;
         }
@@ -1886,6 +1936,9 @@ internal sealed unsafe class NativeRigidInstance : IDisposable
         MarkRemoved();
         var constant = WorldConstant;
         WorldConstant = null;
+        NativeGeometrySubmissionBackend.ReleaseNativeResource(ref constant);
+        constant = ColorConstant;
+        ColorConstant = null;
         NativeGeometrySubmissionBackend.ReleaseNativeResource(ref constant);
     }
 
