@@ -121,6 +121,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
     private readonly HashSet<NativeGeometry> geometries = [];
     private readonly HashSet<NativeRigidInstance> rigidInstances = [];
     private readonly List<NativeRigidInstance> retiredRigidInstances = [];
+    private ConstantBuffer* standaloneMaterialConstant;
     private ConstantBuffer* standaloneInstanceConstant;
     private ConstantBuffer* standaloneModelConstant;
     private ConstantBuffer* standaloneDecalConstant;
@@ -395,6 +396,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         ReleaseNativeResource(ref standaloneDecalConstant);
         ReleaseNativeResource(ref standaloneModelConstant);
         ReleaseNativeResource(ref standaloneInstanceConstant);
+        ReleaseNativeResource(ref standaloneMaterialConstant);
         ReleaseStandaloneMaterial();
         lock (stateLock)
         {
@@ -767,6 +769,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
         );
         var tableSamplerId = FindShaderSamplerId(targetShaderPackage, TableSamplerCrc);
         EnsureStandaloneConstants();
+        EnsureStandaloneMaterialConstant(targetMaterial);
         WriteDefaultInstanceConstant(standaloneInstanceConstant);
         WriteVectorConstant(standaloneModelConstant, new Vector4(1, 0, 0, 0));
         WriteVectorConstant(standaloneDecalConstant, Vector4.One);
@@ -856,6 +859,7 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
                 throw new InvalidOperationException(
                     "The material helper did not bind the owned material constant."
                 );
+            contextState.SetConstant(standaloneMaterialConstantId, standaloneMaterialConstant);
             contextState.SetConstant(instanceConstantId, standaloneInstanceConstant);
             contextState.SetConstant(modelConstantId, standaloneModelConstant);
             contextState.SetConstant(decalConstantId, standaloneDecalConstant);
@@ -1352,6 +1356,45 @@ internal sealed unsafe class NativeGeometrySubmissionBackend : IDisposable
             || standaloneDecalConstant == null
         )
             throw new InvalidOperationException("The game rejected a standalone constant buffer.");
+    }
+
+    private void EnsureStandaloneMaterialConstant(Material* material)
+    {
+        var source = material->MaterialParameterCBuffer;
+        if (source == null || source->ByteSize <= 0 || source->UnsafeSourcePointer == null)
+            throw new InvalidOperationException(
+                "The owned material has no readable material-constant storage."
+            );
+
+        if (standaloneMaterialConstant != null)
+        {
+            if (standaloneMaterialConstant->ByteSize != source->ByteSize)
+                throw new InvalidOperationException(
+                    "The owned material constant changed size after initialization."
+                );
+            return;
+        }
+
+        var device = Device.Instance();
+        if (device == null)
+            throw new InvalidOperationException("The native graphics device is not available.");
+
+        standaloneMaterialConstant = device->CreateConstantBuffer(source->ByteSize, 2, 0);
+        if (standaloneMaterialConstant == null)
+            throw new InvalidOperationException(
+                "The game rejected the owned material constant buffer."
+            );
+
+        var target = standaloneMaterialConstant->LoadSourcePointer(0, source->ByteSize);
+        if (target == null)
+        {
+            ReleaseNativeResource(ref standaloneMaterialConstant);
+            throw new InvalidOperationException(
+                "The game did not expose owned material-constant storage."
+            );
+        }
+
+        Buffer.MemoryCopy(source->UnsafeSourcePointer, target, source->ByteSize, source->ByteSize);
     }
 
     private void EnsureStandaloneColorTable()
