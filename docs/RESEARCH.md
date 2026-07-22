@@ -380,3 +380,17 @@ native 提交流程明确构造 current 和 previous 两个矩阵，并将二者
 当前矩阵仍是 `Translation(0,0,-5)` 的 view-space 测试值，尚未接入 scene view matrix，因此不能称为
 公开接口意义上的 world transform。此次拆分只确认输入和写入责任：顶层决定 current/previous 值，
 `NativeResources` 决定原生 constant 的二进制布局。
+
+## 主 view 的 world-view 组合
+
+FFCS 当前公开 `Scene.CameraManager.Instance()->CurrentCamera`，并将 `Scene.Camera.ViewMatrix` 声明在
+camera `+0xA0`。同一 FFCS 类型的 `WorldToScreen` 实现直接计算
+`worldPosition * ViewMatrix * RenderCamera.ProjectionMatrix`，所以 System.Numerics 的 row-vector
+约定下，图元 constant 应写入 `world * view`，而不是 `view * world`。这条来源不依赖自然模型的
+world constant，也没有复制 draw command 状态。
+
+为了让切换前后的第一帧完全一致，首次主 view 提交时先计算
+`fixedWorld = Translation(0,0,-5) * inverse(currentView)`。因此首次的
+`fixedWorld * currentView` 仍严格得到已经验证的 view-space `Translation(0,0,-5)`。`fixedWorld`
+随后保持不变，每帧只使用当前 camera view 重新计算 world-view；相机移动时三角形应留在这个世界位置，
+不再固定在屏幕中央。previous 暂时仍等于 current，实际跨帧 previous view 留给下一独立步骤。

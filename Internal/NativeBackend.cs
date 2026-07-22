@@ -2,6 +2,7 @@ using System.Numerics;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.Interop;
 
@@ -23,6 +24,8 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int loggedFirstSubmission;
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
+    private Matrix4x4 fixedTriangleWorld;
+    private bool hasFixedTriangleWorld;
 
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
@@ -93,7 +96,21 @@ internal sealed unsafe class NativeBackend : IDisposable
         {
             resources.CreateConstants();
             resources.LoadWhiteTexture();
-            var currentWorldView = Matrix4x4.CreateTranslation(0, 0, -5);
+            var cameraManager = CameraManager.Instance();
+            var camera = cameraManager == null ? null : cameraManager->CurrentCamera;
+            if (camera == null)
+                throw new InvalidOperationException("The current scene camera is not available.");
+
+            var view = (Matrix4x4)camera->ViewMatrix;
+            if (!hasFixedTriangleWorld)
+            {
+                if (!Matrix4x4.Invert(view, out var inverseView))
+                    throw new InvalidOperationException("The current scene view matrix is not invertible.");
+                fixedTriangleWorld = Matrix4x4.CreateTranslation(0, 0, -5) * inverseView;
+                hasFixedTriangleWorld = true;
+            }
+
+            var currentWorldView = fixedTriangleWorld * view;
             var previousWorldView = currentWorldView;
             var triangleColor = new Vector4(1, 0, 0, 0.5f);
             resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, triangleColor);
