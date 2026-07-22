@@ -8,13 +8,23 @@ public sealed class Renderer : IDisposable
 {
     private readonly NativeResources resources;
     private readonly MaterialLoader material;
+    private readonly NativeBackend backend;
 
-    public Renderer(ISigScanner sigScanner)
+    public Renderer(IGameInteropProvider gameInteropProvider, ISigScanner sigScanner, IPluginLog log)
     {
         resources = new NativeResources(sigScanner);
         try
         {
             material = new MaterialLoader();
+            try
+            {
+                backend = new NativeBackend(gameInteropProvider, log);
+            }
+            catch
+            {
+                material.Dispose();
+                throw;
+            }
         }
         catch
         {
@@ -25,6 +35,7 @@ public sealed class Renderer : IDisposable
 
     public void Dispose()
     {
+        backend.Dispose();
         material.Dispose();
         resources.Dispose();
     }
