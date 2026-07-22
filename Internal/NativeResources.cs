@@ -59,6 +59,8 @@ internal sealed unsafe class NativeResources : IDisposable
 
     internal const int VertexCount = 3;
     internal const int IndexCount = 3;
+    internal const int IndexStart = 256;
+    private const int IndexElementCount = IndexStart + IndexCount;
 
     // Captured byte-for-byte from the same native two-stream charactertransparency draw.
     // Each record is the binary element accepted by the game's vertex-declaration creator.
@@ -139,14 +141,18 @@ internal sealed unsafe class NativeResources : IDisposable
         stream1[0] = new Stream1Vertex(new Vector2(0, 1));
         stream1[1] = new Stream1Vertex(new Vector2(1, 1));
         stream1[2] = new Stream1Vertex(new Vector2(0.5f, 0));
-        ushort* indices = stackalloc ushort[IndexCount] { 0, 1, 2 };
+        ushort* indices = stackalloc ushort[IndexElementCount];
+        new Span<ushort>(indices, IndexElementCount).Clear();
+        indices[IndexStart] = 0;
+        indices[IndexStart + 1] = 1;
+        indices[IndexStart + 2] = 2;
 
         try
         {
             vertexBuffer = createVertexBuffer(device, vertexBytes, BufferCreationFlags, VertexBufferFourthArgument);
             indexBuffer = createIndexBuffer(
                 device,
-                IndexCount * sizeof(ushort),
+                IndexElementCount * sizeof(ushort),
                 IndexBufferThirdArgument,
                 BufferCreationFlags,
                 IndexBufferFourthArgument

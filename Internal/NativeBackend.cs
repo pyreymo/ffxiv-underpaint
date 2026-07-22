@@ -179,7 +179,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                             modelRenderer,
                             (nint)ownedMaterialParameters,
                             NativeResources.VertexCount,
-                            0,
+                            NativeResources.IndexStart,
                             NativeResources.IndexCount
                         );
                         pushedCommands = pushedCommandProbe;
@@ -325,7 +325,7 @@ internal sealed unsafe class NativeBackend : IDisposable
 
                 log.Information(
                     "[Underpaint] Owned command execution probe: Matched={Matched}/{Expected}, "
-                        + "ProcessCommandCount={ProcessCommandCount}, DrawIndexed(3,0,0)={DrawCount}.",
+                        + "ProcessCommandCount={ProcessCommandCount}, DrawIndexed(3,256,0)={DrawCount}.",
                     matches,
                     pending.Length,
                     renderCommandCount,
@@ -340,7 +340,7 @@ internal sealed unsafe class NativeBackend : IDisposable
 
     private void DrawIndexedDetour(nint context, uint indexCount, uint startIndex, int baseVertex)
     {
-        if (countOwnedDraws && indexCount == 3 && startIndex == 0 && baseVertex == 0)
+        if (countOwnedDraws && indexCount == 3 && startIndex == NativeResources.IndexStart && baseVertex == 0)
             ownedDrawCount++;
 
         drawIndexedHook.Original(context, indexCount, startIndex, baseVertex);
