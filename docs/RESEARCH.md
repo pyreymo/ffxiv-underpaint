@@ -254,6 +254,11 @@ context scope 保存和恢复 `0x878`、`0x880`、`0x8B8` 的 shader 与 descrip
 geometry、constants 和三项白纹理，在 selection 与调用参数仍存活时同步调用一次原生 builder，
 请求三顶点、起始索引零、三个索引。辅助 view 将在主 view command 单独验证后再打开。
 
+builder 的返回寄存器没有稳定语义，首次运行看到的 `0x300` 不能作为成功或 command 数量。当前
+改为读取 FFCS 已公开的 `Context.CommandAllocationUsedSize`：只比较本次同步调用前后的增量，零
+增量明确失败，非零增量以 `CommandBytes` 记录。这只能证明 builder 向当前原生 command arena
+写入了 command data，不把字节数解释为 command 数量，也不恢复 D3D11 draw capture。
+
 `OnRenderModelParams+0x10` 同时明确写入自有 176-byte instance constant。FFCS 当前仍将该字段
 标为 private unknown，但自然路径运行时映射和封存 builder 成功样本都将它对应到 ID 34 / CRC
 `0x20A30B34`；因此它是当前固定路径必须同时提供的调用参数，不只是一项 context binding。

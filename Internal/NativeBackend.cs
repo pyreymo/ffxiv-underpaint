@@ -109,20 +109,25 @@ internal sealed unsafe class NativeBackend : IDisposable
                 var contextState = new NativeContextState((byte*)context, worldConstantId, bindings);
                 MaterialHelperResult helperResult;
                 ShaderPair shaders;
-                nint submissionResult;
+                ulong commandBytes;
                 try
                 {
                     helperResult = materialHelper.Apply((ModelRenderer*)modelRenderer, (byte*)context, ownedMaterialParameters, selection);
                     shaders = MaterialHelper.ResolveActiveShaders((byte*)context, helperResult.ShaderDescriptor);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
-                    submissionResult = buildPassesHook.Original(
+                    var commandBytesBefore = context->CommandAllocationUsedSize;
+                    buildPassesHook.Original(
                         modelRenderer,
                         (nint)ownedMaterialParameters,
                         NativeResources.VertexCount,
                         0,
                         NativeResources.IndexCount
                     );
+                    var commandBytesAfter = context->CommandAllocationUsedSize;
+                    if (commandBytesAfter <= commandBytesBefore)
+                        throw new InvalidOperationException("The native pass builder produced no command data.");
+                    commandBytes = commandBytesAfter - commandBytesBefore;
                 }
                 finally
                 {
@@ -130,14 +135,14 @@ internal sealed unsafe class NativeBackend : IDisposable
                 }
 
                 log.Information(
-                    "[Underpaint] Submitted one owned triangle through the native pass builder: Result=0x{Result:X}, "
+                    "[Underpaint] Submitted one owned triangle through the native pass builder: CommandBytes={CommandBytes}, "
                         + "ActivePass={ActivePass}, OnRenderMaterial=0x{OnRenderMaterial:X}, "
                         + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
                         + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
                         + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                         + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
                         + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
-                    submissionResult,
+                    commandBytes,
                     shaders.Pass,
                     helperResult.OnRenderMaterial,
                     helperResult.Output,
