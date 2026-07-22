@@ -109,14 +109,18 @@ internal sealed unsafe class NativeBackend : IDisposable
                 var contextState = new NativeContextState((byte*)context, worldConstantId, bindings);
                 MaterialHelperResult helperResult;
                 ShaderPair shaders;
-                ulong commandBytes;
+                nint commandBaseBefore;
+                ulong commandUsedBefore;
+                nint commandBaseAfter;
+                ulong commandUsedAfter;
                 try
                 {
                     helperResult = materialHelper.Apply((ModelRenderer*)modelRenderer, (byte*)context, ownedMaterialParameters, selection);
                     shaders = MaterialHelper.ResolveActiveShaders((byte*)context, helperResult.ShaderDescriptor);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
-                    var commandBytesBefore = context->CommandAllocationUsedSize;
+                    commandBaseBefore = (nint)context->CommandAllocationBase;
+                    commandUsedBefore = context->CommandAllocationUsedSize;
                     buildPassesHook.Original(
                         modelRenderer,
                         (nint)ownedMaterialParameters,
@@ -124,10 +128,10 @@ internal sealed unsafe class NativeBackend : IDisposable
                         0,
                         NativeResources.IndexCount
                     );
-                    var commandBytesAfter = context->CommandAllocationUsedSize;
-                    if (commandBytesAfter <= commandBytesBefore)
+                    commandBaseAfter = (nint)context->CommandAllocationBase;
+                    commandUsedAfter = context->CommandAllocationUsedSize;
+                    if (commandBaseAfter == commandBaseBefore && commandUsedAfter <= commandUsedBefore)
                         throw new InvalidOperationException("The native pass builder produced no command data.");
-                    commandBytes = commandBytesAfter - commandBytesBefore;
                 }
                 finally
                 {
@@ -135,14 +139,18 @@ internal sealed unsafe class NativeBackend : IDisposable
                 }
 
                 log.Information(
-                    "[Underpaint] Submitted one owned triangle through the native pass builder: CommandBytes={CommandBytes}, "
+                    "[Underpaint] Submitted one owned triangle through the native pass builder: "
+                        + "CommandArena=0x{CommandBaseBefore:X}+{CommandUsedBefore}->0x{CommandBaseAfter:X}+{CommandUsedAfter}, "
                         + "ActivePass={ActivePass}, OnRenderMaterial=0x{OnRenderMaterial:X}, "
                         + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
                         + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
                         + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                         + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
                         + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
-                    commandBytes,
+                    commandBaseBefore,
+                    commandUsedBefore,
+                    commandBaseAfter,
+                    commandUsedAfter,
                     shaders.Pass,
                     helperResult.OnRenderMaterial,
                     helperResult.Output,

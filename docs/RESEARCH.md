@@ -255,9 +255,11 @@ geometry、constants 和三项白纹理，在 selection 与调用参数仍存活
 请求三顶点、起始索引零、三个索引。辅助 view 将在主 view command 单独验证后再打开。
 
 builder 的返回寄存器没有稳定语义，首次运行看到的 `0x300` 不能作为成功或 command 数量。当前
-改为读取 FFCS 已公开的 `Context.CommandAllocationUsedSize`：只比较本次同步调用前后的增量，零
-增量明确失败，非零增量以 `CommandBytes` 记录。这只能证明 builder 向当前原生 command arena
-写入了 command data，不把字节数解释为 command 数量，也不恢复 D3D11 draw capture。
+改为读取 FFCS 已公开的 `Context.CommandAllocationBase` 和 `CommandAllocationUsedSize`。原生
+`AllocateCommand` 使用 128 KiB 分段：当前段不足时会更换 base，并从较小的 used size 重新开始，
+因此不能只要求 used size 单调增加。只有 base 未变且 used 未增加才明确失败；日志记录完整前后二元组。
+这只能证明 builder 向当前原生 command arena 分配了 command data，不解释 command 数量，也不恢复
+D3D11 draw capture。
 
 `OnRenderModelParams+0x10` 同时明确写入自有 176-byte instance constant。FFCS 当前仍将该字段
 标为 private unknown，但自然路径运行时映射和封存 builder 成功样本都将它对应到 ID 34 / CRC
