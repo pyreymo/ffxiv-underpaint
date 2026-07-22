@@ -325,4 +325,5 @@ material 四项自有 constant 后，30 张、100ms 间隔的采样中，所有�
 constant 页，而不是 donor、shader selection、system/scene constant 或 sampler。
 
 验证完成后删除 carrier/context 锁和 change-only 日志。生产路径保留每次提交重写四项自有
-constant；这也是自有 constant 的正确生命周期，不是诊断性容错。
+constant；这也是自有 constant 的正确生命周期，不是诊断性容错。恢复正常的跨 context 每帧
+提交后再次采样 30 张，中心颜色全部为 `(232, 225, 228)`，没有缺帧或颜色切换。
