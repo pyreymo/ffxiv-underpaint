@@ -47,9 +47,6 @@ internal sealed unsafe class NativeResources : IDisposable
     // Captured from a natural charactertransparency material constant buffer.
     private const int MaterialConstantBytes = 416;
 
-    // Lumina.Misc.Crc32.Get("g_Transparency", 0xFFFFFFFF).
-    private const uint TransparencyMaterialElementCrc = 0x53E8417B;
-    private const float FixedTransparency = 0.5f;
     private const float FixedTriangleViewDepth = -5f;
 
     private const string WhiteTexturePath = "chara/common/texture/white.tex";
@@ -318,19 +315,6 @@ internal sealed unsafe class NativeResources : IDisposable
         if (data == null)
             throw new InvalidOperationException("The material constant buffer has no writable storage.");
         defaults.CopyTo(new Span<byte>(data, MaterialConstantBytes));
-
-        foreach (var element in shaderPackage->MaterialElementsSpan)
-        {
-            if (element.CRC != TransparencyMaterialElementCrc)
-                continue;
-            if (element.Size != sizeof(float) || element.Offset + element.Size > MaterialConstantBytes)
-                throw new InvalidOperationException("The fixed shader package has an unexpected g_Transparency layout.");
-
-            *(float*)((byte*)data + element.Offset) = FixedTransparency;
-            return;
-        }
-
-        throw new InvalidOperationException("The fixed shader package has no g_Transparency material element.");
     }
 
     private static nint RequireSignature(ISigScanner sigScanner, string signature, string name)

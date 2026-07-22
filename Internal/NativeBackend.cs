@@ -20,6 +20,7 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int loggedFirstCall;
     private int loggedMainRendezvous;
     private int loggedFirstSubmission;
+    private int loggedMaterialElements;
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
 
@@ -92,6 +93,11 @@ internal sealed unsafe class NativeBackend : IDisposable
         {
             resources.CreateConstants();
             resources.LoadWhiteTexture();
+            if (Interlocked.CompareExchange(ref loggedMaterialElements, 1, 0) == 0)
+                log.Information(
+                    "[Underpaint] Fixed SHPK material elements: {Elements}",
+                    MaterialElementProbe.Describe(material.ShaderPackage)
+                );
             resources.WriteFixedTriangleConstants(material.ShaderPackage);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
