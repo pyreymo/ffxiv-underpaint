@@ -298,7 +298,7 @@ internal sealed unsafe class NativeResources : IDisposable
 
         // A fixed red/white A/B test confirmed that register 0 controls output RGB
         // for the selected charactertransparency variant. Its general engine name is unknown.
-        registers[0] = new Vector4(1, 0, 0, 1);
+        registers[0] = new Vector4(1, 0, 0, FixedTriangleAlpha);
         registers[1] = Vector4.One;
         registers[2] = Vector4.One;
         registers[3] = Vector4.One;
@@ -383,7 +383,7 @@ internal sealed unsafe class NativeResources : IDisposable
             // The captured declaration identifies the input as Binormal, but the official
             // name and channel encoding of format 0x24 have not been identified.
             Binormal = 0x00800080;
-            Color0 = PackNormalizedByte4(1, 1, 1, FixedTriangleAlpha);
+            Color0 = PackNormalizedByte4(1, 1, 1, 1);
             TexCoord0 = PackHalf4(textureCoordinate.X, textureCoordinate.Y, -1, 2);
         }
 
