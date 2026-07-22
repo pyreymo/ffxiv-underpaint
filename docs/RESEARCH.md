@@ -351,3 +351,14 @@ FFCS `VertexShader.Input` 的位序给出 `3 = Color0`；这与已捕获 declara
 由此确认当前 shader variant 实际使用 Color0 alpha 作为透明度输入。当前 builder 会为一次提交生成四条
 command，屏幕结果可能是多个 pass 的合成，因此这里只确认 `0.5` 比 `1.0` 更透明，不把它表述为严格的
 50% 屏幕混合比例。
+
+同一参考表将 Color0 的 RGB 通道列为 specular mask、roughness 和 diffuse mask，而不是最终颜色。
+实机将 Color0 从 `(1,1,1,0.5)` 改为 `(1,0,0,0.5)` 后，三角形仍为白色；将已确认存在的
+`g_DiffuseColor`（CRC `0x2C2A34DD`）从默认 `(1,1,1)` 改为 `(1,0,0)` 也没有改变当前 shader
+selection 的输出。这两项无效改动均未保留。
+
+此前未逐帧初始化 instance constant 时，输出会在纯红、绿、蓝之间随机跳变，因此随后只将 176-byte
+instance constant 的 register 0 从 `(1,1,1,1)` 改为 `(1,0,0,1)`。三角形立即稳定变红，同时
+Color0 alpha `0.5` 的半透明仍然保留；连续 30 帧四点采样只出现 1 至 2 个色阶的场景波动。由此确认
+当前固定 variant 使用 `InstanceConstant[0].rgb` 控制输出颜色，使用 `Color0.a` 控制透明度。register 0
+在游戏中的通用名称仍未知，第一版只记录这个固定 shader selection 下已经验证的作用。

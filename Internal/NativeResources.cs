@@ -295,6 +295,9 @@ internal sealed unsafe class NativeResources : IDisposable
 
         var registers = new Span<Vector4>(data, InstanceConstantBytes / sizeof(Vector4));
         registers.Clear();
+
+        // A fixed red/white A/B test confirmed that register 0 controls output RGB
+        // for the selected charactertransparency variant. Its general engine name is unknown.
         registers[0] = new Vector4(1, 0, 0, 1);
         registers[1] = Vector4.One;
         registers[2] = Vector4.One;
