@@ -25,6 +25,7 @@ create game objects or provide a general model renderer.
 
 The previous hand-written G-buffer and transparency prototypes have been archived in Git history.
 The native implementation is being rebuilt in small, reviewable steps. The renderer currently
-owns one fixed native triangle mesh, but does not submit it for rendering yet.
+owns one fixed native triangle mesh and independently loads its fixed donor material. It verifies
+that the material uses `charactertransparency.shpk`, but does not submit it for rendering yet.
 
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the verified findings retained from the prototypes.
