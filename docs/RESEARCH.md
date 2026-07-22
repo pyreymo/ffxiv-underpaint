@@ -276,3 +276,32 @@ current 与 previous 写入同一值。这个值只属于最小闭环测试；�
 `OnRenderModelParams+0x10` 同时明确写入自有 176-byte instance constant。FFCS 当前仍将该字段
 标为 private unknown，但自然路径运行时映射和封存 builder 成功样本都将它对应到 ID 34 / CRC
 `0x20A30B34`；因此它是当前固定路径必须同时提供的调用参数，不只是一项 context binding。
+
+## 固定三角形的最终执行证据
+
+画面中没有明显三角形不能直接说明 draw 没有发生，因此本轮按运行边界逐层验证。只在 Underpaint
+同步调用 builder 的区间内观察 `Context.PushBackCommand`，得到四条 type 6 command。四条均保留
+Underpaint 的 VB、IB、vertex declaration、两个 stream 和 VS/PS，原始范围字段为三个索引；第四条
+只有 shader descriptor 被 builder 切换。随后按这四个 command 地址在
+`ImmediateContext.ProcessCommands` 输入中精确匹配，四条均进入同一原生消费批次。
+
+IDA 确认当前版本 type 6 在 `ImmediateContext.ExecuteCommands` 中通过 D3D11 context vtable
+`+0x60` 调用 `DrawIndexed(command+0x18, command+0x14, command+0x08)`。为排除同批自然
+`DrawIndexed(3, 0, 0)` 的干扰，临时在 IB 前加入 256 个索引位置，并从 `startIndex=256` 提交。
+实机精确观察到 `DrawIndexed(3, 256, 0)=4`，证明四条 Underpaint draw 均到达 D3D11。
+
+在其中第一条唯一 draw 外包裹一次 D3D11 pipeline-statistics query，结果为：
+
+```text
+IAVertices=3
+IAPrimitives=1
+VSInvocations=3
+ClipperInvocations=1
+ClipperPrimitives=0
+PSInvocations=0
+```
+
+因此当前不可见的直接原因已经收敛：输入装配和 vertex shader 都实际运行，但 VS 输出的唯一三角形
+被 clipper 完全裁掉，没有产生任何 pixel shader invocation。颜色、alpha、白纹理、blend 和画面
+覆盖均不是当前第一阻塞点。下一步应只比较自然 draw 与 Underpaint draw 的 transform/VS constant
+内容和矩阵约定，不应继续修改像素材质输入。
