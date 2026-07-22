@@ -184,6 +184,7 @@ internal sealed unsafe class NativeResources : IDisposable
             instanceConstant = CreateAndClearConstantBuffer(device, InstanceConstantBytes, "instance");
             modelConstant = CreateAndClearConstantBuffer(device, ModelConstantBytes, "model");
             materialConstant = CreateAndClearConstantBuffer(device, MaterialConstantBytes, "material");
+            WriteModelConstant();
         }
         catch
         {
@@ -215,6 +216,15 @@ internal sealed unsafe class NativeResources : IDisposable
             Release(ref resource);
             throw;
         }
+    }
+
+    private void WriteModelConstant()
+    {
+        var data = ModelConstant->LoadSourcePointer(0, ModelConstantBytes);
+        if (data == null)
+            throw new InvalidOperationException("The model constant buffer has no writable storage.");
+
+        *(Vector4*)data = new Vector4(1, 0, 0, 0);
     }
 
     private static nint RequireSignature(ISigScanner sigScanner, string signature, string name)

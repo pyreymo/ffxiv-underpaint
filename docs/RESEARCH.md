@@ -155,3 +155,12 @@ graphics context。
 view 30、subview 11 pass-builder rendezvous 时创建并清零。正常世界渲染会持续经过该边界；标题、
 角色选择或加载场景暂时没有该 view 时，资源保持未初始化且不提交，进入正常世界后再完成一次性
 初始化。初始化失败只记录一次并停止后续提交，不在 render hook 中重试。
+
+修正版本实机输出 `Native constants and material helpers verified`，证明四个 flags `0x2` buffer 在
+view 30、subview 11 的 render context 中能够创建、取得可写存储并与两个 material helper 共存。
+
+封存 prototype 对最终 vertex shader 的反汇编和运行时值捕获还确认：package constant CRC
+`0x4E0A5472` 是单个 `float4` model 输入，当前 variant 只读取其 `x`，自然路径的值为 `1`。第一版
+因此将自有 16-byte model constant 明确初始化为 `(1, 0, 0, 0)`，并在运行时再次校验固定 SHPK
+仍将该 CRC 声明为一个 register。此时尚未调用 pass builder，所以本步骤不安装 context binding；
+绑定与实际 builder 消费必须在同一后续提交中完成。

@@ -19,6 +19,8 @@ internal sealed unsafe class MaterialHelper
     private const uint MaterialConstantId = 25;
     private const uint ApplyMaterialSamplerId = 6;
     private const uint OnRenderMaterialSamplerId = 62;
+    private const uint ModelConstantCrc = 0x4E0A5472;
+    private const ushort ModelConstantRegisters = 1;
 
     private readonly MaterialLoader material;
     private readonly delegate* unmanaged<ShaderSelection*, ShaderPackage*, void> initializeShaderSelection;
@@ -51,12 +53,18 @@ internal sealed unsafe class MaterialHelper
         );
     }
 
-    internal MaterialHelperResult Validate(ModelRenderer* renderer, byte* context)
+    internal MaterialHelperResult Validate(ModelRenderer* renderer, byte* context, ConstantBuffer* modelConstant)
     {
         var targetMaterial = material.Material;
         var shaderPackage = material.ShaderPackage;
         if (targetMaterial == null || shaderPackage == null)
             throw new InvalidOperationException("The fixed donor material is not ready.");
+
+        var modelConstantEntry = FindConstant(shaderPackage, ModelConstantCrc);
+        if (modelConstantEntry.Size != ModelConstantRegisters)
+            throw new InvalidOperationException("The fixed shader package has an unexpected model constant size.");
+        if (modelConstant == null || modelConstant->ByteSize != modelConstantEntry.Size * 16)
+            throw new InvalidOperationException("The owned model constant does not match the fixed shader package.");
 
         var model = stackalloc Model[1];
         var modelParameters = stackalloc ModelRenderer.OnRenderModelParams[1];
@@ -91,7 +99,12 @@ internal sealed unsafe class MaterialHelper
                 if (selection->MaterialValues == null || shaderDescriptor == 0)
                     throw new InvalidOperationException("The fixed material did not resolve a shader selection.");
 
-                return new MaterialHelperResult((nint)onRenderMaterialResult, *(uint*)((byte*)materialParameters + 0x40), shaderDescriptor);
+                return new MaterialHelperResult(
+                    (nint)onRenderMaterialResult,
+                    *(uint*)((byte*)materialParameters + 0x40),
+                    shaderDescriptor,
+                    modelConstantEntry.Id
+                );
             }
             finally
             {
@@ -164,6 +177,17 @@ internal sealed unsafe class MaterialHelper
         throw new InvalidOperationException("The fixed shader package has no model-type scene key.");
     }
 
+    private static ShaderPackage.ConstantSamplerUnknown FindConstant(ShaderPackage* shaderPackage, uint crc)
+    {
+        foreach (var constant in shaderPackage->ConstantsSpan)
+        {
+            if (constant.CRC == crc)
+                return constant;
+        }
+
+        throw new InvalidOperationException($"The fixed shader package has no constant CRC 0x{crc:X8}.");
+    }
+
     private static nint RequireSignature(ISigScanner sigScanner, string signature, string name)
     {
         if (!sigScanner.TryScanText(signature, out var address) || address == 0)
@@ -218,4 +242,4 @@ internal sealed unsafe class MaterialHelper
     }
 }
 
-internal readonly record struct MaterialHelperResult(nint OnRenderMaterial, uint Output, nint ShaderDescriptor);
+internal readonly record struct MaterialHelperResult(nint OnRenderMaterial, uint Output, nint ShaderDescriptor, uint ModelConstantId);
