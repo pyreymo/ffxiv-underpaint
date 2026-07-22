@@ -28,6 +28,23 @@ internal sealed unsafe class NativeResources : IDisposable
     private const byte VertexBufferFourthArgument = 7;
     private const byte IndexBufferFourthArgument = 0;
 
+    // The archived native-submission prototype verified that buffers created with
+    // this value expose writable storage through LoadSourcePointer and can be used
+    // by native draw commands. The individual flag bits have not been identified.
+    private const uint WritableConstantBufferFlags = 0x2;
+    private const uint ConstantBufferLastArgument = 0;
+
+    // World stores current and previous 4x4 matrices in the archived native path.
+    private const int WorldConstantBytes = 128;
+
+    // Captured from charactertransparency.shpk package constants:
+    // CRC 0x20A30B34 has 11 float4 registers; CRC 0x4E0A5472 has one.
+    private const int InstanceConstantBytes = 11 * 16;
+    private const int ModelConstantBytes = 16;
+
+    // Captured from a natural charactertransparency material constant buffer.
+    private const int MaterialConstantBytes = 416;
+
     internal const int VertexCount = 3;
     internal const int IndexCount = 3;
 
@@ -48,10 +65,18 @@ internal sealed unsafe class NativeResources : IDisposable
     private nint vertexBuffer;
     private nint indexBuffer;
     private nint vertexDeclaration;
+    private nint worldConstant;
+    private nint instanceConstant;
+    private nint modelConstant;
+    private nint materialConstant;
 
     internal nint VertexBuffer => vertexBuffer;
     internal nint IndexBuffer => indexBuffer;
     internal nint VertexDeclaration => vertexDeclaration;
+    internal ConstantBuffer* WorldConstant => (ConstantBuffer*)worldConstant;
+    internal ConstantBuffer* InstanceConstant => (ConstantBuffer*)instanceConstant;
+    internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
+    internal ConstantBuffer* MaterialConstant => (ConstantBuffer*)materialConstant;
     internal static int Stream0Stride => sizeof(Stream0Vertex);
     internal static int Stream1Stride => sizeof(Stream1Vertex);
     internal int Stream1Offset => VertexCount * sizeof(Stream0Vertex);
@@ -125,6 +150,11 @@ internal sealed unsafe class NativeResources : IDisposable
                 || initializeIndexBuffer(indexBuffer, indices) == 0
             )
                 throw new InvalidOperationException("The game rejected the fixed triangle resources.");
+
+            worldConstant = CreateAndClearConstantBuffer(device, WorldConstantBytes, "world");
+            instanceConstant = CreateAndClearConstantBuffer(device, InstanceConstantBytes, "instance");
+            modelConstant = CreateAndClearConstantBuffer(device, ModelConstantBytes, "model");
+            materialConstant = CreateAndClearConstantBuffer(device, MaterialConstantBytes, "material");
         }
         catch
         {
@@ -135,9 +165,35 @@ internal sealed unsafe class NativeResources : IDisposable
 
     public void Dispose()
     {
+        Release(ref materialConstant);
+        Release(ref modelConstant);
+        Release(ref instanceConstant);
+        Release(ref worldConstant);
         Release(ref vertexDeclaration);
         Release(ref indexBuffer);
         Release(ref vertexBuffer);
+    }
+
+    private static nint CreateAndClearConstantBuffer(Device* device, int byteSize, string name)
+    {
+        var buffer = device->CreateConstantBuffer(byteSize, WritableConstantBufferFlags, ConstantBufferLastArgument);
+        if (buffer == null)
+            throw new InvalidOperationException($"The game rejected the {name} constant buffer.");
+
+        var resource = (nint)buffer;
+        try
+        {
+            var data = buffer->LoadSourcePointer(0, byteSize);
+            if (data == null)
+                throw new InvalidOperationException($"The {name} constant buffer has no writable storage.");
+            NativeMemory.Clear(data, (nuint)byteSize);
+            return resource;
+        }
+        catch
+        {
+            Release(ref resource);
+            throw;
+        }
     }
 
     private static nint RequireSignature(ISigScanner sigScanner, string signature, string name)
