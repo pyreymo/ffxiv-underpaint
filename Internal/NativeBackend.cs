@@ -96,15 +96,33 @@ internal sealed unsafe class NativeBackend : IDisposable
             var modelParameters = stackalloc ModelRenderer.OnRenderModelParams[1];
             var ownedMaterialParameters = stackalloc ModelRenderer.OnRenderMaterialParams2[1];
             var selection = stackalloc MaterialHelper.ShaderSelection[1];
-            materialHelper.Initialize((ModelRenderer*)modelRenderer, model, modelParameters, ownedMaterialParameters, selection);
+            materialHelper.Initialize(
+                (ModelRenderer*)modelRenderer,
+                model,
+                modelParameters,
+                ownedMaterialParameters,
+                selection,
+                resources.InstanceConstant
+            );
             try
             {
                 var contextState = new NativeContextState((byte*)context, worldConstantId, bindings);
                 MaterialHelperResult helperResult;
+                ShaderPair shaders;
+                nint submissionResult;
                 try
                 {
                     helperResult = materialHelper.Apply((ModelRenderer*)modelRenderer, (byte*)context, ownedMaterialParameters, selection);
+                    shaders = MaterialHelper.ResolveActiveShaders((byte*)context, helperResult.ShaderDescriptor);
+                    contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
+                    submissionResult = buildPassesHook.Original(
+                        modelRenderer,
+                        (nint)ownedMaterialParameters,
+                        NativeResources.VertexCount,
+                        0,
+                        NativeResources.IndexCount
+                    );
                 }
                 finally
                 {
@@ -112,12 +130,15 @@ internal sealed unsafe class NativeBackend : IDisposable
                 }
 
                 log.Information(
-                    "[Underpaint] Native inputs prepared with live shader selection: OnRenderMaterial=0x{OnRenderMaterial:X}, "
+                    "[Underpaint] Submitted one owned triangle through the native pass builder: Result=0x{Result:X}, "
+                        + "ActivePass={ActivePass}, OnRenderMaterial=0x{OnRenderMaterial:X}, "
                         + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
                         + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
                         + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                         + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
                         + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
+                    submissionResult,
+                    shaders.Pass,
                     helperResult.OnRenderMaterial,
                     helperResult.Output,
                     helperResult.ShaderDescriptor,
