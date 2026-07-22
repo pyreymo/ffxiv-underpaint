@@ -47,7 +47,6 @@ internal sealed unsafe class NativeResources : IDisposable
     // Captured from a natural charactertransparency material constant buffer.
     private const int MaterialConstantBytes = 416;
 
-    private const float FixedTriangleViewDepth = -5f;
     private const string WhiteTexturePath = "chara/common/texture/white.tex";
 
     // ResourceType.Tex in the game's resource-loading ABI.
@@ -240,15 +239,19 @@ internal sealed unsafe class NativeResources : IDisposable
         }
     }
 
-    internal void WriteFixedTriangleConstants(ShaderPackage* shaderPackage, Vector4 color)
+    internal void WriteFixedTriangleConstants(
+        ShaderPackage* shaderPackage,
+        Matrix4x4 currentWorldView,
+        Matrix4x4 previousWorldView,
+        Vector4 color
+    )
     {
         var data = WorldConstant->LoadSourcePointer(0, WorldConstantBytes);
         if (data == null)
             throw new InvalidOperationException("The world constant buffer has no writable storage.");
 
-        var worldView = Matrix4x4.Transpose(Matrix4x4.CreateTranslation(0, 0, FixedTriangleViewDepth));
-        *(Matrix4x4*)data = worldView;
-        *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = worldView;
+        *(Matrix4x4*)data = Matrix4x4.Transpose(currentWorldView);
+        *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = Matrix4x4.Transpose(previousWorldView);
         WriteInstanceConstant(color);
         WriteModelConstant();
         WriteMaterialConstant(shaderPackage);

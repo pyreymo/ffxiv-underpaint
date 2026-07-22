@@ -93,8 +93,10 @@ internal sealed unsafe class NativeBackend : IDisposable
         {
             resources.CreateConstants();
             resources.LoadWhiteTexture();
+            var currentWorldView = Matrix4x4.CreateTranslation(0, 0, -5);
+            var previousWorldView = currentWorldView;
             var triangleColor = new Vector4(1, 0, 0, 0.5f);
-            resources.WriteFixedTriangleConstants(material.ShaderPackage, triangleColor);
+            resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, triangleColor);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
                 resources.InstanceConstant,

@@ -369,3 +369,14 @@ Color0 alpha `0.5` 的半透明仍然保留；连续 30 帧四点采样只出现
 明确传入 `(1,0,0,0.5)`。这使 RGBA 真正属于本次提交且不需要修改静态 VB，但这里的 alpha 必须诚实地
 描述为原生 dither fade。若公开接口需要平滑 alpha，则仍需让每图元的 `Color0.a` 可变，不能复用这一
 结论把两条路径混为一谈。
+
+## current/previous transform 的提交边界
+
+固定测试矩阵原先在 `NativeResources` 内部直接构造，导致资源所有者同时决定了提交位置。现在顶层
+native 提交流程明确构造 current 和 previous 两个矩阵，并将二者传给 constant 写入函数；资源层只按
+已经通过 GPU query 验证的约定分别转置后写入 world constant 前后两个 64-byte 区域。测试期间两者
+保持相同，避免人为制造 motion vector。
+
+当前矩阵仍是 `Translation(0,0,-5)` 的 view-space 测试值，尚未接入 scene view matrix，因此不能称为
+公开接口意义上的 world transform。此次拆分只确认输入和写入责任：顶层决定 current/previous 值，
+`NativeResources` 决定原生 constant 的二进制布局。
