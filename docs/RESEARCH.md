@@ -144,3 +144,14 @@ buffer 的 `LoadSourcePointer` 返回可写存储，并已实际用于原生 dra
 
 该决定的验证边界是：创建成功、`LoadSourcePointer` 非空、写入内容能用于原生 command、每帧更新
 能反映到画面、卸载时资源正常释放。完成这些验证即可继续第一版，不需要先逆向每个 flag bit。
+
+首次实现错误地在 Dalamud 插件构造线程创建并调用 `LoadSourcePointer`。2026-07-22 的热加载和
+进程重启各产生一次相同的 `C0000005`：`CreateConstantBuffer` 返回非空，但第一只 128-byte world
+buffer 的 `LoadSourcePointer` 在 native graphics context 为空时解引用失败。封存 prototype 中同一
+调用实际发生在 render rendezvous 内，因此 flags `0x2` 的验证条件必须包含有效 render thread 和
+graphics context。
+
+修正后，几何仍在 `NativeResources` 构造时创建；四个 constant buffers 延迟到首次经过已验证的
+view 30、subview 11 pass-builder rendezvous 时创建并清零。正常世界渲染会持续经过该边界；标题、
+角色选择或加载场景暂时没有该 view 时，资源保持未初始化且不提交，进入正常世界后再完成一次性
+初始化。初始化失败只记录一次并停止后续提交，不在 render hook 中重试。

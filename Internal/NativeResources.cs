@@ -150,11 +150,6 @@ internal sealed unsafe class NativeResources : IDisposable
                 || initializeIndexBuffer(indexBuffer, indices) == 0
             )
                 throw new InvalidOperationException("The game rejected the fixed triangle resources.");
-
-            worldConstant = CreateAndClearConstantBuffer(device, WorldConstantBytes, "world");
-            instanceConstant = CreateAndClearConstantBuffer(device, InstanceConstantBytes, "instance");
-            modelConstant = CreateAndClearConstantBuffer(device, ModelConstantBytes, "model");
-            materialConstant = CreateAndClearConstantBuffer(device, MaterialConstantBytes, "material");
         }
         catch
         {
@@ -172,6 +167,32 @@ internal sealed unsafe class NativeResources : IDisposable
         Release(ref vertexDeclaration);
         Release(ref indexBuffer);
         Release(ref vertexBuffer);
+    }
+
+    internal void CreateConstants()
+    {
+        if (worldConstant != 0)
+            return;
+
+        var device = Device.Instance();
+        if (device == null)
+            throw new InvalidOperationException("The native graphics device is not available.");
+
+        try
+        {
+            worldConstant = CreateAndClearConstantBuffer(device, WorldConstantBytes, "world");
+            instanceConstant = CreateAndClearConstantBuffer(device, InstanceConstantBytes, "instance");
+            modelConstant = CreateAndClearConstantBuffer(device, ModelConstantBytes, "model");
+            materialConstant = CreateAndClearConstantBuffer(device, MaterialConstantBytes, "material");
+        }
+        catch
+        {
+            Release(ref materialConstant);
+            Release(ref modelConstant);
+            Release(ref instanceConstant);
+            Release(ref worldConstant);
+            throw;
+        }
     }
 
     private static nint CreateAndClearConstantBuffer(Device* device, int byteSize, string name)

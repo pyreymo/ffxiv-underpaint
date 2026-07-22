@@ -13,14 +13,22 @@ internal sealed unsafe class NativeBackend : IDisposable
 
     private readonly Hook<BuildPassesDelegate> buildPassesHook;
     private readonly MaterialHelper materialHelper;
+    private readonly NativeResources resources;
     private readonly IPluginLog log;
     private int loggedFirstCall;
     private int loggedMainRendezvous;
-    private int materialHelpersAttempted;
+    private int nativeInitializationAttempted;
 
-    internal NativeBackend(IGameInteropProvider gameInteropProvider, ISigScanner sigScanner, MaterialLoader material, IPluginLog log)
+    internal NativeBackend(
+        IGameInteropProvider gameInteropProvider,
+        ISigScanner sigScanner,
+        MaterialLoader material,
+        NativeResources resources,
+        IPluginLog log
+    )
     {
         this.log = log;
+        this.resources = resources;
         materialHelper = new MaterialHelper(sigScanner, material);
         buildPassesHook = gameInteropProvider.HookFromSignature<BuildPassesDelegate>(BuildPassesSignature, BuildPassesDetour);
         buildPassesHook.Enable();
@@ -64,14 +72,15 @@ internal sealed unsafe class NativeBackend : IDisposable
             );
         }
 
-        if (Interlocked.CompareExchange(ref materialHelpersAttempted, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref nativeInitializationAttempted, 1, 0) != 0)
             return result;
 
         try
         {
+            resources.CreateConstants();
             var helperResult = materialHelper.Validate((ModelRenderer*)modelRenderer, (byte*)context);
             log.Information(
-                "[Underpaint] Native material helpers verified: OnRenderMaterial=0x{OnRenderMaterial:X}, "
+                "[Underpaint] Native constants and material helpers verified: OnRenderMaterial=0x{OnRenderMaterial:X}, "
                     + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}.",
                 helperResult.OnRenderMaterial,
                 helperResult.Output,
@@ -80,7 +89,7 @@ internal sealed unsafe class NativeBackend : IDisposable
         }
         catch (Exception exception)
         {
-            log.Error(exception, "[Underpaint] Native material helper validation failed; submission is disabled.");
+            log.Error(exception, "[Underpaint] Native initialization failed; submission is disabled.");
         }
 
         return result;
