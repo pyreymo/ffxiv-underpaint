@@ -130,3 +130,17 @@ context，并将 SHPK package constant 表与运行时绑定逐项对应。捕�
 表中的 ID 直接当作 material helper 已完成的绑定。第一版只使用当前固定 SHPK 实际声明的 ID 34
 和 35；若后续最终 shader descriptor 还要求 stage-specific constant，必须从解析后的 descriptor
 单独验证，不能在 package 表中硬编码查找。
+
+## 自有 constant buffer 创建约定
+
+自然 material constant 的创建捕获只证明了 flags `0x4`、最后一个参数 `0`，没有证明该模式
+支持 Underpaint 所需的 `LoadSourcePointer` 写入。封存的 native submission prototype 使用 flags
+`0x2`、最后一个参数 `0` 创建 world、color、instance、model 和 material constant buffers；这些
+buffer 的 `LoadSourcePointer` 返回可写存储，并已实际用于原生 draw submission。
+
+第一版因此使用 `0x2` 创建 Underpaint 自有、需要由 CPU 明确写入的 constant buffers。代码中只将
+它命名为 `WritableConstantBufferFlags`，不猜测各 bit 的官方枚举含义。`0x4` 继续作为自然 material
+资源的观察值保留，但不要求自有 buffer 复刻它。
+
+该决定的验证边界是：创建成功、`LoadSourcePointer` 非空、写入内容能用于原生 command、每帧更新
+能反映到画面、卸载时资源正常释放。完成这些验证即可继续第一版，不需要先逆向每个 flag bit。
