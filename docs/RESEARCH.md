@@ -267,11 +267,10 @@ data。为了让固定三角形能够被人工观察，后端随后改为按 `Fr
 最多提交一次；geometry、constants、material 和纹理仍只创建并持有一份。任一帧提交失败后停止后续
 提交，不重试；成功日志也只写第一次，避免逐帧日志。
 
-连续提交后没有在画面中看到三角形，原因首先是测试 world 为单位矩阵：它把几何留在地图世界
-原点，无法用于人工可见性验证。封存实验已经实机验证固定 view-space `Z +5` 能让同一类三索引
-几何位于相机前方。当前固定三角形因此直接使用 `Translation(0, 0, +5)` 作为 world-view 输入，
-current 与 previous 写入同一值。这个值只属于最小闭环测试；它没有进入公开 transform API，也不
-替代后续正式的 `world * view` 更新。
+连续提交后没有在画面中看到三角形。测试 world 由单位矩阵改为固定 view-space translation，
+以排除地图世界原点的位置影响。最初沿用了封存实验的 `Z +5`，但后续当前 shader 路径的 GPU
+统计证明该方向位于裁剪范围之外；详见下方矩阵约定实验。固定值只属于最小闭环测试，不进入公开
+transform API，也不替代后续正式的 `world * view` 更新。
 
 `OnRenderModelParams+0x10` 同时明确写入自有 176-byte instance constant。FFCS 当前仍将该字段
 标为 private unknown，但自然路径运行时映射和封存 builder 成功样本都将它对应到 ID 34 / CRC
@@ -290,18 +289,17 @@ IDA 确认当前版本 type 6 在 `ImmediateContext.ExecuteCommands` 中通过 D
 `DrawIndexed(3, 0, 0)` 的干扰，临时在 IB 前加入 256 个索引位置，并从 `startIndex=256` 提交。
 实机精确观察到 `DrawIndexed(3, 256, 0)=4`，证明四条 Underpaint draw 均到达 D3D11。
 
-在其中第一条唯一 draw 外包裹一次 D3D11 pipeline-statistics query，结果为：
+第一次只测量了四条 draw 中的第一条，因此不能把单条结果推广到所有 pass。随后在上一组 query
+完成前暂停下一组提交，对四条 draw 分别测量四种矩阵输入：
 
 ```text
-IAVertices=3
-IAPrimitives=1
-VSInvocations=3
-ClipperInvocations=1
-ClipperPrimitives=0
-PSInvocations=0
+transpose / Z+5: 四条均 IA=3/1, VS=3, Clipper=1/0, PS=0
+transpose / Z-5: 四条均 IA=3/1, VS=3, Clipper=1/1, PS=26426..31863
+raw       / Z+5: 四条均 IA=3/1, VS=3, Clipper=1/0, PS=0
+raw       / Z-5: 四条均 IA=3/1, VS=3, Clipper=1/0, PS=0
 ```
 
-因此当前不可见的直接原因已经收敛：输入装配和 vertex shader 都实际运行，但 VS 输出的唯一三角形
-被 clipper 完全裁掉，没有产生任何 pixel shader invocation。颜色、alpha、白纹理、blend 和画面
-覆盖均不是当前第一阻塞点。下一步应只比较自然 draw 与 Underpaint draw 的 transform/VS constant
-内容和矩阵约定，不应继续修改像素材质输入。
+结果明确验证当前固定 `charactertransparency` vertex 路径的矩阵约定：world-view 数据必须转置，
+相机前方为 view-space 负 Z。只有 `transpose / Z-5` 让四条 command 全部通过 clipper 并执行 pixel
+shader。固定三角形因此改为转置后的 `Translation(0, 0, -5)`，current 与 previous 写入同一值。
+调查用的 command hook、D3D11 hook、pipeline query 和 256-index marker 在记录结论后全部删除。

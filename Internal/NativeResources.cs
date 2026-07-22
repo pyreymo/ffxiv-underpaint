@@ -46,7 +46,7 @@ internal sealed unsafe class NativeResources : IDisposable
 
     // Captured from a natural charactertransparency material constant buffer.
     private const int MaterialConstantBytes = 416;
-    private const float FixedTriangleViewDepth = 5f;
+    private const float FixedTriangleViewDepth = -5f;
 
     private const string WhiteTexturePath = "chara/common/texture/white.tex";
 
@@ -59,8 +59,6 @@ internal sealed unsafe class NativeResources : IDisposable
 
     internal const int VertexCount = 3;
     internal const int IndexCount = 3;
-    internal const int IndexStart = 256;
-    private const int IndexElementCount = IndexStart + IndexCount;
 
     // Captured byte-for-byte from the same native two-stream charactertransparency draw.
     // Each record is the binary element accepted by the game's vertex-declaration creator.
@@ -141,18 +139,14 @@ internal sealed unsafe class NativeResources : IDisposable
         stream1[0] = new Stream1Vertex(new Vector2(0, 1));
         stream1[1] = new Stream1Vertex(new Vector2(1, 1));
         stream1[2] = new Stream1Vertex(new Vector2(0.5f, 0));
-        ushort* indices = stackalloc ushort[IndexElementCount];
-        new Span<ushort>(indices, IndexElementCount).Clear();
-        indices[IndexStart] = 0;
-        indices[IndexStart + 1] = 1;
-        indices[IndexStart + 2] = 2;
+        ushort* indices = stackalloc ushort[IndexCount] { 0, 1, 2 };
 
         try
         {
             vertexBuffer = createVertexBuffer(device, vertexBytes, BufferCreationFlags, VertexBufferFourthArgument);
             indexBuffer = createIndexBuffer(
                 device,
-                IndexElementCount * sizeof(ushort),
+                IndexCount * sizeof(ushort),
                 IndexBufferThirdArgument,
                 BufferCreationFlags,
                 IndexBufferFourthArgument
@@ -249,17 +243,13 @@ internal sealed unsafe class NativeResources : IDisposable
         }
     }
 
-    internal void WriteMatrixProbeWorld(int variant)
+    internal void WriteFixedViewSpaceWorld()
     {
         var data = WorldConstant->LoadSourcePointer(0, WorldConstantBytes);
         if (data == null)
             throw new InvalidOperationException("The world constant buffer has no writable storage.");
 
-        var depth = (variant & 1) == 0 ? FixedTriangleViewDepth : -FixedTriangleViewDepth;
-        var worldView = Matrix4x4.CreateTranslation(0, 0, depth);
-        if ((variant & 2) == 0)
-            worldView = Matrix4x4.Transpose(worldView);
-
+        var worldView = Matrix4x4.Transpose(Matrix4x4.CreateTranslation(0, 0, FixedTriangleViewDepth));
         *(Matrix4x4*)data = worldView;
         *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = worldView;
     }

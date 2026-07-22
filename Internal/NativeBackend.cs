@@ -1,6 +1,5 @@
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
-using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.Interop;
@@ -10,23 +9,10 @@ namespace Underpaint.Internal;
 internal sealed unsafe class NativeBackend : IDisposable
 {
     private const string BuildPassesSignature = "44 89 4C 24 ?? 44 89 44 24 ?? 53 56 57 41 54 41 55";
-    private const string PushBackCommandSignature = "48 63 41 ?? 4C 8B DA";
     private const int ExpectedMainView = 30;
     private const int ExpectedMainSubView = 11;
 
-    [ThreadStatic]
-    private static List<PushedCommand>? pushedCommandProbe;
-
-    [ThreadStatic]
-    private static bool countOwnedDraws;
-
-    [ThreadStatic]
-    private static int ownedDrawCount;
-
     private readonly Hook<BuildPassesDelegate> buildPassesHook;
-    private readonly Hook<DrawIndexedDelegate> drawIndexedHook;
-    private readonly Hook<ProcessCommandsDelegate> processCommandsHook;
-    private readonly Hook<PushBackCommandDelegate> pushBackCommandHook;
     private readonly MaterialHelper materialHelper;
     private readonly MaterialLoader material;
     private readonly NativeResources resources;
@@ -34,16 +20,8 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int loggedFirstCall;
     private int loggedMainRendezvous;
     private int loggedFirstSubmission;
-    private int remainingPushedCommandProbes = 1;
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
-    private nint[]? pendingCommandAddresses;
-    private readonly nint[] pipelineStatisticsQueries = new nint[4];
-    private readonly PipelineStatistics[] pipelineStatistics = new PipelineStatistics[4];
-    private readonly bool[] pipelineStatisticsReady = new bool[4];
-    private int matrixProbeDrawIndex;
-    private int matrixProbeState;
-    private int matrixProbeVariant;
 
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
@@ -58,40 +36,10 @@ internal sealed unsafe class NativeBackend : IDisposable
         this.resources = resources;
         materialHelper = new MaterialHelper(sigScanner, material);
         buildPassesHook = gameInteropProvider.HookFromSignature<BuildPassesDelegate>(BuildPassesSignature, BuildPassesDetour);
-        pushBackCommandHook = gameInteropProvider.HookFromSignature<PushBackCommandDelegate>(
-            PushBackCommandSignature,
-            PushBackCommandDetour
-        );
-        processCommandsHook = gameInteropProvider.HookFromAddress<ProcessCommandsDelegate>(
-            (nint)ImmediateContext.MemberFunctionPointers.ProcessCommands,
-            ProcessCommandsDetour
-        );
-        var device = Device.Instance();
-        if (device == null || device->D3D11DeviceContext == null)
-            throw new InvalidOperationException("The D3D11 device context is not available.");
-
-        // ID3D11DeviceContext::DrawIndexed is vtable slot 12. IDA confirms that
-        // native render command type 6 dispatches through this slot.
-        var d3dContext = (nint)device->D3D11DeviceContext;
-        var drawIndexedAddress = (*(nint**)d3dContext)[12];
-        drawIndexedHook = gameInteropProvider.HookFromAddress<DrawIndexedDelegate>(drawIndexedAddress, DrawIndexedDetour);
-        for (var index = 0; index < pipelineStatisticsQueries.Length; index++)
-            pipelineStatisticsQueries[index] = CreatePipelineStatisticsQuery(d3dContext);
-        drawIndexedHook.Enable();
-        processCommandsHook.Enable();
-        pushBackCommandHook.Enable();
         buildPassesHook.Enable();
     }
 
-    public void Dispose()
-    {
-        buildPassesHook.Dispose();
-        pushBackCommandHook.Dispose();
-        processCommandsHook.Dispose();
-        drawIndexedHook.Dispose();
-        for (var index = 0; index < pipelineStatisticsQueries.Length; index++)
-            ReleaseComObject(ref pipelineStatisticsQueries[index]);
-    }
+    public void Dispose() => buildPassesHook.Dispose();
 
     private nint BuildPassesDetour(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount)
     {
@@ -139,15 +87,12 @@ internal sealed unsafe class NativeBackend : IDisposable
         var frame = unchecked((int)framework->FrameCounter);
         if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
             return result;
-        if (Interlocked.CompareExchange(ref matrixProbeState, 1, 0) != 0)
-            return result;
 
         try
         {
             resources.CreateConstants(material.ShaderPackage);
             resources.LoadWhiteTexture();
-            var currentMatrixVariant = Volatile.Read(ref matrixProbeVariant);
-            resources.WriteMatrixProbeWorld(currentMatrixVariant);
+            resources.WriteFixedViewSpaceWorld();
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
                 resources.InstanceConstant,
@@ -172,7 +117,6 @@ internal sealed unsafe class NativeBackend : IDisposable
                 var contextState = new NativeContextState((byte*)context, worldConstantId, bindings);
                 MaterialHelperResult helperResult;
                 ShaderPair shaders;
-                List<PushedCommand>? pushedCommands = null;
                 nint commandBaseBefore;
                 ulong commandUsedBefore;
                 nint commandBaseAfter;
@@ -185,23 +129,13 @@ internal sealed unsafe class NativeBackend : IDisposable
                     contextState.Install(resources);
                     commandBaseBefore = (nint)context->CommandAllocationBase;
                     commandUsedBefore = context->CommandAllocationUsedSize;
-                    var capturePushedCommands = Interlocked.Exchange(ref remainingPushedCommandProbes, 0) == 1;
-                    pushedCommandProbe = capturePushedCommands ? [] : null;
-                    try
-                    {
-                        buildPassesHook.Original(
-                            modelRenderer,
-                            (nint)ownedMaterialParameters,
-                            NativeResources.VertexCount,
-                            NativeResources.IndexStart,
-                            NativeResources.IndexCount
-                        );
-                        pushedCommands = pushedCommandProbe;
-                    }
-                    finally
-                    {
-                        pushedCommandProbe = null;
-                    }
+                    buildPassesHook.Original(
+                        modelRenderer,
+                        (nint)ownedMaterialParameters,
+                        NativeResources.VertexCount,
+                        0,
+                        NativeResources.IndexCount
+                    );
                     commandBaseAfter = (nint)context->CommandAllocationBase;
                     commandUsedAfter = context->CommandAllocationUsedSize;
                     if (commandBaseAfter == commandBaseBefore && commandUsedAfter <= commandUsedBefore)
@@ -212,23 +146,10 @@ internal sealed unsafe class NativeBackend : IDisposable
                     contextState.Restore();
                 }
 
-                if (pushedCommands is { } commands)
-                {
-                    Volatile.Write(ref pendingCommandAddresses, commands.Select(command => command.Address).ToArray());
-                    log.Information(
-                        "[Underpaint] Owned PushBackCommand probe: Commands={CommandCount}, "
-                            + "AllBindingsMatch={AllBindingsMatch}, Items=[{Commands}]",
-                        commands.Count,
-                        commands.Count > 0
-                            && commands.All(command => command.BindingsMatch(resources, shaders, helperResult.ShaderDescriptor)),
-                        string.Join(',', commands)
-                    );
-                }
-
                 if (Interlocked.CompareExchange(ref loggedFirstSubmission, 1, 0) == 0)
                 {
                     log.Information(
-                        "[Underpaint] Submitted owned triangle matrix probe {MatrixVariant}: Frame={Frame}, "
+                        "[Underpaint] Submitted one owned triangle every render frame: Frame={Frame}, "
                             + "CommandArena=0x{CommandBaseBefore:X}+{CommandUsedBefore}->0x{CommandBaseAfter:X}+{CommandUsedAfter}, "
                             + "ActivePass={ActivePass}, OnRenderMaterial=0x{OnRenderMaterial:X}, "
                             + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
@@ -236,7 +157,6 @@ internal sealed unsafe class NativeBackend : IDisposable
                             + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                             + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
                             + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
-                        MatrixVariantName(currentMatrixVariant),
                         frame,
                         commandBaseBefore,
                         commandUsedBefore,
@@ -270,269 +190,5 @@ internal sealed unsafe class NativeBackend : IDisposable
         return result;
     }
 
-    private void PushBackCommandDetour(nint context, nint command)
-    {
-        if (context != 0 && command != 0 && pushedCommandProbe is { Count: < 16 } commands)
-        {
-            const int indexBufferOffset = 0x888;
-            const int vertexDeclarationOffset = 0x890;
-            const int vertexShaderOffset = 0x878;
-            const int pixelShaderOffset = 0x880;
-            const int shaderDescriptorOffset = 0x8B8;
-            const int streamOffset = 0x8C0;
-            const int streamSize = 16;
-
-            var contextBytes = (byte*)context;
-            commands.Add(
-                new PushedCommand(
-                    command,
-                    *(uint*)command,
-                    *(uint*)(command + 0x04),
-                    *(uint*)(command + 0x08),
-                    *(uint*)(command + 0x0C),
-                    *(uint*)(command + 0x10),
-                    *(uint*)(command + 0x14),
-                    *(uint*)(command + 0x18),
-                    *(nint*)(contextBytes + indexBufferOffset),
-                    *(nint*)(contextBytes + vertexDeclarationOffset),
-                    *(StreamBinding*)(contextBytes + streamOffset),
-                    *(StreamBinding*)(contextBytes + streamOffset + streamSize),
-                    *(nint*)(contextBytes + vertexShaderOffset),
-                    *(nint*)(contextBytes + pixelShaderOffset),
-                    *(nint*)(contextBytes + shaderDescriptorOffset)
-                )
-            );
-        }
-
-        pushBackCommandHook.Original(context, command);
-    }
-
-    private void ProcessCommandsDetour(
-        ImmediateContext* immediateContext,
-        RenderCommandBufferGroup* renderCommands,
-        uint renderCommandCount
-    )
-    {
-        var pending = Volatile.Read(ref pendingCommandAddresses);
-        if (pending is { Length: > 0 } && renderCommands != null)
-        {
-            var matches = 0;
-            for (var index = 0u; index < renderCommandCount; index++)
-            {
-                var address = (nint)renderCommands[index].Command;
-                if (pending.Contains(address))
-                    matches++;
-            }
-
-            if (matches > 0)
-            {
-                Volatile.Write(ref pendingCommandAddresses, null);
-                ownedDrawCount = 0;
-                countOwnedDraws = true;
-                try
-                {
-                    processCommandsHook.Original(immediateContext, renderCommands, renderCommandCount);
-                }
-                finally
-                {
-                    countOwnedDraws = false;
-                }
-
-                log.Information(
-                    "[Underpaint] Owned command execution probe: Matched={Matched}/{Expected}, "
-                        + "ProcessCommandCount={ProcessCommandCount}, DrawIndexed(3,256,0)={DrawCount}.",
-                    matches,
-                    pending.Length,
-                    renderCommandCount,
-                    ownedDrawCount
-                );
-                return;
-            }
-        }
-
-        processCommandsHook.Original(immediateContext, renderCommands, renderCommandCount);
-    }
-
-    private void DrawIndexedDetour(nint context, uint indexCount, uint startIndex, int baseVertex)
-    {
-        TryReadPipelineStatistics(context);
-
-        var isOwnedDraw = indexCount == 3 && startIndex == NativeResources.IndexStart && baseVertex == 0;
-        if (countOwnedDraws && isOwnedDraw)
-            ownedDrawCount++;
-
-        if (isOwnedDraw && Volatile.Read(ref matrixProbeState) == 1)
-        {
-            var queryIndex = matrixProbeDrawIndex++;
-            if ((uint)queryIndex < pipelineStatisticsQueries.Length)
-            {
-                var contextVTable = *(nint**)context;
-                var query = pipelineStatisticsQueries[queryIndex];
-                ((delegate* unmanaged<nint, nint, void>)contextVTable[27])(context, query);
-                drawIndexedHook.Original(context, indexCount, startIndex, baseVertex);
-                ((delegate* unmanaged<nint, nint, void>)contextVTable[28])(context, query);
-                if (queryIndex == pipelineStatisticsQueries.Length - 1)
-                    Volatile.Write(ref matrixProbeState, 2);
-                return;
-            }
-        }
-
-        drawIndexedHook.Original(context, indexCount, startIndex, baseVertex);
-    }
-
-    private void TryReadPipelineStatistics(nint context)
-    {
-        if (Volatile.Read(ref matrixProbeState) != 2)
-            return;
-
-        var contextVTable = *(nint**)context;
-        var allReady = true;
-        for (var index = 0; index < pipelineStatisticsQueries.Length; index++)
-        {
-            if (pipelineStatisticsReady[index])
-                continue;
-
-            fixed (PipelineStatistics* statistics = &pipelineStatistics[index])
-            {
-                var result = ((delegate* unmanaged<nint, nint, PipelineStatistics*, uint, uint, int>)contextVTable[29])(
-                    context,
-                    pipelineStatisticsQueries[index],
-                    statistics,
-                    (uint)sizeof(PipelineStatistics),
-                    1
-                );
-                pipelineStatisticsReady[index] = result == 0;
-            }
-
-            allReady &= pipelineStatisticsReady[index];
-        }
-
-        if (!allReady)
-            return;
-
-        log.Information(
-            "[Underpaint] Matrix probe {MatrixVariant}: {DrawStatistics}",
-            MatrixVariantName(matrixProbeVariant),
-            string.Join(';', pipelineStatistics.Select((statistics, index) => $"Draw{index}={statistics}"))
-        );
-
-        Array.Clear(pipelineStatistics);
-        Array.Clear(pipelineStatisticsReady);
-        matrixProbeDrawIndex = 0;
-        var nextVariant = Interlocked.Increment(ref matrixProbeVariant);
-        Volatile.Write(ref matrixProbeState, nextVariant < 4 ? 0 : 3);
-    }
-
-    private static string MatrixVariantName(int variant) =>
-        variant switch
-        {
-            0 => "transpose/Z+5",
-            1 => "transpose/Z-5",
-            2 => "raw/Z+5",
-            3 => "raw/Z-5",
-            _ => $"unknown/{variant}",
-        };
-
-    private static nint CreatePipelineStatisticsQuery(nint context)
-    {
-        var contextVTable = *(nint**)context;
-        nint device = 0;
-        ((delegate* unmanaged<nint, nint*, void>)contextVTable[3])(context, &device);
-        if (device == 0)
-            throw new InvalidOperationException("ID3D11DeviceContext::GetDevice returned null.");
-
-        try
-        {
-            var description = new QueryDescription(4, 0);
-            nint query = 0;
-            var result = ((delegate* unmanaged<nint, QueryDescription*, nint*, int>)(*(nint**)device)[24])(device, &description, &query);
-            if (result < 0 || query == 0)
-                throw new InvalidOperationException($"ID3D11Device::CreateQuery failed with HRESULT 0x{result:X8}.");
-
-            return query;
-        }
-        finally
-        {
-            ((delegate* unmanaged<nint, uint>)(*(nint**)device)[2])(device);
-        }
-    }
-
-    private static void ReleaseComObject(ref nint value)
-    {
-        var current = value;
-        value = 0;
-        if (current != 0)
-            ((delegate* unmanaged<nint, uint>)(*(nint**)current)[2])(current);
-    }
-
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
-
-    private delegate void PushBackCommandDelegate(nint context, nint command);
-
-    private delegate void ProcessCommandsDelegate(
-        ImmediateContext* immediateContext,
-        RenderCommandBufferGroup* renderCommands,
-        uint renderCommandCount
-    );
-
-    private delegate void DrawIndexedDelegate(nint context, uint indexCount, uint startIndex, int baseVertex);
-
-    private readonly record struct StreamBinding(nint Buffer, ulong OffsetAndStride);
-
-    private readonly record struct QueryDescription(uint Query, uint MiscFlags);
-
-    private struct PipelineStatistics
-    {
-        internal ulong IAVertices;
-        internal ulong IAPrimitives;
-        internal ulong VSInvocations;
-        internal ulong GSInvocations;
-        internal ulong GSPrimitives;
-        internal ulong ClipperInvocations;
-        internal ulong ClipperPrimitives;
-        internal ulong PSInvocations;
-        internal ulong HSInvocations;
-        internal ulong DSInvocations;
-        internal ulong CSInvocations;
-
-        public override readonly string ToString() =>
-            $"IA:{IAVertices}/{IAPrimitives},VS:{VSInvocations},Clip:{ClipperInvocations}/{ClipperPrimitives},PS:{PSInvocations}";
-    }
-
-    private readonly record struct PushedCommand(
-        nint Address,
-        uint Type,
-        uint Value04,
-        uint Value08,
-        uint Value0C,
-        uint Value10,
-        uint Value14,
-        uint Value18,
-        nint IndexBuffer,
-        nint VertexDeclaration,
-        StreamBinding Stream0,
-        StreamBinding Stream1,
-        nint VertexShader,
-        nint PixelShader,
-        nint ShaderDescriptor
-    )
-    {
-        internal bool BindingsMatch(NativeResources resources, ShaderPair shaders, nint descriptor) =>
-            IndexBuffer == resources.IndexBuffer
-            && VertexDeclaration == resources.VertexDeclaration
-            && Stream0 == new StreamBinding(resources.VertexBuffer, PackStreamBinding(0, NativeResources.Stream0Stride))
-            && Stream1
-                == new StreamBinding(resources.VertexBuffer, PackStreamBinding(resources.Stream1Offset, NativeResources.Stream1Stride))
-            && VertexShader == shaders.Vertex
-            && PixelShader == shaders.Pixel
-            && ShaderDescriptor == descriptor;
-
-        public override string ToString() =>
-            $"type={Type}/+04={Value04}/+08={Value08}/+0C={Value0C}/+10={Value10}/+14={Value14}/+18={Value18}/"
-            + $"ib=0x{IndexBuffer:X}/decl=0x{VertexDeclaration:X}/s0=0x{Stream0.Buffer:X}:0x{Stream0.OffsetAndStride:X}/"
-            + $"s1=0x{Stream1.Buffer:X}:0x{Stream1.OffsetAndStride:X}/vs=0x{VertexShader:X}/ps=0x{PixelShader:X}/"
-            + $"descriptor=0x{ShaderDescriptor:X}";
-
-        private static ulong PackStreamBinding(int byteOffset, int stride) => ((ulong)(uint)byteOffset << 8) | (byte)stride;
-    }
 }
