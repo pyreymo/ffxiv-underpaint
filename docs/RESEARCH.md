@@ -309,3 +309,20 @@ raw       / Z-5: 四条均 IA=3/1, VS=3, Clipper=1/0, PS=0
 相机前方为 view-space 负 Z。只有 `transpose / Z-5` 让四条 command 全部通过 clipper 并执行 pixel
 shader。固定三角形因此改为转置后的 `Translation(0, 0, -5)`，current 与 previous 写入同一值。
 调查用的 command hook、D3D11 hook、pipeline query 和 256-index marker 在记录结论后全部删除。
+
+## 自有 constant buffer 的多缓冲页
+
+固定三角形可见后曾在近黑、纯红、纯绿、纯蓝和洋红之间逐帧切换。临时探针确认固定 donor 的
+descriptor、VS/PS、scene/material selection、system/scene constant 指针均保持不变。自然提交会在
+多个 `GraphicsKernelContext` 之间调度，但即使同时锁定同一个 carrier 和 context，颜色仍会变化。
+
+锁定 context 后对画面中心连续采样，未提交的帧显示背景色；已提交的帧仍出现多个纯色。当前实现
+只有 world constant 在每次提交前调用 `LoadSourcePointer` 并重写，instance、model 和 material
+constant 只在资源创建时写入一次。这说明创建时写入只覆盖了当时可写的原生多缓冲页，不能初始化
+后续 context/frame 使用的页面。改为在每次 builder 调用前依次重写 world、instance、model 和
+material 四项自有 constant 后，30 张、100ms 间隔的采样中，所有实际提交帧的中心颜色均稳定为
+`(231, 224, 228)`；未命中锁定 context 的帧仍只显示背景。由此确认随机颜色来自未写入的自有
+constant 页，而不是 donor、shader selection、system/scene constant 或 sampler。
+
+验证完成后删除 carrier/context 锁和 change-only 日志。生产路径保留每次提交重写四项自有
+constant；这也是自有 constant 的正确生命周期，不是诊断性容错。

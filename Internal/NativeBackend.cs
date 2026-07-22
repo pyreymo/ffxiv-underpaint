@@ -16,7 +16,6 @@ internal sealed unsafe class NativeBackend : IDisposable
     private readonly MaterialHelper materialHelper;
     private readonly MaterialLoader material;
     private readonly NativeResources resources;
-    private readonly NativeSubmissionProbe submissionProbe;
     private readonly IPluginLog log;
     private int loggedFirstCall;
     private int loggedMainRendezvous;
@@ -36,7 +35,6 @@ internal sealed unsafe class NativeBackend : IDisposable
         this.material = material;
         this.resources = resources;
         materialHelper = new MaterialHelper(sigScanner, material);
-        submissionProbe = new NativeSubmissionProbe(log);
         buildPassesHook = gameInteropProvider.HookFromSignature<BuildPassesDelegate>(BuildPassesSignature, BuildPassesDetour);
         buildPassesHook.Enable();
     }
@@ -87,9 +85,6 @@ internal sealed unsafe class NativeBackend : IDisposable
             return result;
 
         var frame = unchecked((int)framework->FrameCounter);
-        var probeInput = submissionProbe.CaptureInput((byte*)context, materialParameters);
-        if (!submissionProbe.AcceptCarrier(probeInput))
-            return result;
         if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
             return result;
 
@@ -130,7 +125,6 @@ internal sealed unsafe class NativeBackend : IDisposable
                 {
                     helperResult = materialHelper.Apply((ModelRenderer*)modelRenderer, (byte*)context, ownedMaterialParameters, selection);
                     shaders = MaterialHelper.ResolveActiveShaders((byte*)context, helperResult.ShaderDescriptor);
-                    submissionProbe.Observe(frame, probeInput, selection, material.ShaderPackage, helperResult, shaders);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
                     commandBaseBefore = (nint)context->CommandAllocationBase;
