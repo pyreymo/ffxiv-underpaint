@@ -380,7 +380,7 @@ internal sealed unsafe class NativeResources : IDisposable
             // The captured declaration identifies the input as Binormal, but the official
             // name and channel encoding of format 0x24 have not been identified.
             Binormal = 0x00800080;
-            Color0 = PackNormalizedByte4(1, 1, 1, FixedTriangleAlpha);
+            Color0 = PackNormalizedByte4(1, 0, 0, FixedTriangleAlpha);
             TexCoord0 = PackHalf4(textureCoordinate.X, textureCoordinate.Y, -1, 2);
         }
 
