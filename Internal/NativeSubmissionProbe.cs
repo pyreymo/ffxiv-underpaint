@@ -35,13 +35,18 @@ internal sealed unsafe class NativeSubmissionProbe(IPluginLog log)
 
     internal bool AcceptCarrier(ProbeInput input)
     {
-        if (lockedCarrierModel == 0)
+        var carrier = Volatile.Read(ref lockedCarrierModel);
+        if (carrier == 0)
         {
-            lockedCarrierModel = input.CarrierModel;
-            log.Information("[Underpaint] Color probe locked carrier model 0x{CarrierModel:X}.", lockedCarrierModel);
+            carrier = Interlocked.CompareExchange(ref lockedCarrierModel, input.CarrierModel, 0);
+            if (carrier == 0)
+            {
+                carrier = input.CarrierModel;
+                log.Information("[Underpaint] Color probe locked carrier model 0x{CarrierModel:X}.", carrier);
+            }
         }
 
-        return input.CarrierModel == lockedCarrierModel;
+        return input.CarrierModel == carrier;
     }
 
     internal void Observe(
