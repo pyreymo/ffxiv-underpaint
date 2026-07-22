@@ -103,3 +103,30 @@ stream  offset  format  attribute
 和 shader selection 使用 Underpaint 自己的临时内存，其输出会继续用于 selection 解析，不属于
 需要恢复的外部 context 状态。该结论只适用于当前固定 donor 和 `charactertransparency.shpk`，
 不能推广为通用 material helper 契约。
+
+## Material constant 绑定捕获
+
+2026-07-22 在自然 `charactertransparency` draw 的 `ApplyMaterial` 返回后读取当前 graphics
+context，并将 SHPK package constant 表与运行时绑定逐项对应。捕获只接受 view 30、subview 11，
+没有复制 constant 内容。
+
+结果如下：
+
+- `MaterialParameterCBuffer` 大小为 416 bytes；其原生创建参数为 flags `0x4`、最后一个参数
+  `0`；
+- package constant CRC `0x20A30B34` 对应运行时 ID 34、size 11、slot 1；Apply 后 ID 34
+  已绑定一个 constant buffer；
+- package constant CRC `0x4E0A5472` 对应运行时 ID 35、size 1、slot 1；Apply 后 ID 35
+  已绑定一个 constant buffer；
+- CRC `0x5B0F708C` 不存在于当前 `charactertransparency.shpk` 的
+  `ShaderPackage.ConstantsSpan`。这只否定“它是 package constant”这一假设，不能证明它不会出现在
+  某个最终 shader 的 stage-specific resource 表中；
+- `ModelRenderer.ConstantSamplerIds[1]` 的值为 5，但 Apply 返回时 context ID 5 仍为空。这个时点
+  不能用于验证 world constant；world 输入必须在后续 model/pass-builder 边界单独处理；
+- ID 34 和 35 指向的 buffer 在安装调查 hook 前已经创建，因此本次没有得到它们的创建 flags，
+  也没有读取其内容。
+
+这次结果证明不能把所有旧 prototype CRC 当成目标 SHPK 的 package constants，也不能把 renderer
+表中的 ID 直接当作 material helper 已完成的绑定。第一版只使用当前固定 SHPK 实际声明的 ID 34
+和 35；若后续最终 shader descriptor 还要求 stage-specific constant，必须从解析后的 descriptor
+单独验证，不能在 package 表中硬编码查找。
