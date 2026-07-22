@@ -9,9 +9,6 @@ internal unsafe ref struct NativeContextState
     // FFCS does not currently expose these Context fields.
     private const int IndexBufferOffset = 0x888;
     private const int VertexDeclarationOffset = 0x890;
-    private const int VertexShaderOffset = 0x878;
-    private const int PixelShaderOffset = 0x880;
-    private const int ShaderDescriptorOffset = 0x8B8;
     private const int StreamOffset = 0x8C0;
     private const int ConstantOffset = 0x940;
     private const int SamplerOffset = 0x1140;
@@ -28,9 +25,6 @@ internal unsafe ref struct NativeContextState
     private readonly uint tableSamplerId;
     private readonly nint indexBuffer;
     private readonly nint vertexDeclaration;
-    private readonly nint vertexShader;
-    private readonly nint pixelShader;
-    private readonly nint shaderDescriptor;
     private readonly StreamState stream0;
     private readonly StreamState stream1;
     private readonly StreamState stream2;
@@ -56,9 +50,6 @@ internal unsafe ref struct NativeContextState
 
         indexBuffer = *(nint*)(context + IndexBufferOffset);
         vertexDeclaration = *(nint*)(context + VertexDeclarationOffset);
-        vertexShader = *(nint*)(context + VertexShaderOffset);
-        pixelShader = *(nint*)(context + PixelShaderOffset);
-        shaderDescriptor = *(nint*)(context + ShaderDescriptorOffset);
         stream0 = GetStream(0);
         stream1 = GetStream(1);
         stream2 = GetStream(2);
@@ -90,20 +81,10 @@ internal unsafe ref struct NativeContextState
         SetSampler(tableSamplerId, resources.WhiteTexture);
     }
 
-    internal void InstallShaders(ShaderPair shaders, nint descriptor)
-    {
-        *(nint*)(context + VertexShaderOffset) = shaders.Vertex;
-        *(nint*)(context + PixelShaderOffset) = shaders.Pixel;
-        *(nint*)(context + ShaderDescriptorOffset) = descriptor;
-    }
-
     internal void Restore()
     {
         *(nint*)(context + IndexBufferOffset) = indexBuffer;
         *(nint*)(context + VertexDeclarationOffset) = vertexDeclaration;
-        *(nint*)(context + VertexShaderOffset) = vertexShader;
-        *(nint*)(context + PixelShaderOffset) = pixelShader;
-        *(nint*)(context + ShaderDescriptorOffset) = shaderDescriptor;
         SetStream(0, stream0);
         SetStream(1, stream1);
         SetStream(2, stream2);

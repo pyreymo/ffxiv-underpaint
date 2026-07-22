@@ -237,16 +237,3 @@ builder，立即逐字段核对安装结果、恢复原值并再次逐字段核�
 先初始化 selection，再保存 context，随后依次调用 `OnRenderMaterial`、`ApplyMaterial`、解析最终
 descriptor、安装自有输入、恢复 context，最后销毁 selection。这样下一步调用 builder 时 selection
 能够覆盖完整调用区间，不需要复制现场 selection 或延长 frame pointer 生命周期。
-
-第一次实际 builder 调用只请求主 view：`OnRenderMaterialParams2+0x38` 明确写入封存 prototype
-已验证的主提交 gate `0x01000000`，辅助 gate `0x00C00000` 和 `+0x44` view mask 保持为零。
-`+0x40` 从零开始并只接受当前固定 material 的 `OnRenderMaterial` 输出，不复制 carrier pass flags。
-
-最终 descriptor 按当前 context byte `0x0B` 的低四位选择 active pass，并解析对应 VS/PS；同一
-context scope 保存和恢复 `0x878`、`0x880`、`0x8B8` 的 shader 与 descriptor 字段。随后安装自有
-geometry、constants 和三项白纹理，在 selection 与调用参数仍存活时同步调用一次原生 builder，
-请求三顶点、起始索引零、三个索引。辅助 view 将在主 view command 单独验证后再打开。
-
-`OnRenderModelParams+0x10` 同时明确写入自有 176-byte instance constant。FFCS 当前仍将该字段
-标为 private unknown，但自然路径运行时映射和封存 builder 成功样本都将它对应到 ID 34 / CRC
-`0x20A30B34`；因此它是当前固定路径必须同时提供的调用参数，不只是一项 context binding。
