@@ -7,8 +7,7 @@ namespace Underpaint.Internal;
 
 internal sealed unsafe class MaterialLoader : IDisposable
 {
-    internal const string DonorMaterialPath =
-        "chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl";
+    internal const string DonorMaterialPath = "chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl";
     internal const string ShaderPackageName = "charactertransparency.shpk";
 
     private const uint MaterialFileType = 0x6D74726C;
@@ -18,9 +17,7 @@ internal sealed unsafe class MaterialLoader : IDisposable
 
     internal Material* Material => resource == null ? null : resource->Material;
     internal ShaderPackage* ShaderPackage =>
-        resource == null || resource->ShaderPackageResourceHandle == null
-            ? null
-            : resource->ShaderPackageResourceHandle->ShaderPackage;
+        resource == null || resource->ShaderPackageResourceHandle == null ? null : resource->ShaderPackageResourceHandle->ShaderPackage;
 
     internal MaterialLoader()
     {
@@ -32,15 +29,7 @@ internal sealed unsafe class MaterialLoader : IDisposable
         var fileType = MaterialFileType;
         var pathHash = DonorMaterialPathHash;
         var loaded = (MaterialResourceHandle*)
-            resourceManager->GetResourceSync(
-                &category,
-                &fileType,
-                &pathHash,
-                DonorMaterialPath,
-                null,
-                null,
-                0
-            );
+            resourceManager->GetResourceSync(&category, &fileType, &pathHash, DonorMaterialPath, null, null, 0);
 
         if (loaded == null)
             throw new InvalidOperationException("The fixed donor material could not be loaded.");
@@ -55,9 +44,7 @@ internal sealed unsafe class MaterialLoader : IDisposable
                 throw new InvalidOperationException("The fixed donor material is not ready.");
 
             if (!loaded->ShpkName.AsSpan().SequenceEqual("charactertransparency.shpk"u8))
-                throw new InvalidOperationException(
-                    $"The fixed donor material uses '{loaded->ShpkName}', not '{ShaderPackageName}'."
-                );
+                throw new InvalidOperationException($"The fixed donor material uses '{loaded->ShpkName}', not '{ShaderPackageName}'.");
 
             resource = loaded;
         }

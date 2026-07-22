@@ -10,12 +10,9 @@ internal sealed unsafe class NativeResources : IDisposable
     private const string CreateVertexBufferSignature = "40 55 56 57 41 57 48 83 EC 28";
     private const string InitializeVertexBufferSignature =
         "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 ?? 44 8B 49";
-    private const string CreateIndexBufferSignature =
-        "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 7C 24 ?? 41 56 48 83 EC 20 48 8B 05";
-    private const string InitializeIndexBufferSignature =
-        "40 53 48 83 EC 20 F7 41 40 00 08 00 00 48 8B D9";
-    private const string CreateVertexDeclarationSignature =
-        "48 8B 49 ?? E9 ?? ?? ?? ?? CC CC CC CC CC CC CC 40 53 55 57";
+    private const string CreateIndexBufferSignature = "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 7C 24 ?? 41 56 48 83 EC 20 48 8B 05";
+    private const string InitializeIndexBufferSignature = "40 53 48 83 EC 20 F7 41 40 00 08 00 00 48 8B D9";
+    private const string CreateVertexDeclarationSignature = "48 8B 49 ?? E9 ?? ?? ?? ?? CC CC CC CC CC CC CC 40 53 55 57";
 
     private const uint ImmutableBufferFlags = 0x804;
     internal const int Stream0Stride = 20;
@@ -66,34 +63,27 @@ internal sealed unsafe class NativeResources : IDisposable
 
     internal NativeResources(ISigScanner sigScanner)
     {
-        var createVertexBuffer = (delegate* unmanaged<
-            Device*,
-            int,
-            uint,
-            byte,
-            nint>)RequireSignature(sigScanner, CreateVertexBufferSignature, "CreateVertexBuffer");
+        var createVertexBuffer = (delegate* unmanaged<Device*, int, uint, byte, nint>)RequireSignature(
+            sigScanner,
+            CreateVertexBufferSignature,
+            "CreateVertexBuffer"
+        );
         var initializeVertexBuffer = (delegate* unmanaged<nint, void*, byte>)RequireSignature(
             sigScanner,
             InitializeVertexBufferSignature,
             "InitializeVertexBuffer"
         );
-        var createIndexBuffer = (delegate* unmanaged<
-            Device*,
-            int,
-            int,
-            uint,
-            byte,
-            nint>)RequireSignature(sigScanner, CreateIndexBufferSignature, "CreateIndexBuffer");
+        var createIndexBuffer = (delegate* unmanaged<Device*, int, int, uint, byte, nint>)RequireSignature(
+            sigScanner,
+            CreateIndexBufferSignature,
+            "CreateIndexBuffer"
+        );
         var initializeIndexBuffer = (delegate* unmanaged<nint, void*, byte>)RequireSignature(
             sigScanner,
             InitializeIndexBufferSignature,
             "InitializeIndexBuffer"
         );
-        var createVertexDeclaration = (delegate* unmanaged<
-            Device*,
-            byte*,
-            uint,
-            nint>)RequireSignature(
+        var createVertexDeclaration = (delegate* unmanaged<Device*, byte*, uint, nint>)RequireSignature(
             sigScanner,
             CreateVertexDeclarationSignature,
             "CreateVertexDeclaration"
@@ -120,20 +110,10 @@ internal sealed unsafe class NativeResources : IDisposable
         try
         {
             vertexBuffer = createVertexBuffer(device, vertexBytes, ImmutableBufferFlags, 0);
-            indexBuffer = createIndexBuffer(
-                device,
-                IndexCount * sizeof(ushort),
-                1,
-                ImmutableBufferFlags,
-                0
-            );
+            indexBuffer = createIndexBuffer(device, IndexCount * sizeof(ushort), 1, ImmutableBufferFlags, 0);
             fixed (byte* declaration = VertexDeclarationElements)
             {
-                vertexDeclaration = createVertexDeclaration(
-                    device,
-                    declaration,
-                    (uint)(VertexDeclarationElements.Length / 4)
-                );
+                vertexDeclaration = createVertexDeclaration(device, declaration, (uint)(VertexDeclarationElements.Length / 4));
             }
 
             if (
@@ -143,9 +123,7 @@ internal sealed unsafe class NativeResources : IDisposable
                 || initializeVertexBuffer(vertexBuffer, vertexData) == 0
                 || initializeIndexBuffer(indexBuffer, indices) == 0
             )
-                throw new InvalidOperationException(
-                    "The game rejected the fixed triangle resources."
-                );
+                throw new InvalidOperationException("The game rejected the fixed triangle resources.");
         }
         catch
         {
