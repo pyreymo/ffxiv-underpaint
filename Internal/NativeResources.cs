@@ -169,7 +169,7 @@ internal sealed unsafe class NativeResources : IDisposable
         Release(ref vertexBuffer);
     }
 
-    internal void CreateConstants()
+    internal void CreateConstants(ShaderPackage* shaderPackage)
     {
         if (worldConstant != 0)
             return;
@@ -186,6 +186,7 @@ internal sealed unsafe class NativeResources : IDisposable
             materialConstant = CreateAndClearConstantBuffer(device, MaterialConstantBytes, "material");
             WriteInstanceConstant();
             WriteModelConstant();
+            WriteMaterialConstant(shaderPackage);
         }
         catch
         {
@@ -242,6 +243,21 @@ internal sealed unsafe class NativeResources : IDisposable
         registers[3] = Vector4.One;
         registers[4] = new Vector4(0, 2, 0, 1);
         registers[10] = new Vector4(0, 1, 0, 0);
+    }
+
+    private void WriteMaterialConstant(ShaderPackage* shaderPackage)
+    {
+        if (shaderPackage == null || shaderPackage->MaterialConstantBufferSize != MaterialConstantBytes)
+            throw new InvalidOperationException("The fixed shader package has an unexpected material constant size.");
+
+        var defaults = shaderPackage->MaterialElementDefaultsSpan;
+        if (defaults.Length != MaterialConstantBytes)
+            throw new InvalidOperationException("The fixed shader package has no complete material defaults.");
+
+        var data = MaterialConstant->LoadSourcePointer(0, MaterialConstantBytes);
+        if (data == null)
+            throw new InvalidOperationException("The material constant buffer has no writable storage.");
+        defaults.CopyTo(new Span<byte>(data, MaterialConstantBytes));
     }
 
     private static nint RequireSignature(ISigScanner sigScanner, string signature, string name)

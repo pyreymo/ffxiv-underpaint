@@ -174,3 +174,12 @@ view 30、subview 11 的 render context 中能够创建、取得可写存储并�
 当前最小实现据此写入自有 176-byte instance constant，并在运行时校验固定 SHPK 仍将该 CRC
 声明为 11 个 registers。与 model constant 相同，本步骤只建立自有内容和 ID 映射；context 安装
 留到有实际 pass-builder 消费的提交中。
+
+固定 `ShaderPackage` 自身提供完整的 `MaterialElementDefaultsSpan`，其长度由
+`MaterialConstantBufferSize` 指定。第一版使用这份 SHPK canonical defaults 初始化 Underpaint
+自有 material constant，而不是复制 donor `MaterialParameterCBuffer`。当前固定 SHPK 的大小必须
+仍为实机捕获的 416 bytes，否则初始化明确失败。
+
+自然 `ApplyMaterial` 状态差分已经定位运行时 material constant ID 25。当前实现进一步在 helper
+调用后验证 context ID 25 确实等于固定 material 的 `MaterialParameterCBuffer`，同时验证自有 buffer
+大小与 SHPK 一致。自有内容和运行时 ID 至此都已确定，但在实际 builder 接入前仍不替换该 binding。

@@ -59,7 +59,8 @@ internal sealed unsafe class MaterialHelper
         ModelRenderer* renderer,
         byte* context,
         ConstantBuffer* instanceConstant,
-        ConstantBuffer* modelConstant
+        ConstantBuffer* modelConstant,
+        ConstantBuffer* materialConstant
     )
     {
         var targetMaterial = material.Material;
@@ -78,6 +79,8 @@ internal sealed unsafe class MaterialHelper
             throw new InvalidOperationException("The fixed shader package has an unexpected instance constant size.");
         if (instanceConstant == null || instanceConstant->ByteSize != instanceConstantEntry.Size * 16)
             throw new InvalidOperationException("The owned instance constant does not match the fixed shader package.");
+        if (materialConstant == null || materialConstant->ByteSize != shaderPackage->MaterialConstantBufferSize)
+            throw new InvalidOperationException("The owned material constant does not match the fixed shader package.");
 
         var model = stackalloc Model[1];
         var modelParameters = stackalloc ModelRenderer.OnRenderModelParams[1];
@@ -108,6 +111,8 @@ internal sealed unsafe class MaterialHelper
             {
                 var onRenderMaterialResult = renderer->OnRenderMaterial(materialParameters, targetMaterial, 0);
                 applyMaterial(selection, targetMaterial);
+                if (*(ConstantBuffer**)(context + 0x940 + MaterialConstantId * sizeof(ulong)) != targetMaterial->MaterialParameterCBuffer)
+                    throw new InvalidOperationException("ApplyMaterial did not install the fixed material constant.");
                 var shaderDescriptor = resolveShaderSelection(shaderPackage, selection);
                 if (selection->MaterialValues == null || shaderDescriptor == 0)
                     throw new InvalidOperationException("The fixed material did not resolve a shader selection.");
@@ -116,6 +121,7 @@ internal sealed unsafe class MaterialHelper
                     (nint)onRenderMaterialResult,
                     *(uint*)((byte*)materialParameters + 0x40),
                     shaderDescriptor,
+                    MaterialConstantId,
                     instanceConstantEntry.Id,
                     modelConstantEntry.Id
                 );
@@ -260,6 +266,7 @@ internal readonly record struct MaterialHelperResult(
     nint OnRenderMaterial,
     uint Output,
     nint ShaderDescriptor,
+    uint MaterialConstantId,
     uint InstanceConstantId,
     uint ModelConstantId
 );
