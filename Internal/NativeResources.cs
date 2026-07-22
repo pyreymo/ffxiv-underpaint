@@ -249,13 +249,17 @@ internal sealed unsafe class NativeResources : IDisposable
         }
     }
 
-    internal void WriteFixedViewSpaceWorld()
+    internal void WriteMatrixProbeWorld(int variant)
     {
         var data = WorldConstant->LoadSourcePointer(0, WorldConstantBytes);
         if (data == null)
             throw new InvalidOperationException("The world constant buffer has no writable storage.");
 
-        var worldView = Matrix4x4.Transpose(Matrix4x4.CreateTranslation(0, 0, FixedTriangleViewDepth));
+        var depth = (variant & 1) == 0 ? FixedTriangleViewDepth : -FixedTriangleViewDepth;
+        var worldView = Matrix4x4.CreateTranslation(0, 0, depth);
+        if ((variant & 2) == 0)
+            worldView = Matrix4x4.Transpose(worldView);
+
         *(Matrix4x4*)data = worldView;
         *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = worldView;
     }

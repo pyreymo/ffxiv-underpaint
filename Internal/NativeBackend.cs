@@ -38,9 +38,12 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
     private nint[]? pendingCommandAddresses;
-    private nint pipelineStatisticsQuery;
-    private bool pipelineStatisticsPending;
-    private bool pipelineStatisticsSubmitted;
+    private readonly nint[] pipelineStatisticsQueries = new nint[4];
+    private readonly PipelineStatistics[] pipelineStatistics = new PipelineStatistics[4];
+    private readonly bool[] pipelineStatisticsReady = new bool[4];
+    private int matrixProbeDrawIndex;
+    private int matrixProbeState;
+    private int matrixProbeVariant;
 
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
@@ -72,7 +75,8 @@ internal sealed unsafe class NativeBackend : IDisposable
         var d3dContext = (nint)device->D3D11DeviceContext;
         var drawIndexedAddress = (*(nint**)d3dContext)[12];
         drawIndexedHook = gameInteropProvider.HookFromAddress<DrawIndexedDelegate>(drawIndexedAddress, DrawIndexedDetour);
-        pipelineStatisticsQuery = CreatePipelineStatisticsQuery(d3dContext);
+        for (var index = 0; index < pipelineStatisticsQueries.Length; index++)
+            pipelineStatisticsQueries[index] = CreatePipelineStatisticsQuery(d3dContext);
         drawIndexedHook.Enable();
         processCommandsHook.Enable();
         pushBackCommandHook.Enable();
@@ -85,7 +89,8 @@ internal sealed unsafe class NativeBackend : IDisposable
         pushBackCommandHook.Dispose();
         processCommandsHook.Dispose();
         drawIndexedHook.Dispose();
-        ReleaseComObject(ref pipelineStatisticsQuery);
+        for (var index = 0; index < pipelineStatisticsQueries.Length; index++)
+            ReleaseComObject(ref pipelineStatisticsQueries[index]);
     }
 
     private nint BuildPassesDetour(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount)
@@ -134,12 +139,15 @@ internal sealed unsafe class NativeBackend : IDisposable
         var frame = unchecked((int)framework->FrameCounter);
         if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
             return result;
+        if (Interlocked.CompareExchange(ref matrixProbeState, 1, 0) != 0)
+            return result;
 
         try
         {
             resources.CreateConstants(material.ShaderPackage);
             resources.LoadWhiteTexture();
-            resources.WriteFixedViewSpaceWorld();
+            var currentMatrixVariant = Volatile.Read(ref matrixProbeVariant);
+            resources.WriteMatrixProbeWorld(currentMatrixVariant);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
                 resources.InstanceConstant,
@@ -220,7 +228,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                 if (Interlocked.CompareExchange(ref loggedFirstSubmission, 1, 0) == 0)
                 {
                     log.Information(
-                        "[Underpaint] Submitted one owned triangle every render frame: Frame={Frame}, "
+                        "[Underpaint] Submitted owned triangle matrix probe {MatrixVariant}: Frame={Frame}, "
                             + "CommandArena=0x{CommandBaseBefore:X}+{CommandUsedBefore}->0x{CommandBaseAfter:X}+{CommandUsedAfter}, "
                             + "ActivePass={ActivePass}, OnRenderMaterial=0x{OnRenderMaterial:X}, "
                             + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
@@ -228,6 +236,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                             + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                             + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
                             + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
+                        MatrixVariantName(currentMatrixVariant),
                         frame,
                         commandBaseBefore,
                         commandUsedBefore,
@@ -348,18 +357,22 @@ internal sealed unsafe class NativeBackend : IDisposable
     {
         TryReadPipelineStatistics(context);
 
-        if (countOwnedDraws && indexCount == 3 && startIndex == NativeResources.IndexStart && baseVertex == 0)
-        {
+        var isOwnedDraw = indexCount == 3 && startIndex == NativeResources.IndexStart && baseVertex == 0;
+        if (countOwnedDraws && isOwnedDraw)
             ownedDrawCount++;
 
-            if (!pipelineStatisticsSubmitted)
+        if (isOwnedDraw && Volatile.Read(ref matrixProbeState) == 1)
+        {
+            var queryIndex = matrixProbeDrawIndex++;
+            if ((uint)queryIndex < pipelineStatisticsQueries.Length)
             {
-                pipelineStatisticsSubmitted = true;
                 var contextVTable = *(nint**)context;
-                ((delegate* unmanaged<nint, nint, void>)contextVTable[27])(context, pipelineStatisticsQuery);
+                var query = pipelineStatisticsQueries[queryIndex];
+                ((delegate* unmanaged<nint, nint, void>)contextVTable[27])(context, query);
                 drawIndexedHook.Original(context, indexCount, startIndex, baseVertex);
-                ((delegate* unmanaged<nint, nint, void>)contextVTable[28])(context, pipelineStatisticsQuery);
-                pipelineStatisticsPending = true;
+                ((delegate* unmanaged<nint, nint, void>)contextVTable[28])(context, query);
+                if (queryIndex == pipelineStatisticsQueries.Length - 1)
+                    Volatile.Write(ref matrixProbeState, 2);
                 return;
             }
         }
@@ -369,33 +382,56 @@ internal sealed unsafe class NativeBackend : IDisposable
 
     private void TryReadPipelineStatistics(nint context)
     {
-        if (!pipelineStatisticsPending)
+        if (Volatile.Read(ref matrixProbeState) != 2)
             return;
 
-        PipelineStatistics statistics;
         var contextVTable = *(nint**)context;
-        var result = ((delegate* unmanaged<nint, nint, PipelineStatistics*, uint, uint, int>)contextVTable[29])(
-            context,
-            pipelineStatisticsQuery,
-            &statistics,
-            (uint)sizeof(PipelineStatistics),
-            1
-        );
-        if (result != 0)
+        var allReady = true;
+        for (var index = 0; index < pipelineStatisticsQueries.Length; index++)
+        {
+            if (pipelineStatisticsReady[index])
+                continue;
+
+            fixed (PipelineStatistics* statistics = &pipelineStatistics[index])
+            {
+                var result = ((delegate* unmanaged<nint, nint, PipelineStatistics*, uint, uint, int>)contextVTable[29])(
+                    context,
+                    pipelineStatisticsQueries[index],
+                    statistics,
+                    (uint)sizeof(PipelineStatistics),
+                    1
+                );
+                pipelineStatisticsReady[index] = result == 0;
+            }
+
+            allReady &= pipelineStatisticsReady[index];
+        }
+
+        if (!allReady)
             return;
 
-        pipelineStatisticsPending = false;
         log.Information(
-            "[Underpaint] Owned draw pipeline statistics: IAVertices={IAVertices}, IAPrimitives={IAPrimitives}, "
-                + "VS={VS}, ClipperInvocations={ClipperInvocations}, ClipperPrimitives={ClipperPrimitives}, PS={PS}.",
-            statistics.IAVertices,
-            statistics.IAPrimitives,
-            statistics.VSInvocations,
-            statistics.ClipperInvocations,
-            statistics.ClipperPrimitives,
-            statistics.PSInvocations
+            "[Underpaint] Matrix probe {MatrixVariant}: {DrawStatistics}",
+            MatrixVariantName(matrixProbeVariant),
+            string.Join(';', pipelineStatistics.Select((statistics, index) => $"Draw{index}={statistics}"))
         );
+
+        Array.Clear(pipelineStatistics);
+        Array.Clear(pipelineStatisticsReady);
+        matrixProbeDrawIndex = 0;
+        var nextVariant = Interlocked.Increment(ref matrixProbeVariant);
+        Volatile.Write(ref matrixProbeState, nextVariant < 4 ? 0 : 3);
     }
+
+    private static string MatrixVariantName(int variant) =>
+        variant switch
+        {
+            0 => "transpose/Z+5",
+            1 => "transpose/Z-5",
+            2 => "raw/Z+5",
+            3 => "raw/Z-5",
+            _ => $"unknown/{variant}",
+        };
 
     private static nint CreatePipelineStatisticsQuery(nint context)
     {
@@ -458,6 +494,9 @@ internal sealed unsafe class NativeBackend : IDisposable
         internal ulong HSInvocations;
         internal ulong DSInvocations;
         internal ulong CSInvocations;
+
+        public override readonly string ToString() =>
+            $"IA:{IAVertices}/{IAPrimitives},VS:{VSInvocations},Clip:{ClipperInvocations}/{ClipperPrimitives},PS:{PSInvocations}";
     }
 
     private readonly record struct PushedCommand(
