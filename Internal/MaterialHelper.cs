@@ -27,6 +27,10 @@ internal sealed unsafe class MaterialHelper
     private const uint TableSamplerCrc = 0x2005679F;
     private const ushort TableSamplerClass = 1;
 
+    // The archived native submission verified 0x01000000 as the main-view
+    // request gate in OnRenderMaterialParams2+0x38.
+    private const uint MainViewRequestMask = 0x01000000;
+
     private readonly MaterialLoader material;
     private readonly delegate* unmanaged<ShaderSelection*, ShaderPackage*, void> initializeShaderSelection;
     private readonly delegate* unmanaged<ShaderSelection*, void> destroyShaderSelection;
@@ -104,7 +108,8 @@ internal sealed unsafe class MaterialHelper
         Model* model,
         ModelRenderer.OnRenderModelParams* modelParameters,
         ModelRenderer.OnRenderMaterialParams2* materialParameters,
-        ShaderSelection* selection
+        ShaderSelection* selection,
+        ConstantBuffer* instanceConstant
     )
     {
         var shaderPackage = material.ShaderPackage;
@@ -123,8 +128,12 @@ internal sealed unsafe class MaterialHelper
                 throw new InvalidOperationException("The native shader-selection initializer returned incomplete state.");
 
             modelParameters->Model = model;
+            // Runtime mapping and the archived native builder path identify
+            // OnRenderModelParams+0x10 as the 176-byte instance input.
+            *(ConstantBuffer**)((byte*)modelParameters + 0x10) = instanceConstant;
             materialParameters->Inner = modelParameters;
             *(ShaderSelection**)((byte*)materialParameters + 0x30) = selection;
+            *(uint*)((byte*)materialParameters + 0x38) = MainViewRequestMask;
             CopySceneValues(renderer, shaderPackage, selection);
 
             var subViewKey = renderer->SubViewKeys[0];
@@ -163,6 +172,54 @@ internal sealed unsafe class MaterialHelper
     }
 
     internal void Destroy(ShaderSelection* selection) => destroyShaderSelection(selection);
+
+    internal static ShaderPair ResolveActiveShaders(byte* context, nint shaderDescriptor)
+    {
+        var pass = context[0x0B] & 0x0F;
+        if (!TryGetPassShaders(shaderDescriptor, pass, out var vertexShader, out var pixelShader))
+            throw new InvalidOperationException($"The fixed shader selection has no shaders for active pass {pass}.");
+
+        return new ShaderPair(pass, vertexShader, pixelShader);
+    }
+
+    private static bool TryGetPassShaders(nint shaderDescriptor, int pass, out nint vertexShader, out nint pixelShader)
+    {
+        vertexShader = 0;
+        pixelShader = 0;
+        if (shaderDescriptor == 0 || (uint)pass >= 16)
+            return false;
+
+        var descriptor = (byte*)shaderDescriptor;
+        var shaderTable = *(byte**)descriptor;
+        if (shaderTable == null)
+            return false;
+
+        var mappings = *(int**)(shaderTable + 0x170);
+        var mappedPass = mappings == null ? pass : mappings[pass];
+        if ((uint)mappedPass >= 16)
+            return false;
+
+        var slot = *(sbyte*)(descriptor + 0x08 + mappedPass);
+        var slotCount = descriptor[0x20];
+        if (slot < 0 || slot >= slotCount)
+            return false;
+
+        var entry = descriptor + 0x28 + slot * 8;
+        var vertexIndex = *(ushort*)entry;
+        var pixelIndex = *(ushort*)(entry + 2);
+        var vertexStart = *(nint*)(shaderTable + 0x18);
+        var vertexEnd = *(nint*)(shaderTable + 0x20);
+        var pixelStart = *(nint*)(shaderTable + 0x38);
+        var pixelEnd = *(nint*)(shaderTable + 0x40);
+        var vertexCount = vertexStart != 0 && vertexEnd >= vertexStart ? (vertexEnd - vertexStart) / sizeof(nint) : 0;
+        var pixelCount = pixelStart != 0 && pixelEnd >= pixelStart ? (pixelEnd - pixelStart) / sizeof(nint) : 0;
+        if (vertexIndex >= vertexCount || pixelIndex >= pixelCount)
+            return false;
+
+        vertexShader = *(nint*)(vertexStart + vertexIndex * sizeof(nint));
+        pixelShader = *(nint*)(pixelStart + pixelIndex * sizeof(nint));
+        return vertexShader != 0 && pixelShader != 0;
+    }
 
     private static void CopySceneValues(ModelRenderer* renderer, ShaderPackage* shaderPackage, ShaderSelection* selection)
     {
@@ -283,3 +340,5 @@ internal readonly record struct MaterialBindingIds(
 );
 
 internal readonly record struct MaterialHelperResult(nint OnRenderMaterial, uint Output, nint ShaderDescriptor);
+
+internal readonly record struct ShaderPair(int Pass, nint Vertex, nint Pixel);
