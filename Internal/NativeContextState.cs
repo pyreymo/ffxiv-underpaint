@@ -37,7 +37,7 @@ internal unsafe ref struct NativeContextState
     private readonly SamplerState indexSampler;
     private readonly SamplerState tableSampler;
 
-    internal NativeContextState(byte* context, uint worldConstantId, MaterialHelperResult material)
+    internal NativeContextState(byte* context, uint worldConstantId, MaterialBindingIds material)
     {
         this.context = context;
         this.worldConstantId = worldConstantId;
@@ -81,27 +81,6 @@ internal unsafe ref struct NativeContextState
         SetSampler(tableSamplerId, resources.WhiteTexture);
     }
 
-    internal void VerifyInstalled(NativeResources resources)
-    {
-        if (
-            *(nint*)(context + IndexBufferOffset) != resources.IndexBuffer
-            || *(nint*)(context + VertexDeclarationOffset) != resources.VertexDeclaration
-            || GetStream(0) != new StreamState(resources.VertexBuffer, PackStreamBinding(0, NativeResources.Stream0Stride))
-            || GetStream(1)
-                != new StreamState(resources.VertexBuffer, PackStreamBinding(resources.Stream1Offset, NativeResources.Stream1Stride))
-            || GetStream(2) != default
-            || GetStream(3) != default
-            || GetConstant(worldConstantId) != (nint)resources.WorldConstant
-            || GetConstant(materialConstantId) != (nint)resources.MaterialConstant
-            || GetConstant(instanceConstantId) != (nint)resources.InstanceConstant
-            || GetConstant(modelConstantId) != (nint)resources.ModelConstant
-            || GetSampler(normalSamplerId).Texture != (nint)resources.WhiteTexture
-            || GetSampler(indexSamplerId).Texture != (nint)resources.WhiteTexture
-            || GetSampler(tableSamplerId).Texture != (nint)resources.WhiteTexture
-        )
-            throw new InvalidOperationException("The owned graphics-context inputs were not installed.");
-    }
-
     internal void Restore()
     {
         *(nint*)(context + IndexBufferOffset) = indexBuffer;
@@ -117,26 +96,6 @@ internal unsafe ref struct NativeContextState
         SetSampler(normalSamplerId, normalSampler);
         SetSampler(indexSamplerId, indexSampler);
         SetSampler(tableSamplerId, tableSampler);
-    }
-
-    internal void VerifyRestored()
-    {
-        if (
-            *(nint*)(context + IndexBufferOffset) != indexBuffer
-            || *(nint*)(context + VertexDeclarationOffset) != vertexDeclaration
-            || GetStream(0) != stream0
-            || GetStream(1) != stream1
-            || GetStream(2) != stream2
-            || GetStream(3) != stream3
-            || GetConstant(worldConstantId) != worldConstant
-            || GetConstant(materialConstantId) != materialConstant
-            || GetConstant(instanceConstantId) != instanceConstant
-            || GetConstant(modelConstantId) != modelConstant
-            || GetSampler(normalSamplerId) != normalSampler
-            || GetSampler(indexSamplerId) != indexSampler
-            || GetSampler(tableSamplerId) != tableSampler
-        )
-            throw new InvalidOperationException("The graphics context was not restored.");
     }
 
     private readonly StreamState GetStream(int index) => *(StreamState*)(context + StreamOffset + index * StreamSize);

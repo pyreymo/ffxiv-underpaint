@@ -231,3 +231,9 @@ world/material/instance/model 四个 constant 槽，以及 normal/index/table �
 的 stream 2 和 3；纹理槽写入白纹理并使用 prototype 已验证的零 unknown/flags。随后不调用
 builder，立即逐字段核对安装结果、恢复原值并再次逐字段核对。这个实验只能验证状态边界和恢复，
 不能证明白纹理的视觉语义；视觉验证仍留给下一次最小 draw。
+
+实机确认 `ContextRestore=verified` 后，逐字段安装/恢复核对已删除。保存和恢复本身保留为实际提交
+边界。shader selection、`Model`、model 参数和 material 参数现在由顶层提交函数的栈内存持有：
+先初始化 selection，再保存 context，随后依次调用 `OnRenderMaterial`、`ApplyMaterial`、解析最终
+descriptor、安装自有输入、恢复 context，最后销毁 selection。这样下一步调用 builder 时 selection
+能够覆盖完整调用区间，不需要复制现场 selection 或延长 frame pointer 生命周期。

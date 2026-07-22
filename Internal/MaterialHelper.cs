@@ -17,8 +17,6 @@ internal sealed unsafe class MaterialHelper
 
     // A natural charactertransparency call changed only these three context slots.
     private const uint MaterialConstantId = 25;
-    private const uint ApplyMaterialSamplerId = 6;
-    private const uint OnRenderMaterialSamplerId = 62;
     private const uint ModelConstantCrc = 0x4E0A5472;
     private const ushort ModelConstantRegisters = 1;
     private const uint InstanceConstantCrc = 0x20A30B34;
@@ -60,18 +58,15 @@ internal sealed unsafe class MaterialHelper
         );
     }
 
-    internal MaterialHelperResult Validate(
-        ModelRenderer* renderer,
-        byte* context,
+    internal MaterialBindingIds ValidateResources(
         ConstantBuffer* instanceConstant,
         ConstantBuffer* modelConstant,
         ConstantBuffer* materialConstant,
         Texture* whiteTexture
     )
     {
-        var targetMaterial = material.Material;
         var shaderPackage = material.ShaderPackage;
-        if (targetMaterial == null || shaderPackage == null)
+        if (material.Material == null || shaderPackage == null)
             throw new InvalidOperationException("The fixed donor material is not ready.");
 
         var modelConstantEntry = FindConstant(shaderPackage, ModelConstantCrc);
@@ -94,10 +89,28 @@ internal sealed unsafe class MaterialHelper
         var indexSampler = FindSampler(shaderPackage, IndexSamplerCrc, MaterialSamplerClass);
         var tableSampler = FindSampler(shaderPackage, TableSamplerCrc, TableSamplerClass);
 
-        var model = stackalloc Model[1];
-        var modelParameters = stackalloc ModelRenderer.OnRenderModelParams[1];
-        var materialParameters = stackalloc ModelRenderer.OnRenderMaterialParams2[1];
-        var selection = stackalloc ShaderSelection[1];
+        return new MaterialBindingIds(
+            MaterialConstantId,
+            instanceConstantEntry.Id,
+            modelConstantEntry.Id,
+            normalSampler.Id,
+            indexSampler.Id,
+            tableSampler.Id
+        );
+    }
+
+    internal void Initialize(
+        ModelRenderer* renderer,
+        Model* model,
+        ModelRenderer.OnRenderModelParams* modelParameters,
+        ModelRenderer.OnRenderMaterialParams2* materialParameters,
+        ShaderSelection* selection
+    )
+    {
+        var shaderPackage = material.ShaderPackage;
+        if (shaderPackage == null)
+            throw new InvalidOperationException("The fixed shader package is not ready.");
+
         NativeMemory.Clear(model, (nuint)sizeof(Model));
         NativeMemory.Clear(modelParameters, (nuint)sizeof(ModelRenderer.OnRenderModelParams));
         NativeMemory.Clear(materialParameters, (nuint)sizeof(ModelRenderer.OnRenderMaterialParams2));
@@ -117,40 +130,39 @@ internal sealed unsafe class MaterialHelper
             var subViewKey = renderer->SubViewKeys[0];
             selection->SubViewKey = subViewKey.KeyCRC;
             selection->SubViewValue = subViewKey.ValueCRC;
-
-            var savedState = new ContextState(context);
-            try
-            {
-                var onRenderMaterialResult = renderer->OnRenderMaterial(materialParameters, targetMaterial, 0);
-                applyMaterial(selection, targetMaterial);
-                if (*(ConstantBuffer**)(context + 0x940 + MaterialConstantId * sizeof(ulong)) != targetMaterial->MaterialParameterCBuffer)
-                    throw new InvalidOperationException("ApplyMaterial did not install the fixed material constant.");
-                var shaderDescriptor = resolveShaderSelection(shaderPackage, selection);
-                if (selection->MaterialValues == null || shaderDescriptor == 0)
-                    throw new InvalidOperationException("The fixed material did not resolve a shader selection.");
-
-                return new MaterialHelperResult(
-                    (nint)onRenderMaterialResult,
-                    *(uint*)((byte*)materialParameters + 0x40),
-                    shaderDescriptor,
-                    MaterialConstantId,
-                    instanceConstantEntry.Id,
-                    modelConstantEntry.Id,
-                    normalSampler.Id,
-                    indexSampler.Id,
-                    tableSampler.Id
-                );
-            }
-            finally
-            {
-                savedState.Restore(context);
-            }
         }
-        finally
+        catch
         {
             destroyShaderSelection(selection);
+            throw;
         }
     }
+
+    internal MaterialHelperResult Apply(
+        ModelRenderer* renderer,
+        byte* context,
+        ModelRenderer.OnRenderMaterialParams2* materialParameters,
+        ShaderSelection* selection
+    )
+    {
+        var targetMaterial = material.Material;
+        var shaderPackage = material.ShaderPackage;
+        if (targetMaterial == null || shaderPackage == null)
+            throw new InvalidOperationException("The fixed donor material is not ready.");
+
+        var onRenderMaterialResult = renderer->OnRenderMaterial(materialParameters, targetMaterial, 0);
+        applyMaterial(selection, targetMaterial);
+        if (*(ConstantBuffer**)(context + 0x940 + MaterialConstantId * sizeof(ulong)) != targetMaterial->MaterialParameterCBuffer)
+            throw new InvalidOperationException("ApplyMaterial did not install the fixed material constant.");
+
+        var shaderDescriptor = resolveShaderSelection(shaderPackage, selection);
+        if (selection->MaterialValues == null || shaderDescriptor == 0)
+            throw new InvalidOperationException("The fixed material did not resolve a shader selection.");
+
+        return new MaterialHelperResult((nint)onRenderMaterialResult, *(uint*)((byte*)materialParameters + 0x40), shaderDescriptor);
+    }
+
+    internal void Destroy(ShaderSelection* selection) => destroyShaderSelection(selection);
 
     private static void CopySceneValues(ModelRenderer* renderer, ShaderPackage* shaderPackage, ShaderSelection* selection)
     {
@@ -242,7 +254,7 @@ internal sealed unsafe class MaterialHelper
     }
 
     [StructLayout(LayoutKind.Explicit, Size = 0x28)]
-    private struct ShaderSelection
+    internal struct ShaderSelection
     {
         [FieldOffset(0x08)]
         public ShaderPackage* Package;
@@ -259,39 +271,9 @@ internal sealed unsafe class MaterialHelper
         [FieldOffset(0x24)]
         public uint SubViewValue;
     }
-
-    [StructLayout(LayoutKind.Explicit, Size = 24)]
-    private readonly struct SamplerState
-    {
-        [FieldOffset(0)]
-        private readonly nint unknown;
-
-        [FieldOffset(8)]
-        private readonly nint texture;
-
-        [FieldOffset(16)]
-        private readonly uint flags;
-    }
-
-    private readonly struct ContextState(byte* context)
-    {
-        private readonly ulong materialConstant = *(ulong*)(context + 0x940 + MaterialConstantId * sizeof(ulong));
-        private readonly SamplerState applyMaterialSampler = *(SamplerState*)(context + 0x1140 + ApplyMaterialSamplerId * 24);
-        private readonly SamplerState onRenderMaterialSampler = *(SamplerState*)(context + 0x1140 + OnRenderMaterialSamplerId * 24);
-
-        internal void Restore(byte* context)
-        {
-            *(ulong*)(context + 0x940 + MaterialConstantId * sizeof(ulong)) = materialConstant;
-            *(SamplerState*)(context + 0x1140 + ApplyMaterialSamplerId * 24) = applyMaterialSampler;
-            *(SamplerState*)(context + 0x1140 + OnRenderMaterialSamplerId * 24) = onRenderMaterialSampler;
-        }
-    }
 }
 
-internal readonly record struct MaterialHelperResult(
-    nint OnRenderMaterial,
-    uint Output,
-    nint ShaderDescriptor,
+internal readonly record struct MaterialBindingIds(
     uint MaterialConstantId,
     uint InstanceConstantId,
     uint ModelConstantId,
@@ -299,3 +281,5 @@ internal readonly record struct MaterialHelperResult(
     uint IndexSamplerId,
     uint TableSamplerId
 );
+
+internal readonly record struct MaterialHelperResult(nint OnRenderMaterial, uint Output, nint ShaderDescriptor);

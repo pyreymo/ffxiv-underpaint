@@ -86,43 +86,54 @@ internal sealed unsafe class NativeBackend : IDisposable
             var view = GetMainViewMatrix();
             resources.WriteInitialWorld(view);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
-            var helperResult = materialHelper.Validate(
-                (ModelRenderer*)modelRenderer,
-                (byte*)context,
+            var bindings = materialHelper.ValidateResources(
                 resources.InstanceConstant,
                 resources.ModelConstant,
                 resources.MaterialConstant,
                 resources.WhiteTexture
             );
-            var contextState = new NativeContextState((byte*)context, worldConstantId, helperResult);
+            var model = stackalloc Model[1];
+            var modelParameters = stackalloc ModelRenderer.OnRenderModelParams[1];
+            var ownedMaterialParameters = stackalloc ModelRenderer.OnRenderMaterialParams2[1];
+            var selection = stackalloc MaterialHelper.ShaderSelection[1];
+            materialHelper.Initialize((ModelRenderer*)modelRenderer, model, modelParameters, ownedMaterialParameters, selection);
             try
             {
-                contextState.Install(resources);
-                contextState.VerifyInstalled(resources);
+                var contextState = new NativeContextState((byte*)context, worldConstantId, bindings);
+                MaterialHelperResult helperResult;
+                try
+                {
+                    helperResult = materialHelper.Apply((ModelRenderer*)modelRenderer, (byte*)context, ownedMaterialParameters, selection);
+                    contextState.Install(resources);
+                }
+                finally
+                {
+                    contextState.Restore();
+                }
+
+                log.Information(
+                    "[Underpaint] Native inputs prepared with live shader selection: OnRenderMaterial=0x{OnRenderMaterial:X}, "
+                        + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
+                        + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
+                        + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
+                        + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
+                        + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
+                    helperResult.OnRenderMaterial,
+                    helperResult.Output,
+                    helperResult.ShaderDescriptor,
+                    bindings.MaterialConstantId,
+                    bindings.InstanceConstantId,
+                    bindings.ModelConstantId,
+                    worldConstantId,
+                    bindings.NormalSamplerId,
+                    bindings.IndexSamplerId,
+                    bindings.TableSamplerId
+                );
             }
             finally
             {
-                contextState.Restore();
+                materialHelper.Destroy(selection);
             }
-            contextState.VerifyRestored();
-            log.Information(
-                "[Underpaint] Native constants and material helpers verified: OnRenderMaterial=0x{OnRenderMaterial:X}, "
-                    + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
-                    + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
-                    + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
-                    + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
-                    + "TableSamplerId={TableSamplerId}, WhiteTexture=ready, ContextRestore=verified.",
-                helperResult.OnRenderMaterial,
-                helperResult.Output,
-                helperResult.ShaderDescriptor,
-                helperResult.MaterialConstantId,
-                helperResult.InstanceConstantId,
-                helperResult.ModelConstantId,
-                worldConstantId,
-                helperResult.NormalSamplerId,
-                helperResult.IndexSamplerId,
-                helperResult.TableSamplerId
-            );
         }
         catch (Exception exception)
         {
