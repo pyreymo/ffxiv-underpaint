@@ -9,10 +9,15 @@ namespace Underpaint.Internal;
 internal sealed unsafe class NativeBackend : IDisposable
 {
     private const string BuildPassesSignature = "44 89 4C 24 ?? 44 89 44 24 ?? 53 56 57 41 54 41 55";
+    private const string PushBackCommandSignature = "48 63 41 ?? 4C 8B DA";
     private const int ExpectedMainView = 30;
     private const int ExpectedMainSubView = 11;
 
+    [ThreadStatic]
+    private static List<PushedCommand>? pushedCommandProbe;
+
     private readonly Hook<BuildPassesDelegate> buildPassesHook;
+    private readonly Hook<PushBackCommandDelegate> pushBackCommandHook;
     private readonly MaterialHelper materialHelper;
     private readonly MaterialLoader material;
     private readonly NativeResources resources;
@@ -20,6 +25,7 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int loggedFirstCall;
     private int loggedMainRendezvous;
     private int loggedFirstSubmission;
+    private int remainingPushedCommandProbes = 1;
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
 
@@ -36,10 +42,19 @@ internal sealed unsafe class NativeBackend : IDisposable
         this.resources = resources;
         materialHelper = new MaterialHelper(sigScanner, material);
         buildPassesHook = gameInteropProvider.HookFromSignature<BuildPassesDelegate>(BuildPassesSignature, BuildPassesDetour);
+        pushBackCommandHook = gameInteropProvider.HookFromSignature<PushBackCommandDelegate>(
+            PushBackCommandSignature,
+            PushBackCommandDetour
+        );
+        pushBackCommandHook.Enable();
         buildPassesHook.Enable();
     }
 
-    public void Dispose() => buildPassesHook.Dispose();
+    public void Dispose()
+    {
+        buildPassesHook.Dispose();
+        pushBackCommandHook.Dispose();
+    }
 
     private nint BuildPassesDetour(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount)
     {
@@ -117,6 +132,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                 var contextState = new NativeContextState((byte*)context, worldConstantId, bindings);
                 MaterialHelperResult helperResult;
                 ShaderPair shaders;
+                List<PushedCommand>? pushedCommands = null;
                 nint commandBaseBefore;
                 ulong commandUsedBefore;
                 nint commandBaseAfter;
@@ -129,13 +145,23 @@ internal sealed unsafe class NativeBackend : IDisposable
                     contextState.Install(resources);
                     commandBaseBefore = (nint)context->CommandAllocationBase;
                     commandUsedBefore = context->CommandAllocationUsedSize;
-                    buildPassesHook.Original(
-                        modelRenderer,
-                        (nint)ownedMaterialParameters,
-                        NativeResources.VertexCount,
-                        0,
-                        NativeResources.IndexCount
-                    );
+                    var capturePushedCommands = Interlocked.Exchange(ref remainingPushedCommandProbes, 0) == 1;
+                    pushedCommandProbe = capturePushedCommands ? [] : null;
+                    try
+                    {
+                        buildPassesHook.Original(
+                            modelRenderer,
+                            (nint)ownedMaterialParameters,
+                            NativeResources.VertexCount,
+                            0,
+                            NativeResources.IndexCount
+                        );
+                        pushedCommands = pushedCommandProbe;
+                    }
+                    finally
+                    {
+                        pushedCommandProbe = null;
+                    }
                     commandBaseAfter = (nint)context->CommandAllocationBase;
                     commandUsedAfter = context->CommandAllocationUsedSize;
                     if (commandBaseAfter == commandBaseBefore && commandUsedAfter <= commandUsedBefore)
@@ -144,6 +170,18 @@ internal sealed unsafe class NativeBackend : IDisposable
                 finally
                 {
                     contextState.Restore();
+                }
+
+                if (pushedCommands is { } commands)
+                {
+                    log.Information(
+                        "[Underpaint] Owned PushBackCommand probe: Commands={CommandCount}, "
+                            + "AllBindingsMatch={AllBindingsMatch}, Items=[{Commands}]",
+                        commands.Count,
+                        commands.Count > 0
+                            && commands.All(command => command.BindingsMatch(resources, shaders, helperResult.ShaderDescriptor)),
+                        string.Join(',', commands)
+                    );
                 }
 
                 if (Interlocked.CompareExchange(ref loggedFirstSubmission, 1, 0) == 0)
@@ -190,5 +228,81 @@ internal sealed unsafe class NativeBackend : IDisposable
         return result;
     }
 
+    private void PushBackCommandDetour(nint context, nint command)
+    {
+        if (context != 0 && command != 0 && pushedCommandProbe is { Count: < 16 } commands)
+        {
+            const int indexBufferOffset = 0x888;
+            const int vertexDeclarationOffset = 0x890;
+            const int vertexShaderOffset = 0x878;
+            const int pixelShaderOffset = 0x880;
+            const int shaderDescriptorOffset = 0x8B8;
+            const int streamOffset = 0x8C0;
+            const int streamSize = 16;
+
+            var contextBytes = (byte*)context;
+            commands.Add(
+                new PushedCommand(
+                    *(uint*)command,
+                    *(uint*)(command + 0x04),
+                    *(uint*)(command + 0x08),
+                    *(uint*)(command + 0x0C),
+                    *(uint*)(command + 0x10),
+                    *(uint*)(command + 0x14),
+                    *(uint*)(command + 0x18),
+                    *(nint*)(contextBytes + indexBufferOffset),
+                    *(nint*)(contextBytes + vertexDeclarationOffset),
+                    *(StreamBinding*)(contextBytes + streamOffset),
+                    *(StreamBinding*)(contextBytes + streamOffset + streamSize),
+                    *(nint*)(contextBytes + vertexShaderOffset),
+                    *(nint*)(contextBytes + pixelShaderOffset),
+                    *(nint*)(contextBytes + shaderDescriptorOffset)
+                )
+            );
+        }
+
+        pushBackCommandHook.Original(context, command);
+    }
+
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
+
+    private delegate void PushBackCommandDelegate(nint context, nint command);
+
+    private readonly record struct StreamBinding(nint Buffer, ulong OffsetAndStride);
+
+    private readonly record struct PushedCommand(
+        uint Type,
+        uint Value04,
+        uint Value08,
+        uint Value0C,
+        uint Value10,
+        uint Value14,
+        uint Value18,
+        nint IndexBuffer,
+        nint VertexDeclaration,
+        StreamBinding Stream0,
+        StreamBinding Stream1,
+        nint VertexShader,
+        nint PixelShader,
+        nint ShaderDescriptor
+    )
+    {
+        internal bool BindingsMatch(NativeResources resources, ShaderPair shaders, nint descriptor) =>
+            IndexBuffer == resources.IndexBuffer
+            && VertexDeclaration == resources.VertexDeclaration
+            && Stream0 == new StreamBinding(resources.VertexBuffer, PackStreamBinding(0, NativeResources.Stream0Stride))
+            && Stream1
+                == new StreamBinding(resources.VertexBuffer, PackStreamBinding(resources.Stream1Offset, NativeResources.Stream1Stride))
+            && VertexShader == shaders.Vertex
+            && PixelShader == shaders.Pixel
+            && ShaderDescriptor == descriptor;
+
+        public override string ToString() =>
+            $"type={Type}/+04={Value04}/+08={Value08}/+0C={Value0C}/+10={Value10}/+14={Value14}/+18={Value18}/"
+            + $"ib=0x{IndexBuffer:X}/decl=0x{VertexDeclaration:X}/s0=0x{Stream0.Buffer:X}:0x{Stream0.OffsetAndStride:X}/"
+            + $"s1=0x{Stream1.Buffer:X}:0x{Stream1.OffsetAndStride:X}/vs=0x{VertexShader:X}/ps=0x{PixelShader:X}/"
+            + $"descriptor=0x{ShaderDescriptor:X}";
+
+        private static ulong PackStreamBinding(int byteOffset, int stride) => ((ulong)(uint)byteOffset << 8) | (byte)stride;
+    }
 }
