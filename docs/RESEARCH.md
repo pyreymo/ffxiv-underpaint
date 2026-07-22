@@ -362,3 +362,10 @@ instance constant 的 register 0 从 `(1,1,1,1)` 改为 `(1,0,0,1)`。三角形�
 Color0 alpha `0.5` 的半透明仍然保留；连续 30 帧四点采样只出现 1 至 2 个色阶的场景波动。由此确认
 当前固定 variant 使用 `InstanceConstant[0].rgb` 控制输出颜色，使用 `Color0.a` 控制透明度。register 0
 在游戏中的通用名称仍未知，第一版只记录这个固定 shader selection 下已经验证的作用。
+
+后续将静态 `Color0.a` 恢复为 `1.0`，只把 `InstanceConstant[0].w` 从 `1.0` 改为 `0.5`。实机结果并非
+完全不透明，而是纯红色配合约 50% 的 dither coverage；它与 `Color0.a = 0.5` 时的平滑透光不是同一种
+表现。因此当前固定提交把 `InstanceConstant[0]` 整体作为每次提交的 color/dither-alpha 输入，并从顶层
+明确传入 `(1,0,0,0.5)`。这使 RGBA 真正属于本次提交且不需要修改静态 VB，但这里的 alpha 必须诚实地
+描述为原生 dither fade。若公开接口需要平滑 alpha，则仍需让每图元的 `Color0.a` 可变，不能复用这一
+结论把两条路径混为一谈。

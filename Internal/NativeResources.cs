@@ -48,8 +48,6 @@ internal sealed unsafe class NativeResources : IDisposable
     private const int MaterialConstantBytes = 416;
 
     private const float FixedTriangleViewDepth = -5f;
-    private const float FixedTriangleAlpha = 0.5f;
-
     private const string WhiteTexturePath = "chara/common/texture/white.tex";
 
     // ResourceType.Tex in the game's resource-loading ABI.
@@ -242,7 +240,7 @@ internal sealed unsafe class NativeResources : IDisposable
         }
     }
 
-    internal void WriteFixedTriangleConstants(ShaderPackage* shaderPackage)
+    internal void WriteFixedTriangleConstants(ShaderPackage* shaderPackage, Vector4 color)
     {
         var data = WorldConstant->LoadSourcePointer(0, WorldConstantBytes);
         if (data == null)
@@ -251,7 +249,7 @@ internal sealed unsafe class NativeResources : IDisposable
         var worldView = Matrix4x4.Transpose(Matrix4x4.CreateTranslation(0, 0, FixedTriangleViewDepth));
         *(Matrix4x4*)data = worldView;
         *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = worldView;
-        WriteInstanceConstant();
+        WriteInstanceConstant(color);
         WriteModelConstant();
         WriteMaterialConstant(shaderPackage);
     }
@@ -287,7 +285,7 @@ internal sealed unsafe class NativeResources : IDisposable
         *(Vector4*)data = new Vector4(1, 0, 0, 0);
     }
 
-    private void WriteInstanceConstant()
+    private void WriteInstanceConstant(Vector4 color)
     {
         var data = InstanceConstant->LoadSourcePointer(0, InstanceConstantBytes);
         if (data == null)
@@ -296,9 +294,9 @@ internal sealed unsafe class NativeResources : IDisposable
         var registers = new Span<Vector4>(data, InstanceConstantBytes / sizeof(Vector4));
         registers.Clear();
 
-        // A fixed red/white A/B test confirmed that register 0 controls output RGB
+        // Fixed A/B tests confirmed that register 0 controls output RGB and dither fade
         // for the selected charactertransparency variant. Its general engine name is unknown.
-        registers[0] = new Vector4(1, 0, 0, FixedTriangleAlpha);
+        registers[0] = color;
         registers[1] = Vector4.One;
         registers[2] = Vector4.One;
         registers[3] = Vector4.One;

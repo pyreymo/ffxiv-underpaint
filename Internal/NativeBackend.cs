@@ -1,3 +1,4 @@
+using System.Numerics;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
@@ -92,7 +93,8 @@ internal sealed unsafe class NativeBackend : IDisposable
         {
             resources.CreateConstants();
             resources.LoadWhiteTexture();
-            resources.WriteFixedTriangleConstants(material.ShaderPackage);
+            var triangleColor = new Vector4(1, 0, 0, 0.5f);
+            resources.WriteFixedTriangleConstants(material.ShaderPackage, triangleColor);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
                 resources.InstanceConstant,
