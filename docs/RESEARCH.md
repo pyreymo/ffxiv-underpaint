@@ -222,6 +222,12 @@ CRC、ID 和 class 仍与固定 SHPK 一致。该资源在本步骤尚未安装�
 内容，不预先声称它对 normal、index 和 table 三种 shader 语义都是正确中性值。下一步应通过
 最小实际提交分别验证这些绑定，而不是把同一白纹理一次性覆盖所有未知 sampler。
 
+固定三角形可见后观察到颜色随原生灯光变化。纯白不是中性法线，因此 normal sampler 改用游戏
+保留资源 `chara/common/texture/null_normal.tex`。路径及 hash `0xD5CFA221` 由 Penumbra 的 reserved
+game-resource 列表核对；该资源被明确描述为满 alpha 的纯色 `#7E7FFF` 默认法线图。index 和 table
+仍暂时使用白纹理，避免在同一实验中同时改变三个输入。若颜色变化仍存在，再单独验证这两个 sampler
+以及 instance/model color register，不把原生环境照明本身误判成状态漂移。
+
 首次实际提交在 sampler ID 5 读取纹理对象时崩溃。崩溃前对照固定白纹理 handle 与 donor 的四个
 自然纹理 handle 后确认：自然 `TextureResourceHandle` 的 `Texture*` 均位于 FFCS 声明的 `+0x128`，
 而白纹理对象的同一区域是连续的打包数值，不是指针。原因不是结构偏移，而是加载时把 TEX resource
