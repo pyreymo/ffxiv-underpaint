@@ -78,13 +78,20 @@ internal sealed unsafe class NativeBackend : IDisposable
         try
         {
             resources.CreateConstants();
-            var helperResult = materialHelper.Validate((ModelRenderer*)modelRenderer, (byte*)context, resources.ModelConstant);
+            var helperResult = materialHelper.Validate(
+                (ModelRenderer*)modelRenderer,
+                (byte*)context,
+                resources.InstanceConstant,
+                resources.ModelConstant
+            );
             log.Information(
                 "[Underpaint] Native constants and material helpers verified: OnRenderMaterial=0x{OnRenderMaterial:X}, "
-                    + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, ModelConstantId={ModelConstantId}.",
+                    + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
+                    + "InstanceConstantId={InstanceConstantId}, ModelConstantId={ModelConstantId}.",
                 helperResult.OnRenderMaterial,
                 helperResult.Output,
                 helperResult.ShaderDescriptor,
+                helperResult.InstanceConstantId,
                 helperResult.ModelConstantId
             );
         }

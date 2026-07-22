@@ -164,3 +164,13 @@ view 30、subview 11 的 render context 中能够创建、取得可写存储并�
 因此将自有 16-byte model constant 明确初始化为 `(1, 0, 0, 0)`，并在运行时再次校验固定 SHPK
 仍将该 CRC 声明为一个 register。此时尚未调用 pass builder，所以本步骤不安装 context binding；
 绑定与实际 builder 消费必须在同一后续提交中完成。
+
+同一封存实验确认 CRC `0x20A30B34` 是 11 个 `float4` 的 per-instance 输入。第一版的中性值
+不是从当前角色复制：register 0 到 3 为全白乘色，register 4 为 `(0, 2, 0, 1)` 的无 wetness
+范围默认值，register 10 为 `(0, 1, 0, 0)` 的默认 head-up，其余 register 清零。这组值已经在
+封存 prototype 中替换角色 instance constant 并用于原生 command；各 register 的完整通用语义仍
+未建立，因此代码保留 register 编号，不为每个分量猜测字段名。
+
+当前最小实现据此写入自有 176-byte instance constant，并在运行时校验固定 SHPK 仍将该 CRC
+声明为 11 个 registers。与 model constant 相同，本步骤只建立自有内容和 ID 映射；context 安装
+留到有实际 pass-builder 消费的提交中。

@@ -21,6 +21,8 @@ internal sealed unsafe class MaterialHelper
     private const uint OnRenderMaterialSamplerId = 62;
     private const uint ModelConstantCrc = 0x4E0A5472;
     private const ushort ModelConstantRegisters = 1;
+    private const uint InstanceConstantCrc = 0x20A30B34;
+    private const ushort InstanceConstantRegisters = 11;
 
     private readonly MaterialLoader material;
     private readonly delegate* unmanaged<ShaderSelection*, ShaderPackage*, void> initializeShaderSelection;
@@ -53,7 +55,12 @@ internal sealed unsafe class MaterialHelper
         );
     }
 
-    internal MaterialHelperResult Validate(ModelRenderer* renderer, byte* context, ConstantBuffer* modelConstant)
+    internal MaterialHelperResult Validate(
+        ModelRenderer* renderer,
+        byte* context,
+        ConstantBuffer* instanceConstant,
+        ConstantBuffer* modelConstant
+    )
     {
         var targetMaterial = material.Material;
         var shaderPackage = material.ShaderPackage;
@@ -65,6 +72,12 @@ internal sealed unsafe class MaterialHelper
             throw new InvalidOperationException("The fixed shader package has an unexpected model constant size.");
         if (modelConstant == null || modelConstant->ByteSize != modelConstantEntry.Size * 16)
             throw new InvalidOperationException("The owned model constant does not match the fixed shader package.");
+
+        var instanceConstantEntry = FindConstant(shaderPackage, InstanceConstantCrc);
+        if (instanceConstantEntry.Size != InstanceConstantRegisters)
+            throw new InvalidOperationException("The fixed shader package has an unexpected instance constant size.");
+        if (instanceConstant == null || instanceConstant->ByteSize != instanceConstantEntry.Size * 16)
+            throw new InvalidOperationException("The owned instance constant does not match the fixed shader package.");
 
         var model = stackalloc Model[1];
         var modelParameters = stackalloc ModelRenderer.OnRenderModelParams[1];
@@ -103,6 +116,7 @@ internal sealed unsafe class MaterialHelper
                     (nint)onRenderMaterialResult,
                     *(uint*)((byte*)materialParameters + 0x40),
                     shaderDescriptor,
+                    instanceConstantEntry.Id,
                     modelConstantEntry.Id
                 );
             }
@@ -242,4 +256,10 @@ internal sealed unsafe class MaterialHelper
     }
 }
 
-internal readonly record struct MaterialHelperResult(nint OnRenderMaterial, uint Output, nint ShaderDescriptor, uint ModelConstantId);
+internal readonly record struct MaterialHelperResult(
+    nint OnRenderMaterial,
+    uint Output,
+    nint ShaderDescriptor,
+    uint InstanceConstantId,
+    uint ModelConstantId
+);
