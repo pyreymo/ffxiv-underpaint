@@ -221,3 +221,13 @@ pass 4 还使用 ID 49 / CRC `0x800BE99B`；pass 8、11 继续增加灯光和 vi
 CRC、ID 和 class 仍与固定 SHPK 一致。该资源在本步骤尚未安装；`WhiteTexture` 只描述其实际
 内容，不预先声称它对 normal、index 和 table 三种 shader 语义都是正确中性值。下一步应通过
 最小实际提交分别验证这些绑定，而不是把同一白纹理一次性覆盖所有未知 sampler。
+
+在调用 pass builder 前，context 状态恢复被拆成单独验证步骤。geometry 字段 `0x888/0x890`、
+四条 stream binding 起点 `0x8C0`、constant 表起点 `0x940` 和 sampler 表起点 `0x1140` 均来自
+封存 prototype 中已经实际生成原生 command 的 context 布局；FFCS 当前没有公开这些字段。
+
+当前实现只保存并修改明确归 Underpaint 所有的两条 geometry stream、IB、vertex declaration、
+world/material/instance/model 四个 constant 槽，以及 normal/index/table 三个纹理槽。安装时清空未用
+的 stream 2 和 3；纹理槽写入白纹理并使用 prototype 已验证的零 unknown/flags。随后不调用
+builder，立即逐字段核对安装结果、恢复原值并再次逐字段核对。这个实验只能验证状态边界和恢复，
+不能证明白纹理的视觉语义；视觉验证仍留给下一次最小 draw。

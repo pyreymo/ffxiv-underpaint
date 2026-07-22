@@ -94,13 +94,24 @@ internal sealed unsafe class NativeBackend : IDisposable
                 resources.MaterialConstant,
                 resources.WhiteTexture
             );
+            var contextState = new NativeContextState((byte*)context, worldConstantId, helperResult);
+            try
+            {
+                contextState.Install(resources);
+                contextState.VerifyInstalled(resources);
+            }
+            finally
+            {
+                contextState.Restore();
+            }
+            contextState.VerifyRestored();
             log.Information(
                 "[Underpaint] Native constants and material helpers verified: OnRenderMaterial=0x{OnRenderMaterial:X}, "
                     + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
                     + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
                     + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                     + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
-                    + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
+                    + "TableSamplerId={TableSamplerId}, WhiteTexture=ready, ContextRestore=verified.",
                 helperResult.OnRenderMaterial,
                 helperResult.Output,
                 helperResult.ShaderDescriptor,
