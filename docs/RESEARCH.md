@@ -394,3 +394,9 @@ world constant，也没有复制 draw command 状态。
 `fixedWorld * currentView` 仍严格得到已经验证的 view-space `Translation(0,0,-5)`。`fixedWorld`
 随后保持不变，每帧只使用当前 camera view 重新计算 world-view；相机移动时三角形应留在这个世界位置，
 不再固定在屏幕中央。previous 暂时仍等于 current，实际跨帧 previous view 留给下一独立步骤。
+
+首次实机运行时，`CameraManager.CurrentCamera` 非空，但 hook 时刻的 `Scene.Camera.ViewMatrix` 不可逆，
+提交因此按设计明确停止。FFCS 同时公开 `Scene.Camera.RenderCamera`，其 `Render.Camera.ViewMatrix` 位于
+render camera `+0x10`，更直接对应当前渲染状态。实现随即改为只读取这个 render-camera 矩阵；没有在
+两个矩阵间加入 fallback 或复制自然 draw constant。前一段引用 `WorldToScreen` 的乘法顺序仍成立，
+但不能据此假设 scene-side matrix 在 ModelRenderer hook 时刻已经有效。

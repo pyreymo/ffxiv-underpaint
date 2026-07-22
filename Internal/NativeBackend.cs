@@ -98,14 +98,15 @@ internal sealed unsafe class NativeBackend : IDisposable
             resources.LoadWhiteTexture();
             var cameraManager = CameraManager.Instance();
             var camera = cameraManager == null ? null : cameraManager->CurrentCamera;
-            if (camera == null)
-                throw new InvalidOperationException("The current scene camera is not available.");
+            var renderCamera = camera == null ? null : camera->RenderCamera;
+            if (renderCamera == null)
+                throw new InvalidOperationException("The current render camera is not available.");
 
-            var view = (Matrix4x4)camera->ViewMatrix;
+            var view = (Matrix4x4)renderCamera->ViewMatrix;
             if (!hasFixedTriangleWorld)
             {
                 if (!Matrix4x4.Invert(view, out var inverseView))
-                    throw new InvalidOperationException("The current scene view matrix is not invertible.");
+                    throw new InvalidOperationException("The current render view matrix is not invertible.");
                 fixedTriangleWorld = Matrix4x4.CreateTranslation(0, 0, -5) * inverseView;
                 hasFixedTriangleWorld = true;
             }
