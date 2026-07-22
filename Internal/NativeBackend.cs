@@ -95,9 +95,9 @@ internal sealed unsafe class NativeBackend : IDisposable
 
         try
         {
-            resources.CreateConstants(material.ShaderPackage);
+            resources.CreateConstants();
             resources.LoadWhiteTexture();
-            resources.WriteFixedViewSpaceWorld();
+            resources.WriteFixedTriangleConstants(material.ShaderPackage);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
                 resources.InstanceConstant,

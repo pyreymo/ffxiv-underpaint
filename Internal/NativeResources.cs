@@ -214,7 +214,7 @@ internal sealed unsafe class NativeResources : IDisposable
         whiteTextureResource = loaded;
     }
 
-    internal void CreateConstants(ShaderPackage* shaderPackage)
+    internal void CreateConstants()
     {
         if (worldConstant != 0)
             return;
@@ -229,9 +229,6 @@ internal sealed unsafe class NativeResources : IDisposable
             instanceConstant = CreateAndClearConstantBuffer(device, InstanceConstantBytes, "instance");
             modelConstant = CreateAndClearConstantBuffer(device, ModelConstantBytes, "model");
             materialConstant = CreateAndClearConstantBuffer(device, MaterialConstantBytes, "material");
-            WriteInstanceConstant();
-            WriteModelConstant();
-            WriteMaterialConstant(shaderPackage);
         }
         catch
         {
@@ -243,7 +240,7 @@ internal sealed unsafe class NativeResources : IDisposable
         }
     }
 
-    internal void WriteFixedViewSpaceWorld()
+    internal void WriteFixedTriangleConstants(ShaderPackage* shaderPackage)
     {
         var data = WorldConstant->LoadSourcePointer(0, WorldConstantBytes);
         if (data == null)
@@ -252,6 +249,9 @@ internal sealed unsafe class NativeResources : IDisposable
         var worldView = Matrix4x4.Transpose(Matrix4x4.CreateTranslation(0, 0, FixedTriangleViewDepth));
         *(Matrix4x4*)data = worldView;
         *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = worldView;
+        WriteInstanceConstant();
+        WriteModelConstant();
+        WriteMaterialConstant(shaderPackage);
     }
 
     private static nint CreateAndClearConstantBuffer(Device* device, int byteSize, string name)
