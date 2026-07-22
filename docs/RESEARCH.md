@@ -183,3 +183,14 @@ view 30、subview 11 的 render context 中能够创建、取得可写存储并�
 自然 `ApplyMaterial` 状态差分已经定位运行时 material constant ID 25。当前实现进一步在 helper
 调用后验证 context ID 25 确实等于固定 material 的 `MaterialParameterCBuffer`，同时验证自有 buffer
 大小与 SHPK 一致。自有内容和运行时 ID 至此都已确定，但在实际 builder 接入前仍不替换该 binding。
+
+FFCS 将 `ModelRenderer.ConstantSamplerIds[1]` 明确标为 `g_WorldViewMatrix`；本次固定路径实测该
+运行时 ID 为 5。封存 prototype 已验证主 view 30 的 transform camera 位于 subview 12，虽然提交
+rendezvous 本身发生在 subview 11。二者属于同一主 view 的不同职责，不能用当前 rendezvous
+subview 直接索引 camera。
+
+`Render.Camera.ViewMatrix` 物理上是 64-byte `Matrix4x4`，但原生 affine 路径只写入和读取 3x4
+payload；第四列的四个存储槽可能未初始化。托管乘法前必须明确设为 `(0, 0, 0, 1)`。固定三角形
+的初始 world 为单位矩阵，128-byte world constant 写入转置后的 `world * view` 两次，使首帧
+current 与 previous 完全相同。该数据完全由 Underpaint world 和当前公共 camera/view 状态构造，
+不读取现场模型的 world constant。

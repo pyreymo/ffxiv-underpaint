@@ -198,6 +198,17 @@ internal sealed unsafe class NativeResources : IDisposable
         }
     }
 
+    internal void WriteInitialWorld(Matrix4x4 view)
+    {
+        var data = WorldConstant->LoadSourcePointer(0, WorldConstantBytes);
+        if (data == null)
+            throw new InvalidOperationException("The world constant buffer has no writable storage.");
+
+        var worldView = Matrix4x4.Transpose(Matrix4x4.Identity * view);
+        *(Matrix4x4*)data = worldView;
+        *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = worldView;
+    }
+
     private static nint CreateAndClearConstantBuffer(Device* device, int byteSize, string name)
     {
         var buffer = device->CreateConstantBuffer(byteSize, WritableConstantBufferFlags, ConstantBufferLastArgument);

@@ -1,3 +1,4 @@
+using System.Numerics;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
@@ -10,6 +11,7 @@ internal sealed unsafe class NativeBackend : IDisposable
     private const string BuildPassesSignature = "44 89 4C 24 ?? 44 89 44 24 ?? 53 56 57 41 54 41 55";
     private const int ExpectedMainView = 30;
     private const int ExpectedMainSubView = 11;
+    private const int MainTransformSubView = 12;
 
     private readonly Hook<BuildPassesDelegate> buildPassesHook;
     private readonly MaterialHelper materialHelper;
@@ -80,6 +82,9 @@ internal sealed unsafe class NativeBackend : IDisposable
         try
         {
             resources.CreateConstants(material.ShaderPackage);
+            var view = GetMainViewMatrix();
+            resources.WriteInitialWorld(view);
+            var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var helperResult = materialHelper.Validate(
                 (ModelRenderer*)modelRenderer,
                 (byte*)context,
@@ -91,13 +96,14 @@ internal sealed unsafe class NativeBackend : IDisposable
                 "[Underpaint] Native constants and material helpers verified: OnRenderMaterial=0x{OnRenderMaterial:X}, "
                     + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
                     + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
-                    + "ModelConstantId={ModelConstantId}.",
+                    + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}.",
                 helperResult.OnRenderMaterial,
                 helperResult.Output,
                 helperResult.ShaderDescriptor,
                 helperResult.MaterialConstantId,
                 helperResult.InstanceConstantId,
-                helperResult.ModelConstantId
+                helperResult.ModelConstantId,
+                worldConstantId
             );
         }
         catch (Exception exception)
@@ -106,6 +112,21 @@ internal sealed unsafe class NativeBackend : IDisposable
         }
 
         return result;
+    }
+
+    private static Matrix4x4 GetMainViewMatrix()
+    {
+        var manager = Manager.Instance();
+        var camera = manager == null ? null : manager->Views[ExpectedMainView].SubViews[MainTransformSubView].Camera;
+        if (camera == null)
+            throw new InvalidOperationException("The native main-view camera is not available.");
+
+        var view = *(Matrix4x4*)&camera->ViewMatrix;
+        view.M14 = 0;
+        view.M24 = 0;
+        view.M34 = 0;
+        view.M44 = 1;
+        return view;
     }
 
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
