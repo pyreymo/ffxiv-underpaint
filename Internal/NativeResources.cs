@@ -14,42 +14,25 @@ internal sealed unsafe class NativeResources : IDisposable
     private const string InitializeIndexBufferSignature = "40 53 48 83 EC 20 F7 41 40 00 08 00 00 48 8B D9";
     private const string CreateVertexDeclarationSignature = "48 8B 49 ?? E9 ?? ?? ?? ?? CC CC CC CC CC CC CC 40 53 55 57";
 
-    private const uint ImmutableBufferFlags = 0x804;
-    internal const int Stream0Stride = 20;
-    internal const int Stream1Stride = 24;
+    // Reused from the archived prototype and pending recapture from a compatible native rigid model.
+    // The individual flag bits have not been identified.
+    private const uint BufferCreationFlags = 0x804;
+
     internal const int VertexCount = 3;
     internal const int IndexCount = 3;
 
-    private static readonly byte[] VertexDeclarationElements =
+    // Reused from the archived prototype and pending byte-for-byte recapture from a compatible native rigid model.
+    // Each record is the binary element accepted by the game's vertex-declaration creator.
+    // Format and attribute are game identifiers; their general enum names are not yet known.
+    private static readonly VertexElement[] VertexElements =
     [
-        0,
-        0,
-        0x13,
-        0,
-        0,
-        12,
-        0x3C,
-        1,
-        0,
-        16,
-        0x3C,
-        7,
-        1,
-        0,
-        0x1C,
-        2,
-        1,
-        8,
-        0x24,
-        15,
-        1,
-        12,
-        0x24,
-        3,
-        1,
-        16,
-        0x1C,
-        8,
+        new(0, 0, 0x13, 0), // Stream0Vertex.Position, 12 bytes
+        new(0, 12, 0x3C, 1), // Stream0Vertex.Attribute1, 4 bytes
+        new(0, 16, 0x3C, 7), // Stream0Vertex.Attribute7, 4 bytes
+        new(1, 0, 0x1C, 2), // Stream1Vertex.Attribute2, 8 bytes
+        new(1, 8, 0x24, 15), // Stream1Vertex.Attribute15, 4 bytes
+        new(1, 12, 0x24, 3), // Stream1Vertex.Attribute3, 4 bytes
+        new(1, 16, 0x1C, 8), // Stream1Vertex.Attribute8, 8 bytes
     ];
 
     private nint vertexBuffer;
@@ -59,7 +42,9 @@ internal sealed unsafe class NativeResources : IDisposable
     internal nint VertexBuffer => vertexBuffer;
     internal nint IndexBuffer => indexBuffer;
     internal nint VertexDeclaration => vertexDeclaration;
-    internal int Stream1Offset => VertexCount * Stream0Stride;
+    internal static int Stream0Stride => sizeof(Stream0Vertex);
+    internal static int Stream1Stride => sizeof(Stream1Vertex);
+    internal int Stream1Offset => VertexCount * sizeof(Stream0Vertex);
 
     internal NativeResources(ISigScanner sigScanner)
     {
@@ -93,8 +78,8 @@ internal sealed unsafe class NativeResources : IDisposable
         if (device == null)
             throw new InvalidOperationException("The native graphics device is not available.");
 
-        var stream0Bytes = VertexCount * Stream0Stride;
-        var vertexBytes = stream0Bytes + VertexCount * Stream1Stride;
+        var stream0Bytes = VertexCount * sizeof(Stream0Vertex);
+        var vertexBytes = stream0Bytes + VertexCount * sizeof(Stream1Vertex);
         var vertexData = stackalloc byte[vertexBytes];
         var stream0 = (Stream0Vertex*)vertexData;
         var stream1 = (Stream1Vertex*)(vertexData + stream0Bytes);
@@ -109,11 +94,11 @@ internal sealed unsafe class NativeResources : IDisposable
 
         try
         {
-            vertexBuffer = createVertexBuffer(device, vertexBytes, ImmutableBufferFlags, 0);
-            indexBuffer = createIndexBuffer(device, IndexCount * sizeof(ushort), 1, ImmutableBufferFlags, 0);
-            fixed (byte* declaration = VertexDeclarationElements)
+            vertexBuffer = createVertexBuffer(device, vertexBytes, BufferCreationFlags, 0);
+            indexBuffer = createIndexBuffer(device, IndexCount * sizeof(ushort), 1, BufferCreationFlags, 0);
+            fixed (VertexElement* elements = VertexElements)
             {
-                vertexDeclaration = createVertexDeclaration(device, declaration, (uint)(VertexDeclarationElements.Length / 4));
+                vertexDeclaration = createVertexDeclaration(device, (byte*)elements, (uint)VertexElements.Length);
             }
 
             if (
@@ -157,12 +142,32 @@ internal sealed unsafe class NativeResources : IDisposable
         release(value);
     }
 
+    private static ulong PackHalf4(float x, float y, float z, float w)
+    {
+        return BitConverter.HalfToUInt16Bits((Half)x)
+            | ((ulong)BitConverter.HalfToUInt16Bits((Half)y) << 16)
+            | ((ulong)BitConverter.HalfToUInt16Bits((Half)z) << 32)
+            | ((ulong)BitConverter.HalfToUInt16Bits((Half)w) << 48);
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private readonly struct VertexElement(byte stream, byte offset, byte format, byte attribute)
+    {
+        public readonly byte Stream = stream;
+        public readonly byte Offset = offset;
+        public readonly byte Format = format;
+        public readonly byte Attribute = attribute;
+    }
+
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private readonly struct Stream0Vertex(Vector3 position)
     {
         public readonly Vector3 Position = position;
+
+        // Fixed packed defaults required by attributes 1 and 7 in the archived prototype.
+        // Their formats and shader semantics still need to be confirmed by the native capture.
         public readonly uint Attribute1 = 0x000000FF;
-        public readonly uint Attribute7 = 0;
+        public readonly uint Attribute7 = 0x00000000;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -170,14 +175,13 @@ internal sealed unsafe class NativeResources : IDisposable
     {
         public Stream1Vertex(Vector2 textureCoordinate)
         {
-            Attribute2 = 0x00003C0000000000;
+            Attribute2 = PackHalf4(0, 0, 1, 0);
+
+            // Fixed packed values required by attributes 15 and 3.
+            // Their shared format 0x24 has not yet been identified.
             Attribute15 = 0x00800080;
-            Attribute3 = uint.MaxValue;
-            Attribute8 =
-                BitConverter.HalfToUInt16Bits((Half)textureCoordinate.X)
-                | ((ulong)BitConverter.HalfToUInt16Bits((Half)textureCoordinate.Y) << 16)
-                | (0xBC00UL << 32)
-                | (0x4000UL << 48);
+            Attribute3 = 0xFFFFFFFF;
+            Attribute8 = PackHalf4(textureCoordinate.X, textureCoordinate.Y, -1, 2);
         }
 
         public readonly ulong Attribute2;
