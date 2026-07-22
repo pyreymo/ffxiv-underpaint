@@ -82,6 +82,7 @@ internal sealed unsafe class NativeBackend : IDisposable
         try
         {
             resources.CreateConstants(material.ShaderPackage);
+            resources.LoadWhiteTexture();
             var view = GetMainViewMatrix();
             resources.WriteInitialWorld(view);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
@@ -90,27 +91,27 @@ internal sealed unsafe class NativeBackend : IDisposable
                 (byte*)context,
                 resources.InstanceConstant,
                 resources.ModelConstant,
-                resources.MaterialConstant
+                resources.MaterialConstant,
+                resources.WhiteTexture
             );
             log.Information(
                 "[Underpaint] Native constants and material helpers verified: OnRenderMaterial=0x{OnRenderMaterial:X}, "
                     + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
                     + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
-                    + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}.",
+                    + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
+                    + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
+                    + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
                 helperResult.OnRenderMaterial,
                 helperResult.Output,
                 helperResult.ShaderDescriptor,
                 helperResult.MaterialConstantId,
                 helperResult.InstanceConstantId,
                 helperResult.ModelConstantId,
-                worldConstantId
+                worldConstantId,
+                helperResult.NormalSamplerId,
+                helperResult.IndexSamplerId,
+                helperResult.TableSamplerId
             );
-#if DEBUG
-            log.Information(
-                "[Underpaint] Selected charactertransparency resources: {Resources}",
-                SelectedResourceProbe.Format(material.ShaderPackage, helperResult.ShaderDescriptor)
-            );
-#endif
         }
         catch (Exception exception)
         {

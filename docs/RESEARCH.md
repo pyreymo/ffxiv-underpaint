@@ -198,3 +198,26 @@ current 与 previous 完全相同。该数据完全由 Underpaint world 和当�
 2026-07-22 实机再次确认当前固定 donor 的完整映射：material constant ID 25、instance constant
 ID 34、model constant ID 35、world constant ID 5。四项均来自同一次 view 30、subview 11 的
 `e0907 + charactertransparency.shpk` 初始化，不再只是封存 prototype 的历史值。
+
+## 最终 shader descriptor 的资源输入
+
+2026-07-22 对当前 `e0907 + charactertransparency.shpk` 的解析结果做了一次只读、单次 Debug
+记录。probe 只读取最终 descriptor 中各 `PVShader` 的 resource entry，没有读取资源内容、修改
+graphics context 或调用 pass builder；取得结果后已从代码删除。
+
+解析出的 shader family 对应 pass 1、4、8、11。slot 小于 256 的 sampler entry 是纹理输入；
+`S256` 及以上的记录属于同一表中的 sampler-state entry，不能误认为额外纹理。包含自有
+instance/model 输入的 pass 4、8、11 均使用以下三项固定材质纹理：
+
+- CRC `0x0C5EC1F1`：normal，运行时 ID 5，material sampler class 2；
+- CRC `0x565F8FD8`：index，运行时 ID 6，material sampler class 2；
+- CRC `0x2005679F`：table，运行时 ID 62，sampler class 1。
+
+pass 4 还使用 ID 49 / CRC `0x800BE99B`；pass 8、11 继续增加灯光和 view 相关 constant 与纹理。
+这些 class 1 输入随 shader family 扩展，当前只把它们视为 system/scene 候选，正式名称和所有权
+必须在实际 pass-builder family 确定后再验证，不能用白纹理覆盖。
+
+当前先由 Underpaint 独立加载并持有 `chara/common/texture/white.tex`，同时验证上述三项 sampler
+CRC、ID 和 class 仍与固定 SHPK 一致。该资源在本步骤尚未安装；`WhiteTexture` 只描述其实际
+内容，不预先声称它对 normal、index 和 table 三种 shader 语义都是正确中性值。下一步应通过
+最小实际提交分别验证这些绑定，而不是把同一白纹理一次性覆盖所有未知 sampler。

@@ -23,6 +23,11 @@ internal sealed unsafe class MaterialHelper
     private const ushort ModelConstantRegisters = 1;
     private const uint InstanceConstantCrc = 0x20A30B34;
     private const ushort InstanceConstantRegisters = 11;
+    private const uint NormalSamplerCrc = 0x0C5EC1F1;
+    private const ushort MaterialSamplerClass = ShaderPackage.SamplerSlotMaterial;
+    private const uint IndexSamplerCrc = 0x565F8FD8;
+    private const uint TableSamplerCrc = 0x2005679F;
+    private const ushort TableSamplerClass = 1;
 
     private readonly MaterialLoader material;
     private readonly delegate* unmanaged<ShaderSelection*, ShaderPackage*, void> initializeShaderSelection;
@@ -60,7 +65,8 @@ internal sealed unsafe class MaterialHelper
         byte* context,
         ConstantBuffer* instanceConstant,
         ConstantBuffer* modelConstant,
-        ConstantBuffer* materialConstant
+        ConstantBuffer* materialConstant,
+        Texture* whiteTexture
     )
     {
         var targetMaterial = material.Material;
@@ -81,6 +87,12 @@ internal sealed unsafe class MaterialHelper
             throw new InvalidOperationException("The owned instance constant does not match the fixed shader package.");
         if (materialConstant == null || materialConstant->ByteSize != shaderPackage->MaterialConstantBufferSize)
             throw new InvalidOperationException("The owned material constant does not match the fixed shader package.");
+        if (whiteTexture == null)
+            throw new InvalidOperationException("The fixed white texture is not ready.");
+
+        var normalSampler = FindSampler(shaderPackage, NormalSamplerCrc, MaterialSamplerClass);
+        var indexSampler = FindSampler(shaderPackage, IndexSamplerCrc, MaterialSamplerClass);
+        var tableSampler = FindSampler(shaderPackage, TableSamplerCrc, TableSamplerClass);
 
         var model = stackalloc Model[1];
         var modelParameters = stackalloc ModelRenderer.OnRenderModelParams[1];
@@ -123,7 +135,10 @@ internal sealed unsafe class MaterialHelper
                     shaderDescriptor,
                     MaterialConstantId,
                     instanceConstantEntry.Id,
-                    modelConstantEntry.Id
+                    modelConstantEntry.Id,
+                    normalSampler.Id,
+                    indexSampler.Id,
+                    tableSampler.Id
                 );
             }
             finally
@@ -208,6 +223,17 @@ internal sealed unsafe class MaterialHelper
         throw new InvalidOperationException($"The fixed shader package has no constant CRC 0x{crc:X8}.");
     }
 
+    private static ShaderPackage.ConstantSamplerUnknown FindSampler(ShaderPackage* shaderPackage, uint crc, ushort samplerClass)
+    {
+        foreach (var sampler in shaderPackage->SamplersSpan)
+        {
+            if (sampler.CRC == crc && sampler.Slot == samplerClass)
+                return sampler;
+        }
+
+        throw new InvalidOperationException($"The fixed shader package has no sampler CRC 0x{crc:X8} in class {samplerClass}.");
+    }
+
     private static nint RequireSignature(ISigScanner sigScanner, string signature, string name)
     {
         if (!sigScanner.TryScanText(signature, out var address) || address == 0)
@@ -268,5 +294,8 @@ internal readonly record struct MaterialHelperResult(
     nint ShaderDescriptor,
     uint MaterialConstantId,
     uint InstanceConstantId,
-    uint ModelConstantId
+    uint ModelConstantId,
+    uint NormalSamplerId,
+    uint IndexSamplerId,
+    uint TableSamplerId
 );

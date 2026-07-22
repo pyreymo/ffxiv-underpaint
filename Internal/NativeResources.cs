@@ -2,6 +2,8 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
+using FFXIVClientStructs.FFXIV.Client.System.Resource;
+using FFXIVClientStructs.FFXIV.Client.System.Resource.Handle;
 
 namespace Underpaint.Internal;
 
@@ -45,6 +47,12 @@ internal sealed unsafe class NativeResources : IDisposable
     // Captured from a natural charactertransparency material constant buffer.
     private const int MaterialConstantBytes = 416;
 
+    private const string WhiteTexturePath = "chara/common/texture/white.tex";
+    private const uint TextureFileType = 0x00786574;
+
+    // Lumina.Misc.Crc32.Get(WhiteTexturePath).
+    private const uint WhiteTexturePathHash = 0x84815A1A;
+
     internal const int VertexCount = 3;
     internal const int IndexCount = 3;
 
@@ -69,6 +77,7 @@ internal sealed unsafe class NativeResources : IDisposable
     private nint instanceConstant;
     private nint modelConstant;
     private nint materialConstant;
+    private TextureResourceHandle* whiteTextureResource;
 
     internal nint VertexBuffer => vertexBuffer;
     internal nint IndexBuffer => indexBuffer;
@@ -77,6 +86,7 @@ internal sealed unsafe class NativeResources : IDisposable
     internal ConstantBuffer* InstanceConstant => (ConstantBuffer*)instanceConstant;
     internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
     internal ConstantBuffer* MaterialConstant => (ConstantBuffer*)materialConstant;
+    internal Texture* WhiteTexture => whiteTextureResource == null ? null : whiteTextureResource->Texture;
     internal static int Stream0Stride => sizeof(Stream0Vertex);
     internal static int Stream1Stride => sizeof(Stream1Vertex);
     internal int Stream1Offset => VertexCount * sizeof(Stream0Vertex);
@@ -160,6 +170,11 @@ internal sealed unsafe class NativeResources : IDisposable
 
     public void Dispose()
     {
+        var loadedWhiteTexture = whiteTextureResource;
+        whiteTextureResource = null;
+        if (loadedWhiteTexture != null)
+            loadedWhiteTexture->DecRef();
+
         Release(ref materialConstant);
         Release(ref modelConstant);
         Release(ref instanceConstant);
@@ -167,6 +182,32 @@ internal sealed unsafe class NativeResources : IDisposable
         Release(ref vertexDeclaration);
         Release(ref indexBuffer);
         Release(ref vertexBuffer);
+    }
+
+    internal void LoadWhiteTexture()
+    {
+        if (whiteTextureResource != null)
+            return;
+
+        var resourceManager = ResourceManager.Instance();
+        if (resourceManager == null)
+            throw new InvalidOperationException("The native resource manager is not available.");
+
+        var category = ResourceCategory.Chara;
+        var fileType = TextureFileType;
+        var pathHash = WhiteTexturePathHash;
+        var loaded = (TextureResourceHandle*)
+            resourceManager->GetResourceSync(&category, &fileType, &pathHash, WhiteTexturePath, null, null, 0);
+        if (loaded == null)
+            throw new InvalidOperationException("The fixed white texture could not be loaded.");
+
+        if (loaded->Texture == null)
+        {
+            loaded->DecRef();
+            throw new InvalidOperationException("The fixed white texture is not ready.");
+        }
+
+        whiteTextureResource = loaded;
     }
 
     internal void CreateConstants(ShaderPackage* shaderPackage)
