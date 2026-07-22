@@ -327,3 +327,21 @@ constant 页，而不是 donor、shader selection、system/scene constant 或 sa
 验证完成后删除 carrier/context 锁和 change-only 日志。生产路径保留每次提交重写四项自有
 constant；这也是自有 constant 的正确生命周期，不是诊断性容错。恢复正常的跨 context 每帧
 提交后再次采样 30 张，中心颜色全部为 `(232, 225, 228)`，没有缺帧或颜色切换。
+
+## 固定透明路径的 alpha 输入
+
+固定 `charactertransparency.shpk` 的 material element 运行时枚举中没有
+`g_Transparency`（CRC `0x53E8417B`）。现有 element 包含 `g_AlphaThreshold`、
+`g_ShadowAlphaThreshold`、`g_AlphaAperture` 和 `g_AlphaOffset`，但这些名称和默认值都不能证明它们是
+整体透明度；因此没有继续用 material constant 猜测 alpha。一次性 element 枚举代码在记录结论后删除。
+
+[Dawntrail Shader Reference Table](https://xivmodding.com/books/ff14-asset-reference-document/page/dawntrail-shader-reference-table)
+将 Character Transparency 的 opacity 输入标为 normal texture 蓝通道和 Vertex Color 1 alpha，并注明该
+shader 没有可供 TexTools/Penumbra 直接编辑的整体透明度 material constant。当前中性白纹理的蓝通道为
+`1.0`，所以每图元 alpha 应由 vertex color 提供。
+
+FFCS `VertexShader.Input` 的位序给出 `3 = Color0`；这与已捕获 declaration 的
+`stream 1 / offset 12 / format 0x24 / attribute 3` 对应。Penumbra 的模型导入实现将同类 normalized byte4
+颜色按 R、G、B、A 四个字节写入。因此原来的 `0xFFFFFFFF` 是全白且 alpha 为 `1.0`，固定测试值
+`(1, 1, 1, 0.5)` 编码为小端 `0x80FFFFFF`。这次只改变 Color0 的 alpha，normal texture 和其他输入保持
+不变，以便通过实机画面对比验证 shader 是否实际使用该字段。

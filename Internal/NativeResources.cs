@@ -48,6 +48,7 @@ internal sealed unsafe class NativeResources : IDisposable
     private const int MaterialConstantBytes = 416;
 
     private const float FixedTriangleViewDepth = -5f;
+    private const float FixedTriangleAlpha = 0.5f;
 
     private const string WhiteTexturePath = "chara/common/texture/white.tex";
 
@@ -67,12 +68,12 @@ internal sealed unsafe class NativeResources : IDisposable
     private static readonly VertexElement[] VertexElements =
     [
         new(0, 0, 0x13, 0), // Stream0Vertex.Position, 12 bytes
-        new(0, 12, 0x3C, 1), // Stream0Vertex.Attribute1, 4 bytes
-        new(0, 16, 0x3C, 7), // Stream0Vertex.Attribute7, 4 bytes
-        new(1, 0, 0x1C, 2), // Stream1Vertex.Attribute2, 8 bytes
-        new(1, 8, 0x24, 15), // Stream1Vertex.Attribute15, 4 bytes
-        new(1, 12, 0x24, 3), // Stream1Vertex.Attribute3, 4 bytes
-        new(1, 16, 0x1C, 8), // Stream1Vertex.Attribute8, 8 bytes
+        new(0, 12, 0x3C, 1), // Stream0Vertex.BlendWeight, 4 bytes
+        new(0, 16, 0x3C, 7), // Stream0Vertex.BlendIndices, 4 bytes
+        new(1, 0, 0x1C, 2), // Stream1Vertex.Normal, 8 bytes
+        new(1, 8, 0x24, 15), // Stream1Vertex.Binormal, 4 bytes
+        new(1, 12, 0x24, 3), // Stream1Vertex.Color0, 4 bytes
+        new(1, 16, 0x1C, 8), // Stream1Vertex.TexCoord0, 8 bytes
     ];
 
     private nint vertexBuffer;
@@ -343,6 +344,14 @@ internal sealed unsafe class NativeResources : IDisposable
             | ((ulong)BitConverter.HalfToUInt16Bits((Half)w) << 48);
     }
 
+    private static uint PackNormalizedByte4(float x, float y, float z, float w)
+    {
+        return (byte)MathF.Round(x * 255)
+            | ((uint)(byte)MathF.Round(y * 255) << 8)
+            | ((uint)(byte)MathF.Round(z * 255) << 16)
+            | ((uint)(byte)MathF.Round(w * 255) << 24);
+    }
+
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private readonly struct VertexElement(byte stream, byte offset, byte format, byte attribute)
     {
@@ -357,10 +366,8 @@ internal sealed unsafe class NativeResources : IDisposable
     {
         public readonly Vector3 Position = position;
 
-        // Fixed packed defaults required by attributes 1 and 7 in the archived prototype.
-        // The capture confirms their field locations, not these values or their shader semantics.
-        public readonly uint Attribute1 = 0x000000FF;
-        public readonly uint Attribute7 = 0x00000000;
+        public readonly uint BlendWeight = 0x000000FF;
+        public readonly uint BlendIndices = 0x00000000;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -368,18 +375,18 @@ internal sealed unsafe class NativeResources : IDisposable
     {
         public Stream1Vertex(Vector2 textureCoordinate)
         {
-            Attribute2 = PackHalf4(0, 0, 1, 0);
+            Normal = PackHalf4(0, 0, 1, 0);
 
-            // Fixed packed values required by attributes 15 and 3 in the archived prototype.
-            // The capture confirms their field locations and shared format 0x24, not these values or their semantics.
-            Attribute15 = 0x00800080;
-            Attribute3 = 0xFFFFFFFF;
-            Attribute8 = PackHalf4(textureCoordinate.X, textureCoordinate.Y, -1, 2);
+            // The captured declaration identifies the input as Binormal, but the official
+            // name and channel encoding of format 0x24 have not been identified.
+            Binormal = 0x00800080;
+            Color0 = PackNormalizedByte4(1, 1, 1, FixedTriangleAlpha);
+            TexCoord0 = PackHalf4(textureCoordinate.X, textureCoordinate.Y, -1, 2);
         }
 
-        public readonly ulong Attribute2;
-        public readonly uint Attribute15;
-        public readonly uint Attribute3;
-        public readonly ulong Attribute8;
+        public readonly ulong Normal;
+        public readonly uint Binormal;
+        public readonly uint Color0;
+        public readonly ulong TexCoord0;
     }
 }
