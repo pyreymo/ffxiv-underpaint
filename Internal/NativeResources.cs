@@ -47,6 +47,9 @@ internal sealed unsafe class NativeResources : IDisposable
     // Captured from a natural charactertransparency material constant buffer.
     private const int MaterialConstantBytes = 416;
 
+    // Lumina.Misc.Crc32.Get("g_DiffuseColor", 0xFFFFFFFF).
+    private const uint DiffuseColorMaterialElementCrc = 0x2C2A34DD;
+
     private const float FixedTriangleViewDepth = -5f;
     private const float FixedTriangleAlpha = 0.5f;
 
@@ -316,6 +319,19 @@ internal sealed unsafe class NativeResources : IDisposable
         if (data == null)
             throw new InvalidOperationException("The material constant buffer has no writable storage.");
         defaults.CopyTo(new Span<byte>(data, MaterialConstantBytes));
+
+        foreach (var element in shaderPackage->MaterialElementsSpan)
+        {
+            if (element.CRC != DiffuseColorMaterialElementCrc)
+                continue;
+            if (element.Size != sizeof(Vector3) || element.Offset + element.Size > MaterialConstantBytes)
+                throw new InvalidOperationException("The fixed shader package has an unexpected g_DiffuseColor layout.");
+
+            *(Vector3*)((byte*)data + element.Offset) = new Vector3(1, 0, 0);
+            return;
+        }
+
+        throw new InvalidOperationException("The fixed shader package has no g_DiffuseColor material element.");
     }
 
     private static nint RequireSignature(ISigScanner sigScanner, string signature, string name)
@@ -380,7 +396,7 @@ internal sealed unsafe class NativeResources : IDisposable
             // The captured declaration identifies the input as Binormal, but the official
             // name and channel encoding of format 0x24 have not been identified.
             Binormal = 0x00800080;
-            Color0 = PackNormalizedByte4(1, 0, 0, FixedTriangleAlpha);
+            Color0 = PackNormalizedByte4(1, 1, 1, FixedTriangleAlpha);
             TexCoord0 = PackHalf4(textureCoordinate.X, textureCoordinate.Y, -1, 2);
         }
 
