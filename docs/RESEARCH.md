@@ -43,3 +43,43 @@ world、color 和 alpha、model/instance constants、material constants、中性
 
 新实现必须在提交前明确验证 donor 的 shader package。封存的 prototype 加载了 material，但
 没有强制执行这一检查。
+
+## 两条 stream 顶点布局的原生捕获
+
+2026-07-22 在 `ModelRenderer.OnRenderMaterial` 中捕获到一个使用
+`charactertransparency.shpk` 的两条 stream draw。这个样本用于验证固定三角形的资源创建参数
+和 vertex declaration；不用于复制 shader selection、pass flags、constant buffer、纹理绑定或
+其他 callback 输出。
+
+最初用 `Model.BoneCount == 0` 寻找非蒙皮 draw 的假设不成立：703 次目标 SHPK 调用中没有一次
+满足该条件，而最终匹配的两条 stream draw 的 `BoneCount` 为 3。`BoneCount` 是 model 级信息，
+不能作为当前 draw 顶点布局的筛选条件。改为观察实际绑定后，15 次目标调用中有 1 次使用两条
+stream，另外 14 次使用三条 stream。
+
+捕获结果如下：
+
+- vertex buffer：flags 为 `0x804`，第四个创建参数为 `7`，创建后初始化一次；
+- index buffer：flags 为 `0x804`，第三个创建参数为 `1`，第四个创建参数为 `0`，创建后初始化
+  一次；后两个参数的正式含义尚未确认；
+- 两条 stream 共用一个 vertex buffer，通过不同 byte offset 绑定；
+- stream 0 stride 为 20，stream 1 stride 为 24；
+- vertex declaration 有七条四字节记录，与 Underpaint 当前声明逐字节一致：
+
+```text
+stream  offset  format  attribute
+0       0       0x13    0
+0       12      0x3C    1
+0       16      0x3C    7
+1       0       0x1C    2
+1       8       0x24    15
+1       12      0x24    3
+1       16      0x1C    8
+```
+
+因此，第一版可以把 `0x804`、两个 stride 和七条 declaration 记录视为已经从兼容的原生
+两条 stream `charactertransparency` 路径验证过的固定输入。各 flag bit、format 和 attribute 的
+通用官方语义仍然未知；这不影响固定路径的字节级一致性。
+
+本次捕获没有读取原生 vertex buffer 内容，所以 `Attribute1`、`Attribute2`、`Attribute3`、
+`Attribute7`、`Attribute8` 和 `Attribute15` 的默认 packed value 尚未由这个实验验证。它们仍需
+通过只改变 Position、UV 和疑似颜色输入的独立实机实验确认。

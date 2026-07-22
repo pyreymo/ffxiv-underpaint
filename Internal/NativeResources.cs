@@ -14,14 +14,24 @@ internal sealed unsafe class NativeResources : IDisposable
     private const string InitializeIndexBufferSignature = "40 53 48 83 EC 20 F7 41 40 00 08 00 00 48 8B D9";
     private const string CreateVertexDeclarationSignature = "48 8B 49 ?? E9 ?? ?? ?? ?? CC CC CC CC CC CC CC 40 53 55 57";
 
-    // Reused from the archived prototype and pending recapture from a compatible native rigid model.
+    // Captured from a native rigid character-material draw using the two-stream,
+    // non-skinned charactertransparency vertex path.
     // The individual flag bits have not been identified.
     private const uint BufferCreationFlags = 0x804;
+
+    // Raw third argument passed by the captured native index-buffer creation.
+    // Its exact engine meaning and official enum name have not been identified.
+    private const int IndexBufferThirdArgument = 1;
+
+    // Raw fourth arguments passed by the captured native buffer creations.
+    // Their exact engine meaning has not been identified.
+    private const byte VertexBufferFourthArgument = 7;
+    private const byte IndexBufferFourthArgument = 0;
 
     internal const int VertexCount = 3;
     internal const int IndexCount = 3;
 
-    // Reused from the archived prototype and pending byte-for-byte recapture from a compatible native rigid model.
+    // Captured byte-for-byte from the same native two-stream charactertransparency draw.
     // Each record is the binary element accepted by the game's vertex-declaration creator.
     // Format and attribute are game identifiers; their general enum names are not yet known.
     private static readonly VertexElement[] VertexElements =
@@ -94,8 +104,14 @@ internal sealed unsafe class NativeResources : IDisposable
 
         try
         {
-            vertexBuffer = createVertexBuffer(device, vertexBytes, BufferCreationFlags, 0);
-            indexBuffer = createIndexBuffer(device, IndexCount * sizeof(ushort), 1, BufferCreationFlags, 0);
+            vertexBuffer = createVertexBuffer(device, vertexBytes, BufferCreationFlags, VertexBufferFourthArgument);
+            indexBuffer = createIndexBuffer(
+                device,
+                IndexCount * sizeof(ushort),
+                IndexBufferThirdArgument,
+                BufferCreationFlags,
+                IndexBufferFourthArgument
+            );
             fixed (VertexElement* elements = VertexElements)
             {
                 vertexDeclaration = createVertexDeclaration(device, (byte*)elements, (uint)VertexElements.Length);
@@ -165,7 +181,7 @@ internal sealed unsafe class NativeResources : IDisposable
         public readonly Vector3 Position = position;
 
         // Fixed packed defaults required by attributes 1 and 7 in the archived prototype.
-        // Their formats and shader semantics still need to be confirmed by the native capture.
+        // The capture confirms their field locations, not these values or their shader semantics.
         public readonly uint Attribute1 = 0x000000FF;
         public readonly uint Attribute7 = 0x00000000;
     }
@@ -177,8 +193,8 @@ internal sealed unsafe class NativeResources : IDisposable
         {
             Attribute2 = PackHalf4(0, 0, 1, 0);
 
-            // Fixed packed values required by attributes 15 and 3.
-            // Their shared format 0x24 has not yet been identified.
+            // Fixed packed values required by attributes 15 and 3 in the archived prototype.
+            // The capture confirms their field locations and shared format 0x24, not these values or their semantics.
             Attribute15 = 0x00800080;
             Attribute3 = 0xFFFFFFFF;
             Attribute8 = PackHalf4(textureCoordinate.X, textureCoordinate.Y, -1, 2);
