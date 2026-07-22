@@ -17,6 +17,7 @@ internal sealed unsafe class NativeSubmissionProbe(IPluginLog log)
     private ProbeState last;
     private bool hasLast;
     private nint lockedCarrierModel;
+    private nint lockedContext;
 
     internal ProbeInput CaptureInput(byte* context, nint materialParameters)
     {
@@ -47,7 +48,21 @@ internal sealed unsafe class NativeSubmissionProbe(IPluginLog log)
             }
         }
 
-        return input.CarrierModel == carrier;
+        if (input.CarrierModel != carrier)
+            return false;
+
+        var context = Volatile.Read(ref lockedContext);
+        if (context == 0)
+        {
+            context = Interlocked.CompareExchange(ref lockedContext, input.Context, 0);
+            if (context == 0)
+            {
+                context = input.Context;
+                log.Information("[Underpaint] Color probe locked graphics context 0x{Context:X}.", context);
+            }
+        }
+
+        return input.Context == context;
     }
 
     internal void Observe(
