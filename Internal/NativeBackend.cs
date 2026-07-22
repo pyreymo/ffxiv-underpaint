@@ -17,7 +17,14 @@ internal sealed unsafe class NativeBackend : IDisposable
     [ThreadStatic]
     private static List<PushedCommand>? pushedCommandProbe;
 
+    [ThreadStatic]
+    private static bool countOwnedDraws;
+
+    [ThreadStatic]
+    private static int ownedDrawCount;
+
     private readonly Hook<BuildPassesDelegate> buildPassesHook;
+    private readonly Hook<DrawIndexedDelegate> drawIndexedHook;
     private readonly Hook<ProcessCommandsDelegate> processCommandsHook;
     private readonly Hook<PushBackCommandDelegate> pushBackCommandHook;
     private readonly MaterialHelper materialHelper;
@@ -53,6 +60,15 @@ internal sealed unsafe class NativeBackend : IDisposable
             (nint)ImmediateContext.MemberFunctionPointers.ProcessCommands,
             ProcessCommandsDetour
         );
+        var device = Device.Instance();
+        if (device == null || device->D3D11DeviceContext == null)
+            throw new InvalidOperationException("The D3D11 device context is not available.");
+
+        // ID3D11DeviceContext::DrawIndexed is vtable slot 12. IDA confirms that
+        // native render command type 6 dispatches through this slot.
+        var drawIndexedAddress = (*(nint**)device->D3D11DeviceContext)[12];
+        drawIndexedHook = gameInteropProvider.HookFromAddress<DrawIndexedDelegate>(drawIndexedAddress, DrawIndexedDetour);
+        drawIndexedHook.Enable();
         processCommandsHook.Enable();
         pushBackCommandHook.Enable();
         buildPassesHook.Enable();
@@ -63,6 +79,7 @@ internal sealed unsafe class NativeBackend : IDisposable
         buildPassesHook.Dispose();
         pushBackCommandHook.Dispose();
         processCommandsHook.Dispose();
+        drawIndexedHook.Dispose();
     }
 
     private nint BuildPassesDetour(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount)
@@ -295,17 +312,38 @@ internal sealed unsafe class NativeBackend : IDisposable
             if (matches > 0)
             {
                 Volatile.Write(ref pendingCommandAddresses, null);
+                ownedDrawCount = 0;
+                countOwnedDraws = true;
+                try
+                {
+                    processCommandsHook.Original(immediateContext, renderCommands, renderCommandCount);
+                }
+                finally
+                {
+                    countOwnedDraws = false;
+                }
+
                 log.Information(
-                    "[Underpaint] Owned command consumer probe: Matched={Matched}/{Expected}, "
-                        + "ProcessCommandCount={ProcessCommandCount}.",
+                    "[Underpaint] Owned command execution probe: Matched={Matched}/{Expected}, "
+                        + "ProcessCommandCount={ProcessCommandCount}, DrawIndexed(3,0,0)={DrawCount}.",
                     matches,
                     pending.Length,
-                    renderCommandCount
+                    renderCommandCount,
+                    ownedDrawCount
                 );
+                return;
             }
         }
 
         processCommandsHook.Original(immediateContext, renderCommands, renderCommandCount);
+    }
+
+    private void DrawIndexedDetour(nint context, uint indexCount, uint startIndex, int baseVertex)
+    {
+        if (countOwnedDraws && indexCount == 3 && startIndex == 0 && baseVertex == 0)
+            ownedDrawCount++;
+
+        drawIndexedHook.Original(context, indexCount, startIndex, baseVertex);
     }
 
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
@@ -317,6 +355,8 @@ internal sealed unsafe class NativeBackend : IDisposable
         RenderCommandBufferGroup* renderCommands,
         uint renderCommandCount
     );
+
+    private delegate void DrawIndexedDelegate(nint context, uint indexCount, uint startIndex, int baseVertex);
 
     private readonly record struct StreamBinding(nint Buffer, ulong OffsetAndStride);
 
