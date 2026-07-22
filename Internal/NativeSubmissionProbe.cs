@@ -16,6 +16,7 @@ internal sealed unsafe class NativeSubmissionProbe(IPluginLog log)
 
     private ProbeState last;
     private bool hasLast;
+    private nint lockedCarrierModel;
 
     internal ProbeInput CaptureInput(byte* context, nint materialParameters)
     {
@@ -30,6 +31,17 @@ internal sealed unsafe class NativeSubmissionProbe(IPluginLog log)
             GetConstant(context, SystemConstantId),
             GetConstant(context, SceneConstantId)
         );
+    }
+
+    internal bool AcceptCarrier(ProbeInput input)
+    {
+        if (lockedCarrierModel == 0)
+        {
+            lockedCarrierModel = input.CarrierModel;
+            log.Information("[Underpaint] Color probe locked carrier model 0x{CarrierModel:X}.", lockedCarrierModel);
+        }
+
+        return input.CarrierModel == lockedCarrierModel;
     }
 
     internal void Observe(

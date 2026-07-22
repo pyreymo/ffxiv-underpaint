@@ -87,6 +87,9 @@ internal sealed unsafe class NativeBackend : IDisposable
             return result;
 
         var frame = unchecked((int)framework->FrameCounter);
+        var probeInput = submissionProbe.CaptureInput((byte*)context, materialParameters);
+        if (!submissionProbe.AcceptCarrier(probeInput))
+            return result;
         if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
             return result;
 
@@ -116,7 +119,6 @@ internal sealed unsafe class NativeBackend : IDisposable
             );
             try
             {
-                var probeInput = submissionProbe.CaptureInput((byte*)context, materialParameters);
                 var contextState = new NativeContextState((byte*)context, worldConstantId, bindings);
                 MaterialHelperResult helperResult;
                 ShaderPair shaders;
