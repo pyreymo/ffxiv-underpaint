@@ -2,6 +2,7 @@ using System.Numerics;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
+using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.Interop;
 
 namespace Underpaint.Internal;
@@ -20,7 +21,9 @@ internal sealed unsafe class NativeBackend : IDisposable
     private readonly IPluginLog log;
     private int loggedFirstCall;
     private int loggedMainRendezvous;
-    private int nativeInitializationAttempted;
+    private int loggedFirstSubmission;
+    private int lastSubmittedFrame = -1;
+    private int submissionDisabled;
 
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
@@ -76,7 +79,15 @@ internal sealed unsafe class NativeBackend : IDisposable
             );
         }
 
-        if (Interlocked.CompareExchange(ref nativeInitializationAttempted, 1, 0) != 0)
+        if (Volatile.Read(ref submissionDisabled) != 0)
+            return result;
+
+        var framework = Framework.Instance();
+        if (framework == null)
+            return result;
+
+        var frame = unchecked((int)framework->FrameCounter);
+        if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
             return result;
 
         try
@@ -138,31 +149,35 @@ internal sealed unsafe class NativeBackend : IDisposable
                     contextState.Restore();
                 }
 
-                log.Information(
-                    "[Underpaint] Submitted one owned triangle through the native pass builder: "
-                        + "CommandArena=0x{CommandBaseBefore:X}+{CommandUsedBefore}->0x{CommandBaseAfter:X}+{CommandUsedAfter}, "
-                        + "ActivePass={ActivePass}, OnRenderMaterial=0x{OnRenderMaterial:X}, "
-                        + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
-                        + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
-                        + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
-                        + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
-                        + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
-                    commandBaseBefore,
-                    commandUsedBefore,
-                    commandBaseAfter,
-                    commandUsedAfter,
-                    shaders.Pass,
-                    helperResult.OnRenderMaterial,
-                    helperResult.Output,
-                    helperResult.ShaderDescriptor,
-                    bindings.MaterialConstantId,
-                    bindings.InstanceConstantId,
-                    bindings.ModelConstantId,
-                    worldConstantId,
-                    bindings.NormalSamplerId,
-                    bindings.IndexSamplerId,
-                    bindings.TableSamplerId
-                );
+                if (Interlocked.CompareExchange(ref loggedFirstSubmission, 1, 0) == 0)
+                {
+                    log.Information(
+                        "[Underpaint] Submitted one owned triangle every render frame: Frame={Frame}, "
+                            + "CommandArena=0x{CommandBaseBefore:X}+{CommandUsedBefore}->0x{CommandBaseAfter:X}+{CommandUsedAfter}, "
+                            + "ActivePass={ActivePass}, OnRenderMaterial=0x{OnRenderMaterial:X}, "
+                            + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
+                            + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
+                            + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
+                            + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
+                            + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
+                        frame,
+                        commandBaseBefore,
+                        commandUsedBefore,
+                        commandBaseAfter,
+                        commandUsedAfter,
+                        shaders.Pass,
+                        helperResult.OnRenderMaterial,
+                        helperResult.Output,
+                        helperResult.ShaderDescriptor,
+                        bindings.MaterialConstantId,
+                        bindings.InstanceConstantId,
+                        bindings.ModelConstantId,
+                        worldConstantId,
+                        bindings.NormalSamplerId,
+                        bindings.IndexSamplerId,
+                        bindings.TableSamplerId
+                    );
+                }
             }
             finally
             {
@@ -171,7 +186,8 @@ internal sealed unsafe class NativeBackend : IDisposable
         }
         catch (Exception exception)
         {
-            log.Error(exception, "[Underpaint] Native initialization failed; submission is disabled.");
+            Volatile.Write(ref submissionDisabled, 1);
+            log.Error(exception, "[Underpaint] Native submission failed; later frames are disabled.");
         }
 
         return result;

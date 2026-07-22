@@ -261,6 +261,12 @@ builder 的返回寄存器没有稳定语义，首次运行看到的 `0x300` 不
 这只能证明 builder 向当前原生 command arena 分配了 command data，不解释 command 数量，也不恢复
 D3D11 draw capture。
 
+实机首次得到同一 arena 从 `10288` 增长到 `13056`，即本次 builder 调用确实分配了 2768 bytes；
+该数值只作为一次当前版本的观测，不固化为 command 大小。至此一次性提交已证明会生成 command
+data。为了让固定三角形能够被人工观察，后端随后改为按 `Framework.FrameCounter` 每个 render frame
+最多提交一次；geometry、constants、material 和纹理仍只创建并持有一份。任一帧提交失败后停止后续
+提交，不重试；成功日志也只写第一次，避免逐帧日志。
+
 `OnRenderModelParams+0x10` 同时明确写入自有 176-byte instance constant。FFCS 当前仍将该字段
 标为 private unknown，但自然路径运行时映射和封存 builder 成功样本都将它对应到 ID 34 / CRC
 `0x20A30B34`；因此它是当前固定路径必须同时提供的调用参数，不只是一项 context binding。
