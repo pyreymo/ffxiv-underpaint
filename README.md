@@ -1,52 +1,30 @@
 # Underpaint
 
-Underpaint (`ffxiv-underpaint`) is a small Dalamud library for inserting plugin-owned world geometry into FFXIV's native opaque and semitransparent G-buffer passes.
+Underpaint is a lightweight world-space primitive rendering library for Dalamud plugins.
 
-It is independent from Pictomancy. A plugin may use both, but Underpaint does not initialize, call, or reference Pictomancy.
+The first implementation targets one fixed native semitransparent material path using
+`charactertransparency.shpk`. Underpaint owns its geometry, transforms, colors, constants,
+textures, and GPU resources while using the game's native material helpers and pass builder.
 
-## Minimal use
+## First-version scope
 
-```csharp
-private readonly UnderpaintRenderer underpaint = new(gameInteropProvider, pluginLog);
+- fixed native semitransparent material path;
+- per-primitive color and alpha;
+- current and previous transforms;
+- native main view and verified auxiliary views;
+- triangles, quads, discs, rings, sectors, and spheres;
+- reusable unit geometry for matching detail levels.
 
-using (var draw = underpaint.DrawOpaque())
-{
-    draw.AddSphere(center, radius, 0xFFFFFFFF);
-}
+`alpha = 1` means fully opaque output within the semitransparent path. It is not a true opaque
+material profile.
 
-using (var draw = underpaint.DrawSemitransparent(
-    lighting: new SemitransparentLighting(1f, 2f, 1f)))
-{
-    draw.AddFanFilled(center, 0f, 5f, -1f, 1f, 0x80FF40FF);
-}
-```
-
-Disposing a `GBufferDrawList` publishes an immutable snapshot. Each target is latest-wins and retains its last snapshot until replaced or explicitly cleared:
-
-```csharp
-underpaint.Clear(GBufferTarget.Opaque);
-underpaint.Clear(GBufferTarget.Semitransparent);
-```
-
-Dispose `UnderpaintRenderer` before the plugin unloads. Do not retain a draw list after disposal.
-
-## Projection diagnostics
-
-`UnderpaintRenderer.Diagnostics` provides runtime-only isolation controls. `OpaqueJitterPixels` applies a signed pixel offset in clip space, while `ForceOpaqueAlpha` removes Bayer coverage from opaque tests. `RequestOpaqueDrawSnapshot()` captures the next native draw while the opaque G-buffer is bound; consume the result with `TryTakeOpaqueDrawSnapshot()`.
-
-The one-shot snapshot records native viewport, scissor, rasterizer/depth state, render-target formats, VS constant-buffer hashes, and locates an aligned FFXIV `CameraParameter` block inside larger VS constant buffers when present. Constant-buffer readback intentionally stalls the GPU and must not be requested every frame.
-
-## Current shape support
-
-- filled triangle and quad;
-- horizontal fan/ring sector;
-- smooth mesh sphere;
-- textured world quad from a native D3D11 shader-resource-view pointer.
-
-The textured overload retains the COM resource until the published snapshot is replaced.
+Underpaint does not load arbitrary models, layouts, shaders, materials, or textures. It does not
+create game objects or provide a general model renderer.
 
 ## Status
 
-Underpaint currently owns the extracted, functional prototype. It writes/tests native scene depth and participates in native lighting, but it is not yet visually equivalent to native game geometry in every pass. In particular, motion vectors/TAA identity, shadow passes, and correct ordering against hair, beards, water, and other transparent surfaces remain open work. See [ARCHITECTURE.md](ARCHITECTURE.md) and [RENDER_PROTOCOL.md](RENDER_PROTOCOL.md).
+The previous hand-written G-buffer and transparency prototypes have been archived in Git history.
+The native implementation is being rebuilt in small, reviewable steps. No rendering API is
+currently available on this branch.
 
-The repository also owns an internal native-geometry submission foundation proven to let the game's material pass builder generate its normal multi-pass and auxiliary-view commands from plugin-owned vertex/index buffers. It is not public yet: the remaining work is to replace the temporary EventHorizon material-call validation seam with a donor-independent native material and per-instance input boundary.
+See [docs/RESEARCH.md](docs/RESEARCH.md) for the verified findings retained from the prototypes.

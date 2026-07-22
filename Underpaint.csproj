@@ -2,7 +2,7 @@
   <PropertyGroup>
     <Authors>pyreymo</Authors>
     <Version>0.1.0</Version>
-    <Description>FFXIV native G-buffer drawing for Dalamud plugins</Description>
+    <Description>Lightweight world-space primitive rendering for Dalamud plugins</Description>
     <PackageProjectUrl>https://github.com/pyreymo/ffxiv-underpaint</PackageProjectUrl>
     <RepositoryUrl>https://github.com/pyreymo/ffxiv-underpaint.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
@@ -15,10 +15,4 @@
     <Use_DalamudPackager>false</Use_DalamudPackager>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
-
-  <ItemGroup>
-    <PackageReference Include="SharpDX.Mathematics" Version="4.2.0" />
-    <PackageReference Include="SharpDX.D3DCompiler" Version="4.2.0" />
-    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
-  </ItemGroup>
 </Project>
