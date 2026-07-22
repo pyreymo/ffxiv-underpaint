@@ -48,7 +48,10 @@ internal sealed unsafe class NativeResources : IDisposable
     private const int MaterialConstantBytes = 416;
 
     private const string WhiteTexturePath = "chara/common/texture/white.tex";
-    private const uint TextureFileType = 0x00786574;
+
+    // ResourceType.Tex in the game's resource-loading ABI.
+    // A transposed value returned a different handle type and crashed when +0x128 was used as Texture*.
+    private const uint TextureFileType = 0x00746578;
 
     // Lumina.Misc.Crc32.Get(WhiteTexturePath).
     private const uint WhiteTexturePathHash = 0x84815A1A;
@@ -86,7 +89,6 @@ internal sealed unsafe class NativeResources : IDisposable
     internal ConstantBuffer* InstanceConstant => (ConstantBuffer*)instanceConstant;
     internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
     internal ConstantBuffer* MaterialConstant => (ConstantBuffer*)materialConstant;
-    internal TextureResourceHandle* WhiteTextureResource => whiteTextureResource;
     internal Texture* WhiteTexture => whiteTextureResource == null ? null : whiteTextureResource->Texture;
     internal static int Stream0Stride => sizeof(Stream0Vertex);
     internal static int Stream1Stride => sizeof(Stream1Vertex);

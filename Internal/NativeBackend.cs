@@ -1,9 +1,7 @@
 using System.Numerics;
-using System.Text;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
-using FFXIVClientStructs.FFXIV.Client.System.Resource.Handle;
 using FFXIVClientStructs.Interop;
 
 namespace Underpaint.Internal;
@@ -118,7 +116,6 @@ internal sealed unsafe class NativeBackend : IDisposable
                     shaders = MaterialHelper.ResolveActiveShaders((byte*)context, helperResult.ShaderDescriptor);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
-                    LogTextureEvidence();
                     submissionResult = buildPassesHook.Original(
                         modelRenderer,
                         (nint)ownedMaterialParameters,
@@ -165,48 +162,6 @@ internal sealed unsafe class NativeBackend : IDisposable
         }
 
         return result;
-    }
-
-    private void LogTextureEvidence()
-    {
-        var evidence = new StringBuilder("[Underpaint] Texture evidence immediately before native builder. ");
-        AppendTextureHandle(evidence, "White", resources.WhiteTextureResource);
-
-        var donor = material.Material;
-        if (donor == null)
-        {
-            evidence.Append(" DonorMaterial=null.");
-        }
-        else
-        {
-            evidence.Append($" DonorTextureCount={donor->TextureCount}.");
-            for (var index = 0; index < donor->TextureCount; index++)
-            {
-                var entry = donor->Textures[index];
-                evidence.Append($" Donor[{index}]=Id:{entry.Id}/Flags:0x{entry.SamplerFlags:X8};");
-                AppendTextureHandle(evidence, $"Donor[{index}]Handle", entry.Texture);
-            }
-        }
-
-        log.Warning(evidence.ToString());
-    }
-
-    private static void AppendTextureHandle(StringBuilder evidence, string name, TextureResourceHandle* handle)
-    {
-        if (handle == null)
-        {
-            evidence.Append($" {name}=null.");
-            return;
-        }
-
-        var bytes = (byte*)handle;
-        evidence.Append(
-            $" {name}=Handle:0x{(nint)handle:X}/LoadState:{handle->LoadState}/RefCount:{handle->RefCount}"
-                + $"/+110:0x{*(nint*)(bytes + 0x110):X}/+118:0x{*(nint*)(bytes + 0x118):X}"
-                + $"/+120:0x{*(nint*)(bytes + 0x120):X}/+128:0x{*(nint*)(bytes + 0x128):X}"
-                + $"/+130:0x{*(nint*)(bytes + 0x130):X}/+138:0x{*(nint*)(bytes + 0x138):X}"
-                + $"/+140:0x{*(nint*)(bytes + 0x140):X}/+148:0x{*(nint*)(bytes + 0x148):X}."
-        );
     }
 
     private static Matrix4x4 GetMainViewMatrix()

@@ -222,6 +222,13 @@ CRC、ID 和 class 仍与固定 SHPK 一致。该资源在本步骤尚未安装�
 内容，不预先声称它对 normal、index 和 table 三种 shader 语义都是正确中性值。下一步应通过
 最小实际提交分别验证这些绑定，而不是把同一白纹理一次性覆盖所有未知 sampler。
 
+首次实际提交在 sampler ID 5 读取纹理对象时崩溃。崩溃前对照固定白纹理 handle 与 donor 的四个
+自然纹理 handle 后确认：自然 `TextureResourceHandle` 的 `Texture*` 均位于 FFCS 声明的 `+0x128`，
+而白纹理对象的同一区域是连续的打包数值，不是指针。原因不是结构偏移，而是加载时把 TEX resource
+type 误写成了 `0x00786574`；游戏使用的 `tex` 值是 `0x00746578`。错误 type 返回了另一种已加载
+handle，强制转换和非空检查因此没有发现类型错误。修正后继续使用 `TextureResourceHandle+0x128`
+的 `Kernel::Texture*`，临时 handle 内存 dump 已删除。
+
 在调用 pass builder 前，context 状态恢复被拆成单独验证步骤。geometry 字段 `0x888/0x890`、
 四条 stream binding 起点 `0x8C0`、constant 表起点 `0x940` 和 sampler 表起点 `0x1140` 均来自
 封存 prototype 中已经实际生成原生 command 的 context 布局；FFCS 当前没有公开这些字段。
