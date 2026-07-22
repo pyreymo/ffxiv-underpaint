@@ -105,6 +105,12 @@ internal sealed unsafe class NativeBackend : IDisposable
                 helperResult.ModelConstantId,
                 worldConstantId
             );
+#if DEBUG
+            log.Information(
+                "[Underpaint] Selected charactertransparency resources: {Resources}",
+                SelectedResourceProbe.Format(material.ShaderPackage, helperResult.ShaderDescriptor)
+            );
+#endif
         }
         catch (Exception exception)
         {

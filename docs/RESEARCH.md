@@ -194,3 +194,7 @@ payload；第四列的四个存储槽可能未初始化。托管乘法前必须�
 的初始 world 为单位矩阵，128-byte world constant 写入转置后的 `world * view` 两次，使首帧
 current 与 previous 完全相同。该数据完全由 Underpaint world 和当前公共 camera/view 状态构造，
 不读取现场模型的 world constant。
+
+2026-07-22 实机再次确认当前固定 donor 的完整映射：material constant ID 25、instance constant
+ID 34、model constant ID 35、world constant ID 5。四项均来自同一次 view 30、subview 11 的
+`e0907 + charactertransparency.shpk` 初始化，不再只是封存 prototype 的历史值。
