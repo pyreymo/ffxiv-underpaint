@@ -86,6 +86,7 @@ internal sealed unsafe class NativeResources : IDisposable
     internal ConstantBuffer* InstanceConstant => (ConstantBuffer*)instanceConstant;
     internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
     internal ConstantBuffer* MaterialConstant => (ConstantBuffer*)materialConstant;
+    internal TextureResourceHandle* WhiteTextureResource => whiteTextureResource;
     internal Texture* WhiteTexture => whiteTextureResource == null ? null : whiteTextureResource->Texture;
     internal static int Stream0Stride => sizeof(Stream0Vertex);
     internal static int Stream1Stride => sizeof(Stream1Vertex);
