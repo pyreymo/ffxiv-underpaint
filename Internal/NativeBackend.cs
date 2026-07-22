@@ -38,6 +38,9 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
     private nint[]? pendingCommandAddresses;
+    private nint pipelineStatisticsQuery;
+    private bool pipelineStatisticsPending;
+    private bool pipelineStatisticsSubmitted;
 
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
@@ -66,8 +69,10 @@ internal sealed unsafe class NativeBackend : IDisposable
 
         // ID3D11DeviceContext::DrawIndexed is vtable slot 12. IDA confirms that
         // native render command type 6 dispatches through this slot.
-        var drawIndexedAddress = (*(nint**)device->D3D11DeviceContext)[12];
+        var d3dContext = (nint)device->D3D11DeviceContext;
+        var drawIndexedAddress = (*(nint**)d3dContext)[12];
         drawIndexedHook = gameInteropProvider.HookFromAddress<DrawIndexedDelegate>(drawIndexedAddress, DrawIndexedDetour);
+        pipelineStatisticsQuery = CreatePipelineStatisticsQuery(d3dContext);
         drawIndexedHook.Enable();
         processCommandsHook.Enable();
         pushBackCommandHook.Enable();
@@ -80,6 +85,7 @@ internal sealed unsafe class NativeBackend : IDisposable
         pushBackCommandHook.Dispose();
         processCommandsHook.Dispose();
         drawIndexedHook.Dispose();
+        ReleaseComObject(ref pipelineStatisticsQuery);
     }
 
     private nint BuildPassesDetour(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount)
@@ -340,10 +346,87 @@ internal sealed unsafe class NativeBackend : IDisposable
 
     private void DrawIndexedDetour(nint context, uint indexCount, uint startIndex, int baseVertex)
     {
+        TryReadPipelineStatistics(context);
+
         if (countOwnedDraws && indexCount == 3 && startIndex == NativeResources.IndexStart && baseVertex == 0)
+        {
             ownedDrawCount++;
 
+            if (!pipelineStatisticsSubmitted)
+            {
+                pipelineStatisticsSubmitted = true;
+                var contextVTable = *(nint**)context;
+                ((delegate* unmanaged<nint, nint, void>)contextVTable[27])(context, pipelineStatisticsQuery);
+                drawIndexedHook.Original(context, indexCount, startIndex, baseVertex);
+                ((delegate* unmanaged<nint, nint, void>)contextVTable[28])(context, pipelineStatisticsQuery);
+                pipelineStatisticsPending = true;
+                return;
+            }
+        }
+
         drawIndexedHook.Original(context, indexCount, startIndex, baseVertex);
+    }
+
+    private void TryReadPipelineStatistics(nint context)
+    {
+        if (!pipelineStatisticsPending)
+            return;
+
+        PipelineStatistics statistics;
+        var contextVTable = *(nint**)context;
+        var result = ((delegate* unmanaged<nint, nint, PipelineStatistics*, uint, uint, int>)contextVTable[29])(
+            context,
+            pipelineStatisticsQuery,
+            &statistics,
+            (uint)sizeof(PipelineStatistics),
+            1
+        );
+        if (result != 0)
+            return;
+
+        pipelineStatisticsPending = false;
+        log.Information(
+            "[Underpaint] Owned draw pipeline statistics: IAVertices={IAVertices}, IAPrimitives={IAPrimitives}, "
+                + "VS={VS}, ClipperInvocations={ClipperInvocations}, ClipperPrimitives={ClipperPrimitives}, PS={PS}.",
+            statistics.IAVertices,
+            statistics.IAPrimitives,
+            statistics.VSInvocations,
+            statistics.ClipperInvocations,
+            statistics.ClipperPrimitives,
+            statistics.PSInvocations
+        );
+    }
+
+    private static nint CreatePipelineStatisticsQuery(nint context)
+    {
+        var contextVTable = *(nint**)context;
+        nint device = 0;
+        ((delegate* unmanaged<nint, nint*, void>)contextVTable[3])(context, &device);
+        if (device == 0)
+            throw new InvalidOperationException("ID3D11DeviceContext::GetDevice returned null.");
+
+        try
+        {
+            var description = new QueryDescription(4, 0);
+            nint query = 0;
+            var result = ((delegate* unmanaged<nint, QueryDescription*, nint*, int>)(*(nint**)device)[24])(device, &description, &query);
+            if (result < 0 || query == 0)
+                throw new InvalidOperationException($"ID3D11Device::CreateQuery failed with HRESULT 0x{result:X8}.");
+
+            return query;
+        }
+        finally
+        {
+            ((delegate* unmanaged<nint, uint>)(*(nint**)device)[2])(device);
+        }
+    }
+
+    private static void ReleaseComObject(ref nint value)
+    {
+        var current = value;
+        value = 0;
+        if (current != 0)
+            ((delegate* unmanaged<nint, uint>)(*(nint**)current)[2])(current);
     }
 
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
@@ -359,6 +442,23 @@ internal sealed unsafe class NativeBackend : IDisposable
     private delegate void DrawIndexedDelegate(nint context, uint indexCount, uint startIndex, int baseVertex);
 
     private readonly record struct StreamBinding(nint Buffer, ulong OffsetAndStride);
+
+    private readonly record struct QueryDescription(uint Query, uint MiscFlags);
+
+    private struct PipelineStatistics
+    {
+        internal ulong IAVertices;
+        internal ulong IAPrimitives;
+        internal ulong VSInvocations;
+        internal ulong GSInvocations;
+        internal ulong GSPrimitives;
+        internal ulong ClipperInvocations;
+        internal ulong ClipperPrimitives;
+        internal ulong PSInvocations;
+        internal ulong HSInvocations;
+        internal ulong DSInvocations;
+        internal ulong CSInvocations;
+    }
 
     private readonly record struct PushedCommand(
         nint Address,
