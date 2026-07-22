@@ -46,6 +46,7 @@ internal sealed unsafe class NativeResources : IDisposable
 
     // Captured from a natural charactertransparency material constant buffer.
     private const int MaterialConstantBytes = 416;
+    private const float FixedTriangleViewDepth = 5f;
 
     private const string WhiteTexturePath = "chara/common/texture/white.tex";
 
@@ -242,13 +243,13 @@ internal sealed unsafe class NativeResources : IDisposable
         }
     }
 
-    internal void WriteInitialWorld(Matrix4x4 view)
+    internal void WriteFixedViewSpaceWorld()
     {
         var data = WorldConstant->LoadSourcePointer(0, WorldConstantBytes);
         if (data == null)
             throw new InvalidOperationException("The world constant buffer has no writable storage.");
 
-        var worldView = Matrix4x4.Transpose(Matrix4x4.Identity * view);
+        var worldView = Matrix4x4.Transpose(Matrix4x4.CreateTranslation(0, 0, FixedTriangleViewDepth));
         *(Matrix4x4*)data = worldView;
         *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = worldView;
     }

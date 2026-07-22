@@ -1,4 +1,3 @@
-using System.Numerics;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
@@ -12,7 +11,6 @@ internal sealed unsafe class NativeBackend : IDisposable
     private const string BuildPassesSignature = "44 89 4C 24 ?? 44 89 44 24 ?? 53 56 57 41 54 41 55";
     private const int ExpectedMainView = 30;
     private const int ExpectedMainSubView = 11;
-    private const int MainTransformSubView = 12;
 
     private readonly Hook<BuildPassesDelegate> buildPassesHook;
     private readonly MaterialHelper materialHelper;
@@ -94,8 +92,7 @@ internal sealed unsafe class NativeBackend : IDisposable
         {
             resources.CreateConstants(material.ShaderPackage);
             resources.LoadWhiteTexture();
-            var view = GetMainViewMatrix();
-            resources.WriteInitialWorld(view);
+            resources.WriteFixedViewSpaceWorld();
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
                 resources.InstanceConstant,
@@ -191,21 +188,6 @@ internal sealed unsafe class NativeBackend : IDisposable
         }
 
         return result;
-    }
-
-    private static Matrix4x4 GetMainViewMatrix()
-    {
-        var manager = Manager.Instance();
-        var camera = manager == null ? null : manager->Views[ExpectedMainView].SubViews[MainTransformSubView].Camera;
-        if (camera == null)
-            throw new InvalidOperationException("The native main-view camera is not available.");
-
-        var view = *(Matrix4x4*)&camera->ViewMatrix;
-        view.M14 = 0;
-        view.M24 = 0;
-        view.M34 = 0;
-        view.M44 = 1;
-        return view;
     }
 
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);

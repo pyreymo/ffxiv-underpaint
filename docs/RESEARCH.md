@@ -267,6 +267,12 @@ data。为了让固定三角形能够被人工观察，后端随后改为按 `Fr
 最多提交一次；geometry、constants、material 和纹理仍只创建并持有一份。任一帧提交失败后停止后续
 提交，不重试；成功日志也只写第一次，避免逐帧日志。
 
+连续提交后没有在画面中看到三角形，原因首先是测试 world 为单位矩阵：它把几何留在地图世界
+原点，无法用于人工可见性验证。封存实验已经实机验证固定 view-space `Z +5` 能让同一类三索引
+几何位于相机前方。当前固定三角形因此直接使用 `Translation(0, 0, +5)` 作为 world-view 输入，
+current 与 previous 写入同一值。这个值只属于最小闭环测试；它没有进入公开 transform API，也不
+替代后续正式的 `world * view` 更新。
+
 `OnRenderModelParams+0x10` 同时明确写入自有 176-byte instance constant。FFCS 当前仍将该字段
 标为 private unknown，但自然路径运行时映射和封存 builder 成功样本都将它对应到 ID 34 / CRC
 `0x20A30B34`；因此它是当前固定路径必须同时提供的调用参数，不只是一项 context binding。
