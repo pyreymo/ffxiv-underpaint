@@ -85,7 +85,7 @@ internal unsafe ref struct NativeContextState
         SetConstant(materialConstantId, (nint)resources.MaterialConstant);
         SetConstant(instanceConstantId, (nint)resources.InstanceConstant);
         SetConstant(modelConstantId, (nint)resources.ModelConstant);
-        SetSampler(normalSamplerId, resources.NeutralNormalTexture);
+        SetSampler(normalSamplerId, resources.WhiteTexture);
         SetSampler(indexSamplerId, resources.WhiteTexture);
         SetSampler(tableSamplerId, resources.WhiteTexture);
     }

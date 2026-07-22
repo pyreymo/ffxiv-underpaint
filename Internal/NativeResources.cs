@@ -49,7 +49,6 @@ internal sealed unsafe class NativeResources : IDisposable
     private const float FixedTriangleViewDepth = -5f;
 
     private const string WhiteTexturePath = "chara/common/texture/white.tex";
-    private const string NeutralNormalTexturePath = "chara/common/texture/null_normal.tex";
 
     // ResourceType.Tex in the game's resource-loading ABI.
     // A transposed value returned a different handle type and crashed when +0x128 was used as Texture*.
@@ -57,10 +56,6 @@ internal sealed unsafe class NativeResources : IDisposable
 
     // Lumina.Misc.Crc32.Get(WhiteTexturePath).
     private const uint WhiteTexturePathHash = 0x84815A1A;
-
-    // Verified by Penumbra's reserved game-resource list. The texture is a
-    // solid #7E7FFF square with full alpha, intended as the default normal map.
-    private const uint NeutralNormalTexturePathHash = 0xD5CFA221;
 
     internal const int VertexCount = 3;
     internal const int IndexCount = 3;
@@ -87,7 +82,6 @@ internal sealed unsafe class NativeResources : IDisposable
     private nint modelConstant;
     private nint materialConstant;
     private TextureResourceHandle* whiteTextureResource;
-    private TextureResourceHandle* neutralNormalTextureResource;
 
     internal nint VertexBuffer => vertexBuffer;
     internal nint IndexBuffer => indexBuffer;
@@ -97,7 +91,6 @@ internal sealed unsafe class NativeResources : IDisposable
     internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
     internal ConstantBuffer* MaterialConstant => (ConstantBuffer*)materialConstant;
     internal Texture* WhiteTexture => whiteTextureResource == null ? null : whiteTextureResource->Texture;
-    internal Texture* NeutralNormalTexture => neutralNormalTextureResource == null ? null : neutralNormalTextureResource->Texture;
     internal static int Stream0Stride => sizeof(Stream0Vertex);
     internal static int Stream1Stride => sizeof(Stream1Vertex);
     internal int Stream1Offset => VertexCount * sizeof(Stream0Vertex);
@@ -181,11 +174,6 @@ internal sealed unsafe class NativeResources : IDisposable
 
     public void Dispose()
     {
-        var loadedNeutralNormalTexture = neutralNormalTextureResource;
-        neutralNormalTextureResource = null;
-        if (loadedNeutralNormalTexture != null)
-            loadedNeutralNormalTexture->DecRef();
-
         var loadedWhiteTexture = whiteTextureResource;
         whiteTextureResource = null;
         if (loadedWhiteTexture != null)
@@ -200,33 +188,30 @@ internal sealed unsafe class NativeResources : IDisposable
         Release(ref vertexBuffer);
     }
 
-    internal void LoadNeutralTextures()
+    internal void LoadWhiteTexture()
     {
-        if (whiteTextureResource == null)
-            whiteTextureResource = LoadTexture(WhiteTexturePath, WhiteTexturePathHash, "white");
-        if (neutralNormalTextureResource == null)
-            neutralNormalTextureResource = LoadTexture(NeutralNormalTexturePath, NeutralNormalTexturePathHash, "neutral normal");
-    }
+        if (whiteTextureResource != null)
+            return;
 
-    private static TextureResourceHandle* LoadTexture(string path, uint pathHash, string name)
-    {
         var resourceManager = ResourceManager.Instance();
         if (resourceManager == null)
             throw new InvalidOperationException("The native resource manager is not available.");
 
         var category = ResourceCategory.Chara;
         var fileType = TextureFileType;
-        var loaded = (TextureResourceHandle*)resourceManager->GetResourceSync(&category, &fileType, &pathHash, path, null, null, 0);
+        var pathHash = WhiteTexturePathHash;
+        var loaded = (TextureResourceHandle*)
+            resourceManager->GetResourceSync(&category, &fileType, &pathHash, WhiteTexturePath, null, null, 0);
         if (loaded == null)
-            throw new InvalidOperationException($"The fixed {name} texture could not be loaded.");
+            throw new InvalidOperationException("The fixed white texture could not be loaded.");
 
         if (loaded->Texture == null)
         {
             loaded->DecRef();
-            throw new InvalidOperationException($"The fixed {name} texture is not ready.");
+            throw new InvalidOperationException("The fixed white texture is not ready.");
         }
 
-        return loaded;
+        whiteTextureResource = loaded;
     }
 
     internal void CreateConstants(ShaderPackage* shaderPackage)
