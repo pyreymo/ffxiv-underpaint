@@ -18,7 +18,7 @@ public sealed class Renderer : IDisposable
             material = new MaterialLoader();
             try
             {
-                backend = new NativeBackend(gameInteropProvider, log);
+                backend = new NativeBackend(gameInteropProvider, sigScanner, material, log);
             }
             catch
             {

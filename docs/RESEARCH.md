@@ -88,3 +88,18 @@ stream  offset  format  attribute
 本次捕获没有读取原生 vertex buffer 内容，所以 `Attribute1`、`Attribute2`、`Attribute3`、
 `Attribute7`、`Attribute8` 和 `Attribute15` 的默认 packed value 尚未由这个实验验证。它们仍需
 通过只改变 Position、UV 和疑似颜色输入的独立实机实验确认。
+
+## Material helper 状态差分
+
+在游戏自然执行 `charactertransparency` 路径时，分别比较 `OnRenderMaterial` 和
+`ApplyMaterial` 调用前后的当前 graphics context、调用参数和 shader selection：
+
+- `OnRenderMaterial` 只改变 sampler 62，并写入 material 参数的 `0x40-0x41`；
+- `ApplyMaterial` 只改变 constant 25、sampler 6 和 shader selection 的 `0x18-0x1C`；
+- 两个 helper 都没有改变被观察的 shader、geometry、stream 或 rasterizer context 字段；
+- 其他 constant 和目标 SHPK 声明的其他 sampler 均未改变。
+
+因此固定路径调用两个 helper 时，只保存并恢复 constant 25、sampler 6 和 sampler 62。调用参数
+和 shader selection 使用 Underpaint 自己的临时内存，其输出会继续用于 selection 解析，不属于
+需要恢复的外部 context 状态。该结论只适用于当前固定 donor 和 `charactertransparency.shpk`，
+不能推广为通用 material helper 契约。
