@@ -1,5 +1,6 @@
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.Interop;
@@ -17,6 +18,7 @@ internal sealed unsafe class NativeBackend : IDisposable
     private static List<PushedCommand>? pushedCommandProbe;
 
     private readonly Hook<BuildPassesDelegate> buildPassesHook;
+    private readonly Hook<ProcessCommandsDelegate> processCommandsHook;
     private readonly Hook<PushBackCommandDelegate> pushBackCommandHook;
     private readonly MaterialHelper materialHelper;
     private readonly MaterialLoader material;
@@ -28,6 +30,7 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int remainingPushedCommandProbes = 1;
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
+    private nint[]? pendingCommandAddresses;
 
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
@@ -46,6 +49,11 @@ internal sealed unsafe class NativeBackend : IDisposable
             PushBackCommandSignature,
             PushBackCommandDetour
         );
+        processCommandsHook = gameInteropProvider.HookFromAddress<ProcessCommandsDelegate>(
+            (nint)ImmediateContext.MemberFunctionPointers.ProcessCommands,
+            ProcessCommandsDetour
+        );
+        processCommandsHook.Enable();
         pushBackCommandHook.Enable();
         buildPassesHook.Enable();
     }
@@ -54,6 +62,7 @@ internal sealed unsafe class NativeBackend : IDisposable
     {
         buildPassesHook.Dispose();
         pushBackCommandHook.Dispose();
+        processCommandsHook.Dispose();
     }
 
     private nint BuildPassesDetour(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount)
@@ -174,6 +183,7 @@ internal sealed unsafe class NativeBackend : IDisposable
 
                 if (pushedCommands is { } commands)
                 {
+                    Volatile.Write(ref pendingCommandAddresses, commands.Select(command => command.Address).ToArray());
                     log.Information(
                         "[Underpaint] Owned PushBackCommand probe: Commands={CommandCount}, "
                             + "AllBindingsMatch={AllBindingsMatch}, Items=[{Commands}]",
@@ -243,6 +253,7 @@ internal sealed unsafe class NativeBackend : IDisposable
             var contextBytes = (byte*)context;
             commands.Add(
                 new PushedCommand(
+                    command,
                     *(uint*)command,
                     *(uint*)(command + 0x04),
                     *(uint*)(command + 0x08),
@@ -264,13 +275,53 @@ internal sealed unsafe class NativeBackend : IDisposable
         pushBackCommandHook.Original(context, command);
     }
 
+    private void ProcessCommandsDetour(
+        ImmediateContext* immediateContext,
+        RenderCommandBufferGroup* renderCommands,
+        uint renderCommandCount
+    )
+    {
+        var pending = Volatile.Read(ref pendingCommandAddresses);
+        if (pending is { Length: > 0 } && renderCommands != null)
+        {
+            var matches = 0;
+            for (var index = 0u; index < renderCommandCount; index++)
+            {
+                var address = (nint)renderCommands[index].Command;
+                if (pending.Contains(address))
+                    matches++;
+            }
+
+            if (matches > 0)
+            {
+                Volatile.Write(ref pendingCommandAddresses, null);
+                log.Information(
+                    "[Underpaint] Owned command consumer probe: Matched={Matched}/{Expected}, "
+                        + "ProcessCommandCount={ProcessCommandCount}.",
+                    matches,
+                    pending.Length,
+                    renderCommandCount
+                );
+            }
+        }
+
+        processCommandsHook.Original(immediateContext, renderCommands, renderCommandCount);
+    }
+
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
 
     private delegate void PushBackCommandDelegate(nint context, nint command);
 
+    private delegate void ProcessCommandsDelegate(
+        ImmediateContext* immediateContext,
+        RenderCommandBufferGroup* renderCommands,
+        uint renderCommandCount
+    );
+
     private readonly record struct StreamBinding(nint Buffer, ulong OffsetAndStride);
 
     private readonly record struct PushedCommand(
+        nint Address,
         uint Type,
         uint Value04,
         uint Value08,
