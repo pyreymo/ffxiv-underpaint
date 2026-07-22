@@ -37,12 +37,17 @@ world、color 和 alpha、model/instance constants、material constants、中性
 ## 需要重新验证的固定 prototype 输入
 
 - Donor material：
-  `chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl`
+  `chara/equipment/e0907/material/v0001/mt_c0101e0907_top_b.mtrl`
 - 预期 shader package：`charactertransparency.shpk`
 - 中性纹理候选：`chara/common/texture/white.tex`
 
 新实现必须在提交前明确验证 donor 的 shader package。封存的 prototype 加载了 material，但
 没有强制执行这一检查。
+
+首次重新验证时，旧 donor `e0378/v0002/mt_c0101e0378_top_a.mtrl` 实际返回
+`characterlegacy.shpk`，因此已明确弃用。当前改用
+`e0907/v0001/mt_c0101e0907_top_b.mtrl`；加载后仍必须由运行时检查确认它使用
+`charactertransparency.shpk`。
 
 ## 两条 stream 顶点布局的原生捕获
 

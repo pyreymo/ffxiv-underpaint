@@ -7,11 +7,13 @@ namespace Underpaint.Internal;
 
 internal sealed unsafe class MaterialLoader : IDisposable
 {
-    internal const string DonorMaterialPath = "chara/equipment/e0378/material/v0002/mt_c0101e0378_top_a.mtrl";
+    internal const string DonorMaterialPath = "chara/equipment/e0907/material/v0001/mt_c0101e0907_top_b.mtrl";
     internal const string ShaderPackageName = "charactertransparency.shpk";
 
     private const uint MaterialFileType = 0x6D74726C;
-    private const uint DonorMaterialPathHash = 0x56D3AB97;
+
+    // Lumina.Misc.Crc32.Get(DonorMaterialPath).
+    private const uint DonorMaterialPathHash = 0xFA86BAE4;
 
     private MaterialResourceHandle* resource;
 
