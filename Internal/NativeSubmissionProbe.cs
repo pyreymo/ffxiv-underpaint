@@ -23,6 +23,7 @@ internal sealed unsafe class NativeSubmissionProbe(IPluginLog log)
         var inner = *(nint*)materialParameters;
         var model = inner == 0 ? 0 : *(nint*)inner;
         return new ProbeInput(
+            (nint)context,
             model,
             context[0x0B] & 0x0F,
             *(nint*)(context + VertexShaderOffset),
@@ -78,6 +79,7 @@ internal sealed unsafe class NativeSubmissionProbe(IPluginLog log)
         hasLast = true;
         log.Information(
             "[Underpaint] Color probe changed: Frame={Frame}, CarrierModel=0x{CarrierModel:X}, "
+                + "Context=0x{Context:X}, "
                 + "NaturalPass={NaturalPass}, NaturalVS=0x{NaturalVS:X}, NaturalPS=0x{NaturalPS:X}, "
                 + "NaturalDescriptor=0x{NaturalDescriptor:X}, SystemCB=0x{SystemConstant:X}, SceneCB=0x{SceneConstant:X}, "
                 + "OnRenderMaterial=0x{OnRenderMaterial:X}, Output40=0x{Output:X8}, "
@@ -86,6 +88,7 @@ internal sealed unsafe class NativeSubmissionProbe(IPluginLog log)
                 + "MaterialHash=0x{MaterialHash:X8}, SubViewKey=0x{SubViewKey:X8}, SubViewValue=0x{SubViewValue:X8}.",
             frame,
             input.CarrierModel,
+            input.Context,
             input.NaturalPass,
             input.NaturalVertexShader,
             input.NaturalPixelShader,
@@ -119,6 +122,7 @@ internal sealed unsafe class NativeSubmissionProbe(IPluginLog log)
     }
 
     internal readonly record struct ProbeInput(
+        nint Context,
         nint CarrierModel,
         int NaturalPass,
         nint NaturalVertexShader,
