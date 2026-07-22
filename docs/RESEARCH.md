@@ -344,4 +344,10 @@ FFCS `VertexShader.Input` 的位序给出 `3 = Color0`；这与已捕获 declara
 `stream 1 / offset 12 / format 0x24 / attribute 3` 对应。Penumbra 的模型导入实现将同类 normalized byte4
 颜色按 R、G、B、A 四个字节写入。因此原来的 `0xFFFFFFFF` 是全白且 alpha 为 `1.0`，固定测试值
 `(1, 1, 1, 0.5)` 编码为小端 `0x80FFFFFF`。这次只改变 Color0 的 alpha，normal texture 和其他输入保持
-不变，以便通过实机画面对比验证 shader 是否实际使用该字段。
+不变。
+
+实机中三角形保持稳定可见，背景花窗、人物和地面细节能够透过。连续 30 帧对三角形内四个位置采样，
+各通道只出现由场景本身造成的 1 至 2 个色阶变化，没有再出现未初始化 constant 导致的颜色跳变。
+由此确认当前 shader variant 实际使用 Color0 alpha 作为透明度输入。当前 builder 会为一次提交生成四条
+command，屏幕结果可能是多个 pass 的合成，因此这里只确认 `0.5` 比 `1.0` 更透明，不把它表述为严格的
+50% 屏幕混合比例。
