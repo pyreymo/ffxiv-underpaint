@@ -488,3 +488,24 @@ pass builder command 保存 GPU resource 引用，不会为每个图元复制共
 稳定 ID 现在用于查找每图元原生资源：每个 ID 分别持有 world constant、instance constant 和动态 stream 1；
 单位 position stream、IB、declaration、model/material constants 和中性纹理继续共享。同一 frame 内要求
 ID 唯一。当前不做缓存淘汰，所有 ID 资源在 `Renderer.Dispose` 时释放。
+
+## 相机运动时的轻微边缘拖影
+
+实机同时显示红、绿两个独立三角形时，二者在镜头运动下都有轻微边缘拖影；停止镜头后稳定。将红色
+三角形设为 `alpha = 1`、`ditherFade = 1` 后仍可观察到，因此当前证据不能把现象归因于平滑 alpha、
+dither，或两个图元复用同一份可变资源。
+
+现有实现为每个稳定 ID 单独提供 world、instance 和动态 stream 1，并在整批 command 成功后才推进
+previous view。尚未通过对照实验确认 previous world-view 是否与游戏的 temporal camera 历史完全一致，
+也未证明固定透明 pass 是否需要额外 velocity 输入。第一版暂时记录该限制，不增加 velocity pipeline、
+额外 hook 或猜测性的时域修正。
+
+## 固定四边形
+
+公开帧输入收敛为 `Primitive`，由 `PrimitiveType` 明确选择三角形或四边形。两种类型分别持有简单的单位
+position VB 和 IB，共用已经验证的两 stream vertex declaration。三角形为三个顶点和三个索引；四边形
+为四个顶点和六个索引，两个三角面保持与现有三角形相同的绕序。
+
+每个稳定 ID 仍单独持有动态 stream 1、world constant 和 instance constant。类型变化时只释放并重建
+该 ID 的三项可变资源；固定 mesh、material/model constants、纹理和 declaration 继续共享。原生执行顺序
+没有变化：安装所选 mesh 和该 ID 的输入后，以对应 vertex/index count 调用同一个 pass builder。

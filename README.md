@@ -25,9 +25,9 @@ create game objects or provide a general model renderer.
 
 The previous hand-written G-buffer and transparency prototypes have been archived in Git history.
 The native implementation is being rebuilt in small, reviewable steps. The renderer currently
-accepts one complete triangle set per frame, owns its fixed native mesh, and independently loads
-its fixed donor material. Each stable ID owns the mutable attribute, world, and instance resources
-needed for independent transforms, color, smooth alpha, and dither fade. Static geometry,
+accepts one complete primitive set per frame, owns fixed triangle and quad meshes, and independently
+loads its fixed donor material. Each stable ID owns the mutable attribute, world, and instance
+resources needed for independent transforms, color, smooth alpha, and dither fade. Static geometry,
 material/model constants, textures, and the vertex declaration remain shared.
 
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the verified findings retained from the prototypes.

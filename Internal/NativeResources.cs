@@ -67,9 +67,6 @@ internal sealed unsafe class NativeResources : IDisposable
     // Lumina.Misc.Crc32.Get(WhiteTexturePath).
     private const uint WhiteTexturePathHash = 0x84815A1A;
 
-    internal const int VertexCount = 3;
-    internal const int IndexCount = 3;
-
     // Captured byte-for-byte from the same native two-stream charactertransparency draw.
     // Each record is the binary element accepted by the game's vertex-declaration creator.
     // Format and attribute are game identifiers; their general enum names are not yet known.
@@ -86,17 +83,15 @@ internal sealed unsafe class NativeResources : IDisposable
 
     private readonly delegate* unmanaged<Device*, int, uint, byte, nint> createVertexBuffer;
     private readonly delegate* unmanaged<nint, void*, byte> initializeVertexBuffer;
-    private readonly Dictionary<ulong, NativeTriangleResources> triangles = [];
-    private nint stream0Buffer;
-    private nint indexBuffer;
+    private readonly Dictionary<ulong, NativePrimitiveResources> primitives = [];
+    private NativeMesh triangleMesh;
+    private NativeMesh quadMesh;
     private nint vertexDeclaration;
     private nint instanceConstant;
     private nint modelConstant;
     private nint materialConstant;
     private TextureResourceHandle* whiteTextureResource;
 
-    internal nint Stream0Buffer => stream0Buffer;
-    internal nint IndexBuffer => indexBuffer;
     internal nint VertexDeclaration => vertexDeclaration;
     internal ConstantBuffer* InstanceConstant => (ConstantBuffer*)instanceConstant;
     internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
@@ -137,37 +132,33 @@ internal sealed unsafe class NativeResources : IDisposable
         if (device == null)
             throw new InvalidOperationException("The native graphics device is not available.");
 
-        var stream0Bytes = VertexCount * sizeof(Stream0Vertex);
-        var stream0 = stackalloc Stream0Vertex[VertexCount];
-
-        stream0[0] = new Stream0Vertex(new Vector3(-0.5f, 0, 0));
-        stream0[1] = new Stream0Vertex(new Vector3(0.5f, 0, 0));
-        stream0[2] = new Stream0Vertex(new Vector3(0, 1, 0));
-        ushort* indices = stackalloc ushort[IndexCount] { 0, 1, 2 };
+        ReadOnlySpan<Stream0Vertex> triangleVertices =
+        [
+            new(new Vector3(-0.5f, 0, 0)),
+            new(new Vector3(0.5f, 0, 0)),
+            new(new Vector3(0, 1, 0)),
+        ];
+        ReadOnlySpan<ushort> triangleIndices = [0, 1, 2];
+        ReadOnlySpan<Stream0Vertex> quadVertices =
+        [
+            new(new Vector3(-0.5f, 0, 0)),
+            new(new Vector3(0.5f, 0, 0)),
+            new(new Vector3(0.5f, 1, 0)),
+            new(new Vector3(-0.5f, 1, 0)),
+        ];
+        ReadOnlySpan<ushort> quadIndices = [0, 1, 2, 0, 2, 3];
 
         try
         {
-            stream0Buffer = createVertexBuffer(device, stream0Bytes, StaticBufferCreationFlags, VertexBufferFourthArgument);
-            indexBuffer = createIndexBuffer(
-                device,
-                IndexCount * sizeof(ushort),
-                IndexBufferThirdArgument,
-                StaticBufferCreationFlags,
-                IndexBufferFourthArgument
-            );
+            triangleMesh = CreateMesh(device, triangleVertices, triangleIndices, createIndexBuffer, initializeIndexBuffer);
+            quadMesh = CreateMesh(device, quadVertices, quadIndices, createIndexBuffer, initializeIndexBuffer);
             fixed (VertexElement* elements = VertexElements)
             {
                 vertexDeclaration = createVertexDeclaration(device, (byte*)elements, (uint)VertexElements.Length);
             }
 
-            if (
-                stream0Buffer == 0
-                || indexBuffer == 0
-                || vertexDeclaration == 0
-                || initializeVertexBuffer(stream0Buffer, stream0) == 0
-                || initializeIndexBuffer(indexBuffer, indices) == 0
-            )
-                throw new InvalidOperationException("The game rejected the fixed triangle resources.");
+            if (vertexDeclaration == 0)
+                throw new InvalidOperationException("The game rejected the fixed vertex declaration.");
         }
         catch
         {
@@ -183,26 +174,35 @@ internal sealed unsafe class NativeResources : IDisposable
         if (loadedWhiteTexture != null)
             loadedWhiteTexture->DecRef();
 
-        foreach (var triangle in triangles.Values)
+        foreach (var primitive in primitives.Values)
         {
-            var stream1 = triangle.Stream1Buffer;
-            var world = triangle.WorldConstant;
-            var instance = triangle.InstanceConstant;
+            var stream1 = primitive.Stream1Buffer;
+            var world = primitive.WorldConstant;
+            var instance = primitive.InstanceConstant;
             Release(ref instance);
             Release(ref world);
             Release(ref stream1);
         }
-        triangles.Clear();
+        primitives.Clear();
 
         Release(ref materialConstant);
         Release(ref modelConstant);
         Release(ref instanceConstant);
         Release(ref vertexDeclaration);
-        Release(ref indexBuffer);
-        Release(ref stream0Buffer);
+        ReleaseMesh(ref quadMesh);
+        ReleaseMesh(ref triangleMesh);
     }
 
-    internal NativeTriangleResources WriteTriangle(
+    internal NativeMesh GetMesh(PrimitiveType type) =>
+        type switch
+        {
+            PrimitiveType.Triangle => triangleMesh,
+            PrimitiveType.Quad => quadMesh,
+            _ => throw new ArgumentOutOfRangeException(nameof(type)),
+        };
+
+    internal NativePrimitiveResources WritePrimitive(
+        PrimitiveType type,
         ulong id,
         Matrix4x4 currentWorldView,
         Matrix4x4 previousWorldView,
@@ -211,19 +211,25 @@ internal sealed unsafe class NativeResources : IDisposable
         float ditherFade
     )
     {
-        if (!triangles.TryGetValue(id, out var triangle))
+        if (primitives.TryGetValue(id, out var primitive) && primitive.Type != type)
         {
-            triangle = CreateTriangleResources();
-            triangles.Add(id, triangle);
+            ReleasePrimitive(ref primitive);
+            primitives.Remove(id);
         }
 
-        WriteTriangleAlpha(triangle.Stream1Buffer, alpha);
-        WriteWorldConstant((ConstantBuffer*)triangle.WorldConstant, currentWorldView, previousWorldView);
-        WriteInstanceConstant((ConstantBuffer*)triangle.InstanceConstant, new Vector4(color.X, color.Y, color.Z, ditherFade));
-        return triangle;
+        if (!primitives.TryGetValue(id, out primitive))
+        {
+            primitive = CreatePrimitiveResources(type, GetMesh(type).VertexCount);
+            primitives.Add(id, primitive);
+        }
+
+        WritePrimitiveAlpha(type, primitive.Stream1Buffer, alpha);
+        WriteWorldConstant((ConstantBuffer*)primitive.WorldConstant, currentWorldView, previousWorldView);
+        WriteInstanceConstant((ConstantBuffer*)primitive.InstanceConstant, new Vector4(color.X, color.Y, color.Z, ditherFade));
+        return primitive;
     }
 
-    private static void WriteTriangleAlpha(nint stream1Buffer, float alpha)
+    private static void WritePrimitiveAlpha(PrimitiveType type, nint stream1Buffer, float alpha)
     {
         alpha = Math.Clamp(alpha, 0, 1);
         var mapInterface = stream1Buffer + BufferMapInterfaceOffset;
@@ -237,11 +243,9 @@ internal sealed unsafe class NativeResources : IDisposable
         {
             var stream1 = *(Stream1Vertex**)(stream1Buffer + BufferMappedDataOffset);
             if (stream1 == null)
-                throw new InvalidOperationException("The dynamic triangle attributes have no mapped storage.");
+                throw new InvalidOperationException("The dynamic primitive attributes have no mapped storage.");
 
-            stream1[0] = new Stream1Vertex(new Vector2(0, 1), alpha);
-            stream1[1] = new Stream1Vertex(new Vector2(1, 1), alpha);
-            stream1[2] = new Stream1Vertex(new Vector2(0.5f, 0), alpha);
+            WriteStream1(type, new Span<Stream1Vertex>(stream1, GetVertexCount(type)), alpha);
         }
         finally
         {
@@ -316,7 +320,7 @@ internal sealed unsafe class NativeResources : IDisposable
         *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = Matrix4x4.Transpose(previousWorldView);
     }
 
-    private NativeTriangleResources CreateTriangleResources()
+    private NativePrimitiveResources CreatePrimitiveResources(PrimitiveType type, int vertexCount)
     {
         var device = Device.Instance();
         if (device == null)
@@ -327,24 +331,20 @@ internal sealed unsafe class NativeResources : IDisposable
         nint instance = 0;
         try
         {
-            var vertices = stackalloc Stream1Vertex[VertexCount]
-            {
-                new(new Vector2(0, 1)),
-                new(new Vector2(1, 1)),
-                new(new Vector2(0.5f, 0)),
-            };
+            var vertices = stackalloc Stream1Vertex[vertexCount];
+            WriteStream1(type, new Span<Stream1Vertex>(vertices, vertexCount), 1);
             stream1 = createVertexBuffer(
                 device,
-                VertexCount * sizeof(Stream1Vertex),
+                vertexCount * sizeof(Stream1Vertex),
                 DynamicVertexBufferCreationFlags,
                 VertexBufferFourthArgument
             );
             if (stream1 == 0 || initializeVertexBuffer(stream1, vertices) == 0)
-                throw new InvalidOperationException("The game rejected a triangle attribute buffer.");
+                throw new InvalidOperationException($"The game rejected the {type} attribute buffer.");
 
-            world = CreateAndClearConstantBuffer(device, WorldConstantBytes, "triangle world");
-            instance = CreateAndClearConstantBuffer(device, InstanceConstantBytes, "triangle instance");
-            return new NativeTriangleResources(stream1, world, instance);
+            world = CreateAndClearConstantBuffer(device, WorldConstantBytes, $"{type} world");
+            instance = CreateAndClearConstantBuffer(device, InstanceConstantBytes, $"{type} instance");
+            return new NativePrimitiveResources(type, stream1, world, instance);
         }
         catch
         {
@@ -352,6 +352,80 @@ internal sealed unsafe class NativeResources : IDisposable
             Release(ref world);
             Release(ref stream1);
             throw;
+        }
+    }
+
+    private NativeMesh CreateMesh(
+        Device* device,
+        ReadOnlySpan<Stream0Vertex> vertices,
+        ReadOnlySpan<ushort> indices,
+        delegate* unmanaged<Device*, int, int, uint, byte, nint> createIndexBuffer,
+        delegate* unmanaged<nint, void*, byte> initializeIndexBuffer
+    )
+    {
+        nint stream0 = 0;
+        nint indexBuffer = 0;
+        try
+        {
+            stream0 = createVertexBuffer(
+                device,
+                vertices.Length * sizeof(Stream0Vertex),
+                StaticBufferCreationFlags,
+                VertexBufferFourthArgument
+            );
+            indexBuffer = createIndexBuffer(
+                device,
+                indices.Length * sizeof(ushort),
+                IndexBufferThirdArgument,
+                StaticBufferCreationFlags,
+                IndexBufferFourthArgument
+            );
+
+            fixed (Stream0Vertex* vertexData = vertices)
+            fixed (ushort* indexData = indices)
+            {
+                if (
+                    stream0 == 0
+                    || indexBuffer == 0
+                    || initializeVertexBuffer(stream0, vertexData) == 0
+                    || initializeIndexBuffer(indexBuffer, indexData) == 0
+                )
+                    throw new InvalidOperationException("The game rejected fixed primitive geometry.");
+            }
+
+            return new NativeMesh(stream0, indexBuffer, vertices.Length, indices.Length);
+        }
+        catch
+        {
+            Release(ref indexBuffer);
+            Release(ref stream0);
+            throw;
+        }
+    }
+
+    private static int GetVertexCount(PrimitiveType type) =>
+        type switch
+        {
+            PrimitiveType.Triangle => 3,
+            PrimitiveType.Quad => 4,
+            _ => throw new ArgumentOutOfRangeException(nameof(type)),
+        };
+
+    private static void WriteStream1(PrimitiveType type, Span<Stream1Vertex> vertices, float alpha)
+    {
+        vertices[0] = new Stream1Vertex(new Vector2(0, 1), alpha);
+        vertices[1] = new Stream1Vertex(new Vector2(1, 1), alpha);
+        switch (type)
+        {
+            case PrimitiveType.Triangle:
+                vertices[2] = new Stream1Vertex(new Vector2(0.5f, 0), alpha);
+                break;
+            case PrimitiveType.Quad:
+                vertices[2] = new Stream1Vertex(new Vector2(1, 0), alpha);
+                vertices[3] = new Stream1Vertex(new Vector2(0, 0), alpha);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(type));
         }
     }
 
@@ -438,6 +512,26 @@ internal sealed unsafe class NativeResources : IDisposable
         release(value);
     }
 
+    private static void ReleaseMesh(ref NativeMesh mesh)
+    {
+        var indexBuffer = mesh.IndexBuffer;
+        var stream0 = mesh.Stream0Buffer;
+        mesh = default;
+        Release(ref indexBuffer);
+        Release(ref stream0);
+    }
+
+    private static void ReleasePrimitive(ref NativePrimitiveResources primitive)
+    {
+        var instance = primitive.InstanceConstant;
+        var world = primitive.WorldConstant;
+        var stream1 = primitive.Stream1Buffer;
+        primitive = default;
+        Release(ref instance);
+        Release(ref world);
+        Release(ref stream1);
+    }
+
     private static ulong PackHalf4(float x, float y, float z, float w)
     {
         return BitConverter.HalfToUInt16Bits((Half)x)
@@ -493,4 +587,6 @@ internal sealed unsafe class NativeResources : IDisposable
     }
 }
 
-internal readonly record struct NativeTriangleResources(nint Stream1Buffer, nint WorldConstant, nint InstanceConstant);
+internal readonly record struct NativeMesh(nint Stream0Buffer, nint IndexBuffer, int VertexCount, int IndexCount);
+
+internal readonly record struct NativePrimitiveResources(PrimitiveType Type, nint Stream1Buffer, nint WorldConstant, nint InstanceConstant);
