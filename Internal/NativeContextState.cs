@@ -87,7 +87,7 @@ internal unsafe ref struct NativeContextState
         SetConstant(modelConstantId, (nint)resources.ModelConstant);
         SetSampler(normalSamplerId, resources.WhiteTexture);
         SetSampler(indexSamplerId, resources.WhiteTexture);
-        SetSampler(tableSamplerId, resources.NeutralColorTable);
+        SetSampler(tableSamplerId, resources.WhiteTexture);
     }
 
     internal void InstallShaders(ShaderPair shaders, nint descriptor)

@@ -67,14 +67,6 @@ internal sealed unsafe class NativeResources : IDisposable
     // Lumina.Misc.Crc32.Get(WhiteTexturePath).
     private const uint WhiteTexturePathHash = 0x84815A1A;
 
-    // MaterialResourceHandle.PrepareColorTable creates this exact native texture:
-    // 8 RGBA-half texels per row, 32 rows, one mip, and argument 7.
-    private const int ColorTableWidth = 8;
-    private const int ColorTableHeight = 32;
-    private const byte ColorTableMipLevels = 1;
-    private const uint ColorTableLastArgument = 7;
-    private const TextureFlags ColorTableFlags = TextureFlags.TextureNoSwizzle | TextureFlags.Immutable | TextureFlags.Managed;
-
     // Captured byte-for-byte from the same native two-stream charactertransparency draw.
     // Each record is the binary element accepted by the game's vertex-declaration creator.
     // Format and attribute are game identifiers; their general enum names are not yet known.
@@ -99,14 +91,12 @@ internal sealed unsafe class NativeResources : IDisposable
     private nint modelConstant;
     private nint materialConstant;
     private TextureResourceHandle* whiteTextureResource;
-    private Texture* neutralColorTable;
 
     internal nint VertexDeclaration => vertexDeclaration;
     internal ConstantBuffer* InstanceConstant => (ConstantBuffer*)instanceConstant;
     internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
     internal ConstantBuffer* MaterialConstant => (ConstantBuffer*)materialConstant;
     internal Texture* WhiteTexture => whiteTextureResource == null ? null : whiteTextureResource->Texture;
-    internal Texture* NeutralColorTable => neutralColorTable;
     internal static int Stream0Stride => sizeof(Stream0Vertex);
     internal static int Stream1Stride => sizeof(Stream1Vertex);
 
@@ -183,11 +173,6 @@ internal sealed unsafe class NativeResources : IDisposable
         whiteTextureResource = null;
         if (loadedWhiteTexture != null)
             loadedWhiteTexture->DecRef();
-
-        var loadedColorTable = neutralColorTable;
-        neutralColorTable = null;
-        if (loadedColorTable != null)
-            loadedColorTable->DecRef();
 
         foreach (var primitive in primitives.Values)
         {
@@ -292,57 +277,6 @@ internal sealed unsafe class NativeResources : IDisposable
         }
 
         whiteTextureResource = loaded;
-    }
-
-    internal void CreateNeutralColorTable()
-    {
-        if (neutralColorTable != null)
-            return;
-
-        Span<Half> table = stackalloc Half[ColorTableWidth * ColorTableHeight * 4];
-        for (var rowIndex = 0; rowIndex < ColorTableHeight; rowIndex++)
-            WriteNeutralColorTableRow(table.Slice(rowIndex * ColorTableWidth * 4, ColorTableWidth * 4));
-
-        var texture = Texture.CreateTexture2D(
-            ColorTableWidth,
-            ColorTableHeight,
-            ColorTableMipLevels,
-            TextureFormat.R16G16B16A16_FLOAT,
-            ColorTableFlags,
-            ColorTableLastArgument
-        );
-        if (texture == null)
-            throw new InvalidOperationException("The game rejected the neutral color table texture.");
-
-        fixed (Half* contents = table)
-        {
-            if (!texture->InitializeContents(contents))
-            {
-                texture->DecRef();
-                throw new InvalidOperationException("The game rejected the neutral color table contents.");
-            }
-        }
-
-        neutralColorTable = texture;
-    }
-
-    private static void WriteNeutralColorTableRow(Span<Half> row)
-    {
-        row.Clear();
-
-        // Eight RGBA-half entries in the native Dawntrail color-table layout.
-        row[0] = row[1] = row[2] = (Half)1; // diffuse RGB
-        row[3] = (Half)1;
-        row[4] = row[5] = row[6] = (Half)0; // specular RGB
-        row[8] = row[9] = row[10] = (Half)0; // emissive RGB
-        row[11] = (Half)1;
-        row[16] = (Half)1; // roughness
-        row[18] = (Half)0; // metalness
-        row[21] = (Half)0; // sphere-map mask
-        row[25] = (Half)0; // tile index
-        row[26] = (Half)0; // tile alpha
-        row[27] = (Half)0; // sphere-map index
-        row[28] = row[31] = (Half)16; // neutral tile transform used by native defaults
     }
 
     internal void CreateConstants()
