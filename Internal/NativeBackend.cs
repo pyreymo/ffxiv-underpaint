@@ -165,7 +165,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                     var currentWorldView = triangle.CurrentTransform * view;
                     var previousWorldView = triangle.PreviousTransform * (hasPreviousView ? previousView : view);
                     resources.WriteTriangleAlpha(triangle.Color.W);
-                    var instanceColor = new Vector4(triangle.Color.X, triangle.Color.Y, triangle.Color.Z, 1);
+                    var instanceColor = new Vector4(triangle.Color.X, triangle.Color.Y, triangle.Color.Z, triangle.DitherFade);
                     resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, instanceColor);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
@@ -267,4 +267,10 @@ internal sealed unsafe class NativeBackend : IDisposable
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
 }
 
-internal readonly record struct TriangleSubmission(ulong Id, Matrix4x4 CurrentTransform, Matrix4x4 PreviousTransform, Vector4 Color);
+internal readonly record struct TriangleSubmission(
+    ulong Id,
+    Matrix4x4 CurrentTransform,
+    Matrix4x4 PreviousTransform,
+    Vector4 Color,
+    float DitherFade
+);

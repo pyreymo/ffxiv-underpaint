@@ -472,3 +472,7 @@ flag `0x1` 选择 `D3D11_USAGE_DYNAMIC`、`D3D11_CPU_ACCESS_WRITE` 和 vertex-bu
 
 每次有效提交现在完整重写三个 24-byte stream 1 顶点，只改变 `Color0.a`，并把 alpha 限制在 `[0,1]`。
 stream 0、IB 和 declaration 保持静态；公开 alpha 恢复为平滑 vertex alpha，dither 不再属于公开接口。
+
+实验接口随后将 `ditherFade` 作为独立参数重新接入 `InstanceConstant[0].w`。它与 `alpha` 可以同时存在：
+`alpha` 仍只写 `Color0.a`，`ditherFade` 不再借用 alpha 的名称。当前固定 shader variant 中已经观察到
+它控制 dither coverage，但其通用引擎含义仍未知，代码注释和参数名都保留这一限制。
