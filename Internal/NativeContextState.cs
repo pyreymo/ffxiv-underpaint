@@ -26,7 +26,6 @@ internal unsafe ref struct NativeContextState
     private readonly uint normalSamplerId;
     private readonly uint indexSamplerId;
     private readonly uint tableSamplerId;
-    private readonly uint unidentifiedSamplerId;
     private readonly nint indexBuffer;
     private readonly nint vertexDeclaration;
     private readonly nint vertexShader;
@@ -43,7 +42,6 @@ internal unsafe ref struct NativeContextState
     private readonly SamplerState normalSampler;
     private readonly SamplerState indexSampler;
     private readonly SamplerState tableSampler;
-    private readonly SamplerState unidentifiedSampler;
 
     internal NativeContextState(byte* context, uint worldConstantId, MaterialBindingIds material)
     {
@@ -55,7 +53,6 @@ internal unsafe ref struct NativeContextState
         normalSamplerId = material.NormalSamplerId;
         indexSamplerId = material.IndexSamplerId;
         tableSamplerId = material.TableSamplerId;
-        unidentifiedSamplerId = material.UnidentifiedSamplerId;
 
         indexBuffer = *(nint*)(context + IndexBufferOffset);
         vertexDeclaration = *(nint*)(context + VertexDeclarationOffset);
@@ -73,7 +70,6 @@ internal unsafe ref struct NativeContextState
         normalSampler = GetSampler(normalSamplerId);
         indexSampler = GetSampler(indexSamplerId);
         tableSampler = GetSampler(tableSamplerId);
-        unidentifiedSampler = GetSampler(unidentifiedSamplerId);
     }
 
     internal void Install(NativeResources resources, NativeMesh mesh, NativePrimitiveResources primitive)
@@ -92,7 +88,6 @@ internal unsafe ref struct NativeContextState
         SetSampler(normalSamplerId, resources.WhiteTexture);
         SetSampler(indexSamplerId, resources.WhiteTexture);
         SetSampler(tableSamplerId, resources.WhiteTexture);
-        SetSampler(unidentifiedSamplerId, resources.WhiteTexture);
     }
 
     internal void InstallShaders(ShaderPair shaders, nint descriptor)
@@ -120,7 +115,6 @@ internal unsafe ref struct NativeContextState
         SetSampler(normalSamplerId, normalSampler);
         SetSampler(indexSamplerId, indexSampler);
         SetSampler(tableSamplerId, tableSampler);
-        SetSampler(unidentifiedSamplerId, unidentifiedSampler);
     }
 
     private readonly StreamState GetStream(int index) => *(StreamState*)(context + StreamOffset + index * StreamSize);

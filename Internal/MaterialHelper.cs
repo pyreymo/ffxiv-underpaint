@@ -27,10 +27,6 @@ internal sealed unsafe class MaterialHelper
     private const uint TableSamplerCrc = 0x2005679F;
     private const ushort TableSamplerClass = 1;
 
-    // Temporary single-variable probe for a local-space artifact. The selected
-    // pass reads this class-1 sampler, but its engine name is not yet known.
-    private const uint UnidentifiedSamplerCrc = 0x800BE99B;
-
     // The archived native submission verified 0x01000000 as the main-view
     // request gate in OnRenderMaterialParams2+0x38.
     private const uint MainViewRequestMask = 0x01000000;
@@ -96,7 +92,6 @@ internal sealed unsafe class MaterialHelper
         var normalSampler = FindSampler(shaderPackage, NormalSamplerCrc, MaterialSamplerClass);
         var indexSampler = FindSampler(shaderPackage, IndexSamplerCrc, MaterialSamplerClass);
         var tableSampler = FindSampler(shaderPackage, TableSamplerCrc, TableSamplerClass);
-        var unidentifiedSampler = FindSampler(shaderPackage, UnidentifiedSamplerCrc, TableSamplerClass);
 
         return new MaterialBindingIds(
             MaterialConstantId,
@@ -104,8 +99,7 @@ internal sealed unsafe class MaterialHelper
             modelConstantEntry.Id,
             normalSampler.Id,
             indexSampler.Id,
-            tableSampler.Id,
-            unidentifiedSampler.Id
+            tableSampler.Id
         );
     }
 
@@ -346,8 +340,7 @@ internal readonly record struct MaterialBindingIds(
     uint ModelConstantId,
     uint NormalSamplerId,
     uint IndexSamplerId,
-    uint TableSamplerId,
-    uint UnidentifiedSamplerId
+    uint TableSamplerId
 );
 
 internal readonly record struct MaterialHelperResult(nint OnRenderMaterial, uint Output, nint ShaderDescriptor);
