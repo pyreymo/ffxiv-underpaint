@@ -222,7 +222,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                             + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
                             + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                             + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
-                            + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
+                            + "TableSamplerId={TableSamplerId}, ProbeSamplerId={ProbeSamplerId}, WhiteTexture=ready.",
                         primitiveCount,
                         frame,
                         commandBaseBefore,
@@ -239,7 +239,8 @@ internal sealed unsafe class NativeBackend : IDisposable
                         worldConstantId,
                         bindings.NormalSamplerId,
                         bindings.IndexSamplerId,
-                        bindings.TableSamplerId
+                        bindings.TableSamplerId,
+                        bindings.UnidentifiedSamplerId
                     );
                 }
             }
