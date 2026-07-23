@@ -164,7 +164,9 @@ internal sealed unsafe class NativeBackend : IDisposable
 
                     var currentWorldView = triangle.CurrentTransform * view;
                     var previousWorldView = triangle.PreviousTransform * (hasPreviousView ? previousView : view);
-                    resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, triangle.Color);
+                    resources.WriteTriangleAlpha(triangle.Color.W);
+                    var instanceColor = new Vector4(triangle.Color.X, triangle.Color.Y, triangle.Color.Z, 1);
+                    resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, instanceColor);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
                     commandBaseBefore = (nint)context->CommandAllocationBase;

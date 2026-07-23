@@ -76,8 +76,8 @@ internal unsafe ref struct NativeContextState
     {
         *(nint*)(context + IndexBufferOffset) = resources.IndexBuffer;
         *(nint*)(context + VertexDeclarationOffset) = resources.VertexDeclaration;
-        SetStream(0, new StreamState(resources.VertexBuffer, PackStreamBinding(0, NativeResources.Stream0Stride)));
-        SetStream(1, new StreamState(resources.VertexBuffer, PackStreamBinding(resources.Stream1Offset, NativeResources.Stream1Stride)));
+        SetStream(0, new StreamState(resources.Stream0Buffer, PackStreamBinding(0, NativeResources.Stream0Stride)));
+        SetStream(1, new StreamState(resources.Stream1Buffer, PackStreamBinding(0, NativeResources.Stream1Stride)));
         SetStream(2, default);
         SetStream(3, default);
 

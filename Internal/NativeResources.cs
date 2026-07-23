@@ -19,7 +19,18 @@ internal sealed unsafe class NativeResources : IDisposable
     // Captured from a native rigid character-material draw using the two-stream,
     // non-skinned charactertransparency vertex path.
     // The individual flag bits have not been identified.
-    private const uint BufferCreationFlags = 0x804;
+    private const uint StaticBufferCreationFlags = 0x804;
+
+    // The native buffer initializer maps flag 0x1 to D3D11_USAGE_DYNAMIC with
+    // D3D11_CPU_ACCESS_WRITE. Flag 0x800 defers creation until initialization.
+    private const uint DynamicVertexBufferCreationFlags = 0x801;
+
+    // The buffer's secondary interface exposes Map and Unmap in slots 1 and 2.
+    // Map stores the WRITE_DISCARD pointer at offset 0x60 in the buffer object.
+    private const int BufferMapInterfaceOffset = 0x20;
+    private const int BufferMappedDataOffset = 0x60;
+    private const int BufferMapSlot = 1;
+    private const int BufferUnmapSlot = 2;
 
     // Raw third argument passed by the captured native index-buffer creation.
     // Its exact engine meaning and official enum name have not been identified.
@@ -73,7 +84,8 @@ internal sealed unsafe class NativeResources : IDisposable
         new(1, 16, 0x1C, 8), // Stream1Vertex.TexCoord0, 8 bytes
     ];
 
-    private nint vertexBuffer;
+    private nint stream0Buffer;
+    private nint stream1Buffer;
     private nint indexBuffer;
     private nint vertexDeclaration;
     private nint worldConstant;
@@ -82,7 +94,8 @@ internal sealed unsafe class NativeResources : IDisposable
     private nint materialConstant;
     private TextureResourceHandle* whiteTextureResource;
 
-    internal nint VertexBuffer => vertexBuffer;
+    internal nint Stream0Buffer => stream0Buffer;
+    internal nint Stream1Buffer => stream1Buffer;
     internal nint IndexBuffer => indexBuffer;
     internal nint VertexDeclaration => vertexDeclaration;
     internal ConstantBuffer* WorldConstant => (ConstantBuffer*)worldConstant;
@@ -92,7 +105,6 @@ internal sealed unsafe class NativeResources : IDisposable
     internal Texture* WhiteTexture => whiteTextureResource == null ? null : whiteTextureResource->Texture;
     internal static int Stream0Stride => sizeof(Stream0Vertex);
     internal static int Stream1Stride => sizeof(Stream1Vertex);
-    internal int Stream1Offset => VertexCount * sizeof(Stream0Vertex);
 
     internal NativeResources(ISigScanner sigScanner)
     {
@@ -127,10 +139,9 @@ internal sealed unsafe class NativeResources : IDisposable
             throw new InvalidOperationException("The native graphics device is not available.");
 
         var stream0Bytes = VertexCount * sizeof(Stream0Vertex);
-        var vertexBytes = stream0Bytes + VertexCount * sizeof(Stream1Vertex);
-        var vertexData = stackalloc byte[vertexBytes];
-        var stream0 = (Stream0Vertex*)vertexData;
-        var stream1 = (Stream1Vertex*)(vertexData + stream0Bytes);
+        var stream1Bytes = VertexCount * sizeof(Stream1Vertex);
+        var stream0 = stackalloc Stream0Vertex[VertexCount];
+        var stream1 = stackalloc Stream1Vertex[VertexCount];
 
         stream0[0] = new Stream0Vertex(new Vector3(-0.5f, 0, 0));
         stream0[1] = new Stream0Vertex(new Vector3(0.5f, 0, 0));
@@ -142,12 +153,13 @@ internal sealed unsafe class NativeResources : IDisposable
 
         try
         {
-            vertexBuffer = createVertexBuffer(device, vertexBytes, BufferCreationFlags, VertexBufferFourthArgument);
+            stream0Buffer = createVertexBuffer(device, stream0Bytes, StaticBufferCreationFlags, VertexBufferFourthArgument);
+            stream1Buffer = createVertexBuffer(device, stream1Bytes, DynamicVertexBufferCreationFlags, VertexBufferFourthArgument);
             indexBuffer = createIndexBuffer(
                 device,
                 IndexCount * sizeof(ushort),
                 IndexBufferThirdArgument,
-                BufferCreationFlags,
+                StaticBufferCreationFlags,
                 IndexBufferFourthArgument
             );
             fixed (VertexElement* elements = VertexElements)
@@ -156,10 +168,12 @@ internal sealed unsafe class NativeResources : IDisposable
             }
 
             if (
-                vertexBuffer == 0
+                stream0Buffer == 0
+                || stream1Buffer == 0
                 || indexBuffer == 0
                 || vertexDeclaration == 0
-                || initializeVertexBuffer(vertexBuffer, vertexData) == 0
+                || initializeVertexBuffer(stream0Buffer, stream0) == 0
+                || initializeVertexBuffer(stream1Buffer, stream1) == 0
                 || initializeIndexBuffer(indexBuffer, indices) == 0
             )
                 throw new InvalidOperationException("The game rejected the fixed triangle resources.");
@@ -184,7 +198,34 @@ internal sealed unsafe class NativeResources : IDisposable
         Release(ref worldConstant);
         Release(ref vertexDeclaration);
         Release(ref indexBuffer);
-        Release(ref vertexBuffer);
+        Release(ref stream1Buffer);
+        Release(ref stream0Buffer);
+    }
+
+    internal void WriteTriangleAlpha(float alpha)
+    {
+        alpha = Math.Clamp(alpha, 0, 1);
+        var mapInterface = stream1Buffer + BufferMapInterfaceOffset;
+        var vtable = *(nint**)mapInterface;
+        var map = (delegate* unmanaged<nint, nint>)vtable[BufferMapSlot];
+        var unmap = (delegate* unmanaged<nint, void>)vtable[BufferUnmapSlot];
+        if ((int)map(mapInterface) < 0)
+            throw new InvalidOperationException("The dynamic triangle attributes could not be mapped.");
+
+        try
+        {
+            var stream1 = *(Stream1Vertex**)(stream1Buffer + BufferMappedDataOffset);
+            if (stream1 == null)
+                throw new InvalidOperationException("The dynamic triangle attributes have no mapped storage.");
+
+            stream1[0] = new Stream1Vertex(new Vector2(0, 1), alpha);
+            stream1[1] = new Stream1Vertex(new Vector2(1, 1), alpha);
+            stream1[2] = new Stream1Vertex(new Vector2(0.5f, 0), alpha);
+        }
+        finally
+        {
+            unmap(mapInterface);
+        }
     }
 
     internal void LoadWhiteTexture()
@@ -377,14 +418,14 @@ internal sealed unsafe class NativeResources : IDisposable
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private readonly struct Stream1Vertex
     {
-        public Stream1Vertex(Vector2 textureCoordinate)
+        public Stream1Vertex(Vector2 textureCoordinate, float alpha = 1)
         {
             Normal = PackHalf4(0, 0, 1, 0);
 
             // The captured declaration identifies the input as Binormal, but the official
             // name and channel encoding of format 0x24 have not been identified.
             Binormal = 0x00800080;
-            Color0 = PackNormalizedByte4(1, 1, 1, 1);
+            Color0 = PackNormalizedByte4(1, 1, 1, alpha);
             TexCoord0 = PackHalf4(textureCoordinate.X, textureCoordinate.Y, -1, 2);
         }
 

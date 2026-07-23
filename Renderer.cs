@@ -39,7 +39,7 @@ public sealed class Renderer : IDisposable
     /// <param name="currentTransform">Current world transform.</param>
     /// <param name="previousTransform">Previous frame's world transform.</param>
     /// <param name="color">Linear RGB color.</param>
-    /// <param name="alpha">Native dither fade, where one is fully covered.</param>
+    /// <param name="alpha">Smooth vertex alpha, where one is fully opaque within the semitransparent path.</param>
     public void SubmitTriangle(ulong id, Matrix4x4 currentTransform, Matrix4x4 previousTransform, Vector3 color, float alpha) =>
         backend.SubmitTriangle(new TriangleSubmission(id, currentTransform, previousTransform, new Vector4(color, alpha)));
 

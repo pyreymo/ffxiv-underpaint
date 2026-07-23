@@ -448,9 +448,8 @@ previous world-view 现在保存最后一次成功生成 command 时使用的 cu
 
 ## 最小公开三角形提交
 
-`Renderer.SubmitTriangle` 现在接收稳定 ID、current/previous world transform、RGB 和 alpha。alpha 对应当前
-已经验证的 `InstanceConstant[0].w`，因此公开注释明确称为 native dither fade，不把它描述成平滑混合。
-调用者不接触 material、shader、pass、native pointer 或 GPU resource。
+`Renderer.SubmitTriangle` 现在接收稳定 ID、current/previous world transform、RGB 和 alpha。调用者不接触
+material、shader、pass、native pointer 或 GPU resource。
 
 第一版交接暂时只有一个受锁保护的待提交槽。调用者每个 framework frame 写入一次；同一帧重复写入时最后
 一次覆盖前一次。后台只有在固定 shader selection、兼容 pass 和主 camera 都有效后才消费，消费后只绘制
@@ -460,3 +459,16 @@ previous world-view 现在保存最后一次成功生成 command 时使用的 cu
 后台不再构造测试位置或颜色。它只把调用者提供的 current world 与当前 view 相乘；previous world 则与
 最后一次成功提交保存的 view 相乘。首次没有相机历史时使用当前 view，pass builder 未产生 command 时
 不推进相机历史。
+
+最初公开接口误把 alpha 接到 `InstanceConstant[0].w`，因此 Demo 得到的是 dither fade，而不是前面已经
+验证的平滑透明。正确组合是 `InstanceConstant[0].rgb` 提供颜色、`InstanceConstant[0].w = 1`，并由
+stream 1 / attribute 3 的 `Color0.a` 提供平滑 alpha。
+
+为避免每帧重建 immutable VB，两个 vertex stream 已拆成两个原生 buffer。stream 0 的固定位置仍使用从
+原生静态刚性模型捕获的 `0x804`；stream 1 使用 `0x801`。IDA 中的 native buffer initializer 明确显示：
+flag `0x1` 选择 `D3D11_USAGE_DYNAMIC`、`D3D11_CPU_ACCESS_WRITE` 和 vertex-buffer bind，flag `0x800`
+表示延迟到 initialize 时创建。buffer `+0x20` 的次级接口 slot 1/2 分别调用
+`Map(WRITE_DISCARD)` / `Unmap`，映射地址存于 buffer `+0x60`。
+
+每次有效提交现在完整重写三个 24-byte stream 1 顶点，只改变 `Color0.a`，并把 alpha 限制在 `[0,1]`。
+stream 0、IB 和 declaration 保持静态；公开 alpha 恢复为平滑 vertex alpha，dither 不再属于公开接口。

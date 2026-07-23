@@ -27,7 +27,7 @@ The previous hand-written G-buffer and transparency prototypes have been archive
 The native implementation is being rebuilt in small, reviewable steps. The renderer currently
 accepts one triangle submission per frame, owns its fixed native mesh, and independently loads its
 fixed donor material. It supplies the triangle's current and previous world transforms, color,
-dither alpha, constants, textures, and geometry before calling the native main-view pass builder,
+smooth vertex alpha, constants, textures, and geometry before calling the native main-view pass builder,
 then restores the context state it modified.
 
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the verified findings retained from the prototypes.
