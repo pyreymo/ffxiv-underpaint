@@ -1,3 +1,4 @@
+using System.Numerics;
 using Dalamud.Plugin.Services;
 using Underpaint.Internal;
 
@@ -32,6 +33,15 @@ public sealed class Renderer : IDisposable
             throw;
         }
     }
+
+    /// <summary>Submits one triangle for the next native render frame.</summary>
+    /// <param name="id">Stable identity supplied by the caller.</param>
+    /// <param name="currentTransform">Current world transform.</param>
+    /// <param name="previousTransform">Previous frame's world transform.</param>
+    /// <param name="color">Linear RGB color.</param>
+    /// <param name="alpha">Native dither fade, where one is fully covered.</param>
+    public void SubmitTriangle(ulong id, Matrix4x4 currentTransform, Matrix4x4 previousTransform, Vector3 color, float alpha) =>
+        backend.SubmitTriangle(new TriangleSubmission(id, currentTransform, previousTransform, new Vector4(color, alpha)));
 
     public void Dispose()
     {

@@ -19,15 +19,16 @@ internal sealed unsafe class NativeBackend : IDisposable
     private readonly MaterialLoader material;
     private readonly NativeResources resources;
     private readonly IPluginLog log;
+    private readonly object submissionLock = new();
     private int loggedFirstCall;
     private int loggedMainRendezvous;
     private int loggedFirstSubmission;
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
-    private Matrix4x4 fixedTriangleWorld;
-    private bool hasFixedTriangleWorld;
-    private Matrix4x4 previousTriangleWorldView;
-    private bool hasPreviousTriangleWorldView;
+    private int hasPendingTriangle;
+    private TriangleSubmission pendingTriangle;
+    private Matrix4x4 previousView;
+    private bool hasPreviousView;
 
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
@@ -46,6 +47,15 @@ internal sealed unsafe class NativeBackend : IDisposable
     }
 
     public void Dispose() => buildPassesHook.Dispose();
+
+    internal void SubmitTriangle(TriangleSubmission submission)
+    {
+        lock (submissionLock)
+        {
+            pendingTriangle = submission;
+            Volatile.Write(ref hasPendingTriangle, 1);
+        }
+    }
 
     private nint BuildPassesDetour(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount)
     {
@@ -84,6 +94,8 @@ internal sealed unsafe class NativeBackend : IDisposable
         }
 
         if (Volatile.Read(ref submissionDisabled) != 0)
+            return result;
+        if (Volatile.Read(ref hasPendingTriangle) == 0)
             return result;
 
         var framework = Framework.Instance();
@@ -126,6 +138,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                 ulong commandUsedBefore;
                 nint commandBaseAfter;
                 ulong commandUsedAfter;
+                TriangleSubmission triangle;
                 try
                 {
                     helperResult = materialHelper.Apply((ModelRenderer*)modelRenderer, (byte*)context, ownedMaterialParameters, selection);
@@ -142,21 +155,16 @@ internal sealed unsafe class NativeBackend : IDisposable
 
                     var view = (Matrix4x4)camera->ViewMatrix;
                     view.M44 = 1;
-                    if (!IsFinite(view) || !Matrix4x4.Invert(view, out var inverseView))
+                    if (!IsFinite(view) || !Matrix4x4.Invert(view, out _))
                         return result;
                     if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
                         return result;
+                    if (!TryTakeTriangle(out triangle))
+                        return result;
 
-                    if (!hasFixedTriangleWorld)
-                    {
-                        fixedTriangleWorld = Matrix4x4.CreateTranslation(0, 0, -5) * inverseView;
-                        hasFixedTriangleWorld = true;
-                    }
-
-                    var currentWorldView = fixedTriangleWorld * view;
-                    var previousWorldView = hasPreviousTriangleWorldView ? previousTriangleWorldView : currentWorldView;
-                    var triangleColor = new Vector4(1, 0, 0, 0.5f);
-                    resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, triangleColor);
+                    var currentWorldView = triangle.CurrentTransform * view;
+                    var previousWorldView = triangle.PreviousTransform * (hasPreviousView ? previousView : view);
+                    resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, triangle.Color);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
                     commandBaseBefore = (nint)context->CommandAllocationBase;
@@ -173,8 +181,8 @@ internal sealed unsafe class NativeBackend : IDisposable
                     if (commandBaseAfter == commandBaseBefore && commandUsedAfter <= commandUsedBefore)
                         throw new InvalidOperationException("The native pass builder produced no command data.");
 
-                    previousTriangleWorldView = currentWorldView;
-                    hasPreviousTriangleWorldView = true;
+                    previousView = view;
+                    hasPreviousView = true;
                 }
                 finally
                 {
@@ -184,7 +192,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                 if (Interlocked.CompareExchange(ref loggedFirstSubmission, 1, 0) == 0)
                 {
                     log.Information(
-                        "[Underpaint] Submitted one owned triangle every render frame: Frame={Frame}, "
+                        "[Underpaint] Submitted triangle {PrimitiveId} through the native pass builder: Frame={Frame}, "
                             + "CommandArena=0x{CommandBaseBefore:X}+{CommandUsedBefore}->0x{CommandBaseAfter:X}+{CommandUsedAfter}, "
                             + "ActivePass={ActivePass}, OnRenderMaterial=0x{OnRenderMaterial:X}, "
                             + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
@@ -192,6 +200,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                             + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                             + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
                             + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
+                        triangle.Id,
                         frame,
                         commandBaseBefore,
                         commandUsedBefore,
@@ -225,6 +234,22 @@ internal sealed unsafe class NativeBackend : IDisposable
         return result;
     }
 
+    private bool TryTakeTriangle(out TriangleSubmission submission)
+    {
+        lock (submissionLock)
+        {
+            if (Volatile.Read(ref hasPendingTriangle) == 0)
+            {
+                submission = default;
+                return false;
+            }
+
+            submission = pendingTriangle;
+            Volatile.Write(ref hasPendingTriangle, 0);
+            return true;
+        }
+    }
+
     private static bool IsFinite(Matrix4x4 matrix)
     {
         var values = new ReadOnlySpan<float>(&matrix, 16);
@@ -239,3 +264,5 @@ internal sealed unsafe class NativeBackend : IDisposable
 
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
 }
+
+internal readonly record struct TriangleSubmission(ulong Id, Matrix4x4 CurrentTransform, Matrix4x4 PreviousTransform, Vector4 Color);

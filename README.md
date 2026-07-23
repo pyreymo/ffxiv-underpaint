@@ -25,9 +25,9 @@ create game objects or provide a general model renderer.
 
 The previous hand-written G-buffer and transparency prototypes have been archived in Git history.
 The native implementation is being rebuilt in small, reviewable steps. The renderer currently
-owns one fixed native triangle mesh, independently loads its fixed donor material, and observes
-the native main-view pass-builder rendezvous. It verifies the fixed `charactertransparency.shpk`
-material helpers using its own initialized selection and restores the three context slots they
-modify, but does not submit its triangle for rendering yet.
+accepts one triangle submission per frame, owns its fixed native mesh, and independently loads its
+fixed donor material. It supplies the triangle's current and previous world transforms, color,
+dither alpha, constants, textures, and geometry before calling the native main-view pass builder,
+then restores the context state it modified.
 
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the verified findings retained from the prototypes.

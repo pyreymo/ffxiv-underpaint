@@ -445,3 +445,18 @@ subview 12；subview 11 的 `Camera*` 实际为空。
 previous world-view 现在保存最后一次成功生成 command 时使用的 current world-view。首次提交没有历史，
 因此 previous 等于 current；后续提交先写入保存值，只有 pass builder 确认产生 command 后才推进历史。
 不兼容 pass、未就绪 camera 或失败提交都不会污染下一次有效提交的 previous。
+
+## 最小公开三角形提交
+
+`Renderer.SubmitTriangle` 现在接收稳定 ID、current/previous world transform、RGB 和 alpha。alpha 对应当前
+已经验证的 `InstanceConstant[0].w`，因此公开注释明确称为 native dither fade，不把它描述成平滑混合。
+调用者不接触 material、shader、pass、native pointer 或 GPU resource。
+
+第一版交接暂时只有一个受锁保护的待提交槽。调用者每个 framework frame 写入一次；同一帧重复写入时最后
+一次覆盖前一次。后台只有在固定 shader selection、兼容 pass 和主 camera 都有效后才消费，消费后只绘制
+一次；调用者停止提交时不会继续绘制陈旧图元。这是单三角形闭环所需的最小跨线程边界，尚未加入图元集合、
+缓存或复杂帧生命周期。
+
+后台不再构造测试位置或颜色。它只把调用者提供的 current world 与当前 view 相乘；previous world 则与
+最后一次成功提交保存的 view 相乘。首次没有相机历史时使用当前 view，pass builder 未产生 command 时
+不推进相机历史。
