@@ -416,3 +416,15 @@ pass 后才占用本帧并安装自有输入。`ApplyMaterial` 未安装固定 m
 camera 状态固定世界位置，随后另一个兼容 pass 才实际绘制。实现继续收紧顺序：只有 selection 已解析、
 当前 pass 有 VS/PS 且成功占用本帧之后，才读取 render camera、首次固定 world、写入 constants 并调用
 builder。这样首次 anchor 和实际 draw 必然属于同一个 context/pass。
+
+随后对实际提交矩阵记录前八帧，结果从首帧起全部为 `NaN`。原因不是乘法顺序：代码误用了
+`Graphics.Scene.CameraManager.CurrentCamera`，其 scene-side matrix 在 hook 时刻为奇异矩阵，而其
+`RenderCamera.ViewMatrix` 含非有限值；`Matrix4x4.Invert` 对后者仍返回成功，产生全 NaN 的 inverse。
+context system CameraParameter（ID 24、944 bytes）确实存在，但作为 GPU/system-owned constant 没有
+可读 source pointer，因此没有通过 D3D11 capture 强行复制它。
+
+本地 Brio 的有效世界投影路径和 FFCS 都指向另一个同名类型：
+`Client.Game.Control.CameraManager.Instance()->GetActiveCamera()`。active game camera 内嵌的
+`SceneCamera.ViewMatrix` 是游戏逻辑侧当前相机矩阵，也是 FFCS `SceneCamera.WorldToScreen` 使用的输入。
+实现改为只使用这条路径，并在求逆前明确检查全部 16 个 float 为有限值。调查用的 world-view 和 system
+camera probes 已删除。

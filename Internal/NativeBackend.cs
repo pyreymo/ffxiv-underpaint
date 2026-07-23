@@ -2,9 +2,9 @@ using System.Numerics;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
-using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.Interop;
+using GameCameraManager = FFXIVClientStructs.FFXIV.Client.Game.Control.CameraManager;
 
 namespace Underpaint.Internal;
 
@@ -26,7 +26,6 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int submissionDisabled;
     private Matrix4x4 fixedTriangleWorld;
     private bool hasFixedTriangleWorld;
-    private int loggedCameraState;
 
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
@@ -133,20 +132,18 @@ internal sealed unsafe class NativeBackend : IDisposable
                     if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
                         return result;
 
-                    if (Interlocked.CompareExchange(ref loggedCameraState, 1, 0) == 0)
-                        log.Information("[Underpaint] System camera probe: {CameraState}", CameraStateProbe.Describe((byte*)context));
+                    var cameraManager = GameCameraManager.Instance();
+                    var camera = cameraManager == null ? null : cameraManager->GetActiveCamera();
+                    if (camera == null)
+                        throw new InvalidOperationException("The active game camera is not available.");
 
-                    var cameraManager = CameraManager.Instance();
-                    var camera = cameraManager == null ? null : cameraManager->CurrentCamera;
-                    var renderCamera = camera == null ? null : camera->RenderCamera;
-                    if (renderCamera == null)
-                        throw new InvalidOperationException("The current render camera is not available.");
-
-                    var view = (Matrix4x4)renderCamera->ViewMatrix;
+                    var view = (Matrix4x4)camera->SceneCamera.ViewMatrix;
+                    if (!IsFinite(view))
+                        throw new InvalidOperationException("The active game camera view matrix is not finite.");
                     if (!hasFixedTriangleWorld)
                     {
                         if (!Matrix4x4.Invert(view, out var inverseView))
-                            throw new InvalidOperationException("The current render view matrix is not invertible.");
+                            throw new InvalidOperationException("The active game camera view matrix is not invertible.");
                         fixedTriangleWorld = Matrix4x4.CreateTranslation(0, 0, -5) * inverseView;
                         hasFixedTriangleWorld = true;
                     }
@@ -218,6 +215,18 @@ internal sealed unsafe class NativeBackend : IDisposable
         }
 
         return result;
+    }
+
+    private static bool IsFinite(Matrix4x4 matrix)
+    {
+        var values = new ReadOnlySpan<float>(&matrix, 16);
+        foreach (var value in values)
+        {
+            if (!float.IsFinite(value))
+                return false;
+        }
+
+        return true;
     }
 
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
