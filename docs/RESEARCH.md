@@ -410,3 +410,9 @@ rendezvous 出现 active pass 6。固定 selection 没有 pass 6 的 VS/PS；旧
 对应 shader 时恢复 context、销毁 selection，并继续等待同帧或后续的兼容 rendezvous；只有找到兼容
 pass 后才占用本帧并安装自有输入。`ApplyMaterial` 未安装固定 material、selection descriptor 为空等
 真正的固定路径失效仍会抛出异常并永久停止提交，不会被这个 gate 吞掉。
+
+第一次 gate 修正后 command 持续生成，但画面仍不可见。检查顶层顺序发现 world anchor 和 constant 写入
+仍发生在 shader selection/active-pass gate 之前；因此某个不兼容 pass 的 rendezvous 可以先用自己的
+camera 状态固定世界位置，随后另一个兼容 pass 才实际绘制。实现继续收紧顺序：只有 selection 已解析、
+当前 pass 有 VS/PS 且成功占用本帧之后，才读取 render camera、首次固定 world、写入 constants 并调用
+builder。这样首次 anchor 和实际 draw 必然属于同一个 context/pass。

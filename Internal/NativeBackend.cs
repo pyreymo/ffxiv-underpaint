@@ -96,25 +96,6 @@ internal sealed unsafe class NativeBackend : IDisposable
         {
             resources.CreateConstants();
             resources.LoadWhiteTexture();
-            var cameraManager = CameraManager.Instance();
-            var camera = cameraManager == null ? null : cameraManager->CurrentCamera;
-            var renderCamera = camera == null ? null : camera->RenderCamera;
-            if (renderCamera == null)
-                throw new InvalidOperationException("The current render camera is not available.");
-
-            var view = (Matrix4x4)renderCamera->ViewMatrix;
-            if (!hasFixedTriangleWorld)
-            {
-                if (!Matrix4x4.Invert(view, out var inverseView))
-                    throw new InvalidOperationException("The current render view matrix is not invertible.");
-                fixedTriangleWorld = Matrix4x4.CreateTranslation(0, 0, -5) * inverseView;
-                hasFixedTriangleWorld = true;
-            }
-
-            var currentWorldView = fixedTriangleWorld * view;
-            var previousWorldView = currentWorldView;
-            var triangleColor = new Vector4(1, 0, 0, 0.5f);
-            resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, triangleColor);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
                 resources.InstanceConstant,
@@ -150,6 +131,26 @@ internal sealed unsafe class NativeBackend : IDisposable
                         return result;
                     if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
                         return result;
+
+                    var cameraManager = CameraManager.Instance();
+                    var camera = cameraManager == null ? null : cameraManager->CurrentCamera;
+                    var renderCamera = camera == null ? null : camera->RenderCamera;
+                    if (renderCamera == null)
+                        throw new InvalidOperationException("The current render camera is not available.");
+
+                    var view = (Matrix4x4)renderCamera->ViewMatrix;
+                    if (!hasFixedTriangleWorld)
+                    {
+                        if (!Matrix4x4.Invert(view, out var inverseView))
+                            throw new InvalidOperationException("The current render view matrix is not invertible.");
+                        fixedTriangleWorld = Matrix4x4.CreateTranslation(0, 0, -5) * inverseView;
+                        hasFixedTriangleWorld = true;
+                    }
+
+                    var currentWorldView = fixedTriangleWorld * view;
+                    var previousWorldView = currentWorldView;
+                    var triangleColor = new Vector4(1, 0, 0, 0.5f);
+                    resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, triangleColor);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
                     commandBaseBefore = (nint)context->CommandAllocationBase;
