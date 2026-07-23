@@ -4,8 +4,6 @@ using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.Interop;
-using GameCameraManager = FFXIVClientStructs.FFXIV.Client.Game.Control.CameraManager;
-using GameControl = FFXIVClientStructs.FFXIV.Client.Game.Control.Control;
 
 namespace Underpaint.Internal;
 
@@ -131,19 +129,16 @@ internal sealed unsafe class NativeBackend : IDisposable
                     if (!MaterialHelper.TryResolveActiveShaders((byte*)context, helperResult.ShaderDescriptor, out shaders))
                         return result;
 
-                    var cameraManager = GameCameraManager.Instance();
-                    var camera = cameraManager == null ? null : cameraManager->GetActiveCamera();
-                    var renderCamera = camera == null ? null : camera->SceneCamera.RenderCamera;
-                    var control = GameControl.Instance();
-                    if (renderCamera == null || control == null)
+                    var renderManager = Manager.Instance();
+                    if (renderManager == null)
                         return result;
 
-                    var projection = (Matrix4x4)renderCamera->ProjectionMatrix;
-                    var viewProjection = (Matrix4x4)control->ViewProjectionMatrix;
-                    if (!IsFinite(projection) || !IsFinite(viewProjection) || !Matrix4x4.Invert(projection, out var inverseProjection))
+                    var camera = renderManager->Views[ExpectedMainView].SubViews[ExpectedMainSubView].Camera;
+                    if (camera == null)
                         return result;
 
-                    var view = viewProjection * inverseProjection;
+                    var view = (Matrix4x4)camera->ViewMatrix;
+                    view.M44 = 1;
                     if (!IsFinite(view) || !Matrix4x4.Invert(view, out var inverseView))
                         return result;
                     if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)

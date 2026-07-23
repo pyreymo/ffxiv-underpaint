@@ -429,9 +429,10 @@ context system CameraParameter（ID 24、944 bytes）确实存在，但作为 GP
 实现改为只使用这条路径，并在求逆前明确检查全部 16 个 float 为有限值。调查用的 world-view 和 system
 camera probes 已删除。
 
-active game camera 的 `SceneCamera.ViewMatrix` 在 ModelRenderer hook 时刻仍不是完整可逆矩阵。Brio 在
-UI 路径中用它做 `WorldToScreen`，只能证明它适合正向投影，不能证明此处可以反求 world transform。
-FFCS 另行公开 `Game.Control.Control.ViewProjectionMatrix`，active camera 的 render camera 则公开完整
-projection。按同一 row-vector 约定，当前主 view 使用
-`view = viewProjection * inverse(projection)` 重建完整 view。projection、view-projection 和重建后的
-view 都必须有限且可逆；未就绪时只跳过当前 rendezvous，并且在这些检查通过后才占用本帧。
+此前把 `SceneCamera.ViewMatrix` 不可逆误判为矩阵来源错误。FFCS 的 render manager 直接公开 87 个
+`View`，每个 view 又公开 16 个 `SubView` 及其 `Camera*`，因此在已验证的 view 30 / subview 11
+rendezvous 上可以取得完全相同的 render camera，不需要从 game-control projection 反推 view。
+
+该 render camera 的 `ViewMatrix.M44` 在运行时不是齐次矩阵所需的 `1`；Brio 和 Intoner 的相机路径都在
+做矩阵求逆或 gizmo 计算前明确将它恢复为 `1`。当前实现只做同一修正，再检查矩阵有限且可逆。相机未就绪时
+只跳过当前 rendezvous，并且在检查通过后才占用本帧。
