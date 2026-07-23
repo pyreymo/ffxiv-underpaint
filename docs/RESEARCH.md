@@ -464,14 +464,18 @@ material、shader、pass、native pointer 或 GPU resource。
 验证的平滑透明。正确组合是 `InstanceConstant[0].rgb` 提供颜色、`InstanceConstant[0].w = 1`，并由
 stream 1 / attribute 3 的 `Color0.a` 提供平滑 alpha。
 
-为避免每帧重建 immutable VB，两个 vertex stream 已拆成两个原生 buffer。stream 0 的固定位置仍使用从
-原生静态刚性模型捕获的 `0x804`；stream 1 使用 `0x801`。IDA 中的 native buffer initializer 明确显示：
-flag `0x1` 选择 `D3D11_USAGE_DYNAMIC`、`D3D11_CPU_ACCESS_WRITE` 和 vertex-buffer bind，flag `0x800`
-表示延迟到 initialize 时创建。buffer `+0x20` 的次级接口 slot 1/2 分别调用
-`Map(WRITE_DISCARD)` / `Unmap`，映射地址存于 buffer `+0x60`。
+冷启动二分确认 `28c2cfd Restore smooth triangle alpha` 是第一个导致 GPU hang 的提交；上一提交
+`46db115 Add one triangle submission` 稳定。坏提交不只改变 alpha 来源，还把 stream 1 从已经捕获验证的
+静态 `0x804` buffer 改成了 `0x801` dynamic buffer，并在每次提交时 Map/Unmap。IDA 确认次级接口
+slot 1/2 和 `+0x60` 映射地址的读取与当前二进制一致，但没有找到游戏原生用 `0x801` 创建并通过当前
+pass builder 延迟消费这类 vertex stream 的样本。因此不能把“Map 调用本身可执行”当成整条资源协议
+已经验证。
 
-每次有效提交现在完整重写三个 24-byte stream 1 顶点，只改变 `Color0.a`，并把 alpha 限制在 `[0,1]`。
-stream 0、IB 和 declaration 保持静态；公开 alpha 恢复为平滑 vertex alpha，dither 不再属于公开接口。
+当前删除这套 dynamic VB 路径。stream 0 和 stream 1 都恢复使用已验证的静态 `0x804` 创建参数。
+每个稳定 ID 仍持有自己的 stream 1；alpha 量化为 `Color0.a` 的一个 byte，只有该 byte 实际变化时才
+创建新的静态 stream 1，并通过游戏资源本身的 delayed-release 路径释放旧 buffer。稳定 alpha 不会产生
+逐帧资源创建。这个实现优先恢复可验证的原生资源生命周期；若以后需要高频 alpha 动画，必须先捕获一条
+游戏原生动态 vertex stream 的完整创建、更新和 command 消费路径。
 
 实验接口随后将 `ditherFade` 作为独立参数重新接入 `InstanceConstant[0].w`。它与 `alpha` 可以同时存在：
 `alpha` 仍只写 `Color0.a`，`ditherFade` 不再借用 alpha 的名称。当前固定 shader variant 中已经观察到
@@ -485,7 +489,7 @@ stream 0、IB 和 declaration 保持静态；公开 alpha 恢复为平滑 vertex
 
 pass builder command 保存 GPU resource 引用，不会为每个图元复制共享 buffer 的当前内容。因此两个图元
 若轮流改写同一个 world、instance 或 stream 1 buffer，前一个 command 最终也可能读取后一个图元的数据。
-稳定 ID 现在用于查找每图元原生资源：每个 ID 分别持有 world constant、instance constant 和动态 stream 1；
+稳定 ID 现在用于查找每图元原生资源：每个 ID 分别持有 world constant、instance constant 和独立 stream 1；
 单位 position stream、IB、declaration、model/material constants 和中性纹理继续共享。同一 frame 内要求
 ID 唯一。当前不做缓存淘汰，所有 ID 资源在 `Renderer.Dispose` 时释放。
 
@@ -495,9 +499,13 @@ ID 唯一。当前不做缓存淘汰，所有 ID 资源在 `Renderer.Dispose` �
 TAA 拖影；红色单三角形也存在，因此不能只归因于 quad 内部索引接缝。
 
 第一次 probe 把 pass 4 的未识别 class-1 sampler（CRC `0x800BE99B`、运行时 ID 49）覆盖为
-`white.tex`。脏痕不变，随后游戏进入 GPU hang。第二次创建 `8×32 R16G16B16A16_FLOAT` 自有颜色表并
-绑定 ID 62，也在首次成功生成三个 command 后进入 GPU hang。两次均没有 Underpaint 托管异常或
-context restore 失败，crash handler 最终因目标进程无响应而终止进程；两项 probe 都已回退。
+`white.tex`，脏痕不变。第二次创建 `8×32 R16G16B16A16_FLOAT` 自有颜色表并绑定 ID 62。两次运行都
+出现 GPU hang，且没有 Underpaint 托管异常或 context restore 失败；两项 probe 都已回退。
+
+后续冷启动二分证明，GPU hang 在更早的 dynamic stream 1 提交 `28c2cfd` 已经存在。用户在该提交之后
+一直通过热加载验证画面，没有重新验证冷启动，因此这两次 sampler 实验不能再作为“引入 hang”的证据；
+它们只证明没有消除脏痕。sampler 和颜色表仍未完成正向来源验证，在 dynamic stream 1 修复并重新确认
+启动稳定前，不重新引入。
 
 IDA 中的 `MaterialResourceHandle.PrepareColorTable` 确认原生表使用 2048-byte 内容、一个 mip、
 `R16G16B16A16_FLOAT`、flags `0x80000804` 和创建参数 `7`。这些值本身有来源，但仅复制纹理创建参数
@@ -514,7 +522,7 @@ IDA 中的 `MaterialResourceHandle.PrepareColorTable` 确认原生表使用 2048
 三角形设为 `alpha = 1`、`ditherFade = 1` 后仍可观察到，因此当前证据不能把现象归因于平滑 alpha、
 dither，或两个图元复用同一份可变资源。
 
-现有实现为每个稳定 ID 单独提供 world、instance 和动态 stream 1，并在整批 command 成功后才推进
+现有实现为每个稳定 ID 单独提供 world、instance 和静态 stream 1，并在整批 command 成功后才推进
 previous view。尚未通过对照实验确认 previous world-view 是否与游戏的 temporal camera 历史完全一致，
 也未证明固定透明 pass 是否需要额外 velocity 输入。第一版暂时记录该限制，不增加 velocity pipeline、
 额外 hook 或猜测性的时域修正。
@@ -525,6 +533,6 @@ previous view。尚未通过对照实验确认 previous world-view 是否与游�
 position VB 和 IB，共用已经验证的两 stream vertex declaration。三角形为三个顶点和三个索引；四边形
 为四个顶点和六个索引，两个三角面保持与现有三角形相同的绕序。
 
-每个稳定 ID 仍单独持有动态 stream 1、world constant 和 instance constant。类型变化时只释放并重建
+每个稳定 ID 仍单独持有静态 stream 1、world constant 和 instance constant。类型变化时只释放并重建
 该 ID 的三项可变资源；固定 mesh、material/model constants、纹理和 declaration 继续共享。原生执行顺序
 没有变化：安装所选 mesh 和该 ID 的输入后，以对应 vertex/index count 调用同一个 pass builder。

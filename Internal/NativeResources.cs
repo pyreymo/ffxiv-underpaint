@@ -21,17 +21,6 @@ internal sealed unsafe class NativeResources : IDisposable
     // The individual flag bits have not been identified.
     private const uint StaticBufferCreationFlags = 0x804;
 
-    // The native buffer initializer maps flag 0x1 to D3D11_USAGE_DYNAMIC with
-    // D3D11_CPU_ACCESS_WRITE. Flag 0x800 defers creation until initialization.
-    private const uint DynamicVertexBufferCreationFlags = 0x801;
-
-    // The buffer's secondary interface exposes Map and Unmap in slots 1 and 2.
-    // Map stores the WRITE_DISCARD pointer at offset 0x60 in the buffer object.
-    private const int BufferMapInterfaceOffset = 0x20;
-    private const int BufferMappedDataOffset = 0x60;
-    private const int BufferMapSlot = 1;
-    private const int BufferUnmapSlot = 2;
-
     // Raw third argument passed by the captured native index-buffer creation.
     // Its exact engine meaning and official enum name have not been identified.
     private const int IndexBufferThirdArgument = 1;
@@ -217,40 +206,24 @@ internal sealed unsafe class NativeResources : IDisposable
             primitives.Remove(id);
         }
 
+        var packedAlpha = PackNormalizedByte(alpha);
         if (!primitives.TryGetValue(id, out primitive))
         {
-            primitive = CreatePrimitiveResources(type, GetMesh(type).VertexCount);
+            primitive = CreatePrimitiveResources(type, GetMesh(type).VertexCount, packedAlpha);
             primitives.Add(id, primitive);
         }
+        else if (primitive.Alpha != packedAlpha)
+        {
+            var previousStream1 = primitive.Stream1Buffer;
+            var stream1 = CreateStream1Buffer(type, GetMesh(type).VertexCount, packedAlpha);
+            primitive = primitive with { Stream1Buffer = stream1, Alpha = packedAlpha };
+            primitives[id] = primitive;
+            Release(ref previousStream1);
+        }
 
-        WritePrimitiveAlpha(type, primitive.Stream1Buffer, alpha);
         WriteWorldConstant((ConstantBuffer*)primitive.WorldConstant, currentWorldView, previousWorldView);
         WriteInstanceConstant((ConstantBuffer*)primitive.InstanceConstant, new Vector4(color.X, color.Y, color.Z, ditherFade));
         return primitive;
-    }
-
-    private static void WritePrimitiveAlpha(PrimitiveType type, nint stream1Buffer, float alpha)
-    {
-        alpha = Math.Clamp(alpha, 0, 1);
-        var mapInterface = stream1Buffer + BufferMapInterfaceOffset;
-        var vtable = *(nint**)mapInterface;
-        var map = (delegate* unmanaged<nint, nint>)vtable[BufferMapSlot];
-        var unmap = (delegate* unmanaged<nint, void>)vtable[BufferUnmapSlot];
-        if ((int)map(mapInterface) < 0)
-            throw new InvalidOperationException("The dynamic triangle attributes could not be mapped.");
-
-        try
-        {
-            var stream1 = *(Stream1Vertex**)(stream1Buffer + BufferMappedDataOffset);
-            if (stream1 == null)
-                throw new InvalidOperationException("The dynamic primitive attributes have no mapped storage.");
-
-            WriteStream1(type, new Span<Stream1Vertex>(stream1, GetVertexCount(type)), alpha);
-        }
-        finally
-        {
-            unmap(mapInterface);
-        }
     }
 
     internal void LoadWhiteTexture()
@@ -320,7 +293,7 @@ internal sealed unsafe class NativeResources : IDisposable
         *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = Matrix4x4.Transpose(previousWorldView);
     }
 
-    private NativePrimitiveResources CreatePrimitiveResources(PrimitiveType type, int vertexCount)
+    private NativePrimitiveResources CreatePrimitiveResources(PrimitiveType type, int vertexCount, byte alpha)
     {
         var device = Device.Instance();
         if (device == null)
@@ -331,20 +304,10 @@ internal sealed unsafe class NativeResources : IDisposable
         nint instance = 0;
         try
         {
-            var vertices = stackalloc Stream1Vertex[vertexCount];
-            WriteStream1(type, new Span<Stream1Vertex>(vertices, vertexCount), 1);
-            stream1 = createVertexBuffer(
-                device,
-                vertexCount * sizeof(Stream1Vertex),
-                DynamicVertexBufferCreationFlags,
-                VertexBufferFourthArgument
-            );
-            if (stream1 == 0 || initializeVertexBuffer(stream1, vertices) == 0)
-                throw new InvalidOperationException($"The game rejected the {type} attribute buffer.");
-
+            stream1 = CreateStream1Buffer(type, vertexCount, alpha);
             world = CreateAndClearConstantBuffer(device, WorldConstantBytes, $"{type} world");
             instance = CreateAndClearConstantBuffer(device, InstanceConstantBytes, $"{type} instance");
-            return new NativePrimitiveResources(type, stream1, world, instance);
+            return new NativePrimitiveResources(type, stream1, world, instance, alpha);
         }
         catch
         {
@@ -353,6 +316,27 @@ internal sealed unsafe class NativeResources : IDisposable
             Release(ref stream1);
             throw;
         }
+    }
+
+    private nint CreateStream1Buffer(PrimitiveType type, int vertexCount, byte alpha)
+    {
+        var device = Device.Instance();
+        if (device == null)
+            throw new InvalidOperationException("The native graphics device is not available.");
+
+        var vertices = stackalloc Stream1Vertex[vertexCount];
+        WriteStream1(type, new Span<Stream1Vertex>(vertices, vertexCount), alpha / 255f);
+        var stream1 = createVertexBuffer(
+            device,
+            vertexCount * sizeof(Stream1Vertex),
+            StaticBufferCreationFlags,
+            VertexBufferFourthArgument
+        );
+        if (stream1 != 0 && initializeVertexBuffer(stream1, vertices) != 0)
+            return stream1;
+
+        Release(ref stream1);
+        throw new InvalidOperationException($"The game rejected the {type} attribute buffer.");
     }
 
     private NativeMesh CreateMesh(
@@ -542,11 +526,13 @@ internal sealed unsafe class NativeResources : IDisposable
 
     private static uint PackNormalizedByte4(float x, float y, float z, float w)
     {
-        return (byte)MathF.Round(x * 255)
-            | ((uint)(byte)MathF.Round(y * 255) << 8)
-            | ((uint)(byte)MathF.Round(z * 255) << 16)
-            | ((uint)(byte)MathF.Round(w * 255) << 24);
+        return PackNormalizedByte(x)
+            | ((uint)PackNormalizedByte(y) << 8)
+            | ((uint)PackNormalizedByte(z) << 16)
+            | ((uint)PackNormalizedByte(w) << 24);
     }
+
+    private static byte PackNormalizedByte(float value) => (byte)MathF.Round(Math.Clamp(value, 0, 1) * 255);
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private readonly struct VertexElement(byte stream, byte offset, byte format, byte attribute)
@@ -589,4 +575,10 @@ internal sealed unsafe class NativeResources : IDisposable
 
 internal readonly record struct NativeMesh(nint Stream0Buffer, nint IndexBuffer, int VertexCount, int IndexCount);
 
-internal readonly record struct NativePrimitiveResources(PrimitiveType Type, nint Stream1Buffer, nint WorldConstant, nint InstanceConstant);
+internal readonly record struct NativePrimitiveResources(
+    PrimitiveType Type,
+    nint Stream1Buffer,
+    nint WorldConstant,
+    nint InstanceConstant,
+    byte Alpha
+);
