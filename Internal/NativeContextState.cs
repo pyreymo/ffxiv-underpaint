@@ -127,7 +127,11 @@ internal unsafe ref struct NativeContextState
 
     private readonly SamplerState GetSampler(uint id) => *(SamplerState*)(context + SamplerOffset + id * SamplerSize);
 
-    private readonly void SetSampler(uint id, Texture* texture) => SetSampler(id, new SamplerState(0, (nint)texture, 0));
+    private readonly void SetSampler(uint id, Texture* texture)
+    {
+        var current = GetSampler(id);
+        SetSampler(id, new SamplerState(current.Unknown, (nint)texture, current.Flags));
+    }
 
     private readonly void SetSampler(uint id, SamplerState value) => *(SamplerState*)(context + SamplerOffset + id * SamplerSize) = value;
 

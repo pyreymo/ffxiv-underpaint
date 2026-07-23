@@ -489,6 +489,25 @@ pass builder command 保存 GPU resource 引用，不会为每个图元复制共
 单位 position stream、IB、declaration、model/material constants 和中性纹理继续共享。同一 frame 内要求
 ID 唯一。当前不做缓存淘汰，所有 ID 资源在 `Renderer.Dispose` 时释放。
 
+## 两次不安全的 sampler probe
+
+红色三角形和蓝色四边形内部的稳定局部脏痕会随图元移动，不会在镜头静止后消失。它不是此前记录的
+TAA 拖影；红色单三角形也存在，因此不能只归因于 quad 内部索引接缝。
+
+第一次 probe 把 pass 4 的未识别 class-1 sampler（CRC `0x800BE99B`、运行时 ID 49）覆盖为
+`white.tex`。脏痕不变，随后游戏进入 GPU hang。第二次创建 `8×32 R16G16B16A16_FLOAT` 自有颜色表并
+绑定 ID 62，也在首次成功生成三个 command 后进入 GPU hang。两次均没有 Underpaint 托管异常或
+context restore 失败，crash handler 最终因目标进程无响应而终止进程；两项 probe 都已回退。
+
+IDA 中的 `MaterialResourceHandle.PrepareColorTable` 确认原生表使用 2048-byte 内容、一个 mip、
+`R16G16B16A16_FLOAT`、flags `0x80000804` 和创建参数 `7`。这些值本身有来源，但仅复制纹理创建参数
+仍不足以证明绑定协议正确。
+
+检查 context 安装逻辑发现，24-byte sampler state 中除了 `Texture*` 还有未识别的首字段和 flags。
+此前替换 normal/index/table 纹理时把两者都清零；`ApplyMaterial` 已经为当前 shader selection 生成了
+对应状态，因此更直接的行为是只替换中间的 `Texture*`，保留另外两个字段。当前先只修正这项状态写入，
+继续使用原有纹理，以单独验证稳定性；尚未重新引入自建颜色表。
+
 ## 相机运动时的轻微边缘拖影
 
 实机同时显示红、绿两个独立三角形时，二者在镜头运动下都有轻微边缘拖影；停止镜头后稳定。将红色
