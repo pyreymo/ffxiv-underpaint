@@ -25,8 +25,10 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int loggedFirstSubmission;
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
-    private int hasPendingTriangle;
-    private TriangleSubmission pendingTriangle;
+    private int hasPendingFrame;
+    private Triangle[] pendingTriangles = [];
+    private int pendingTriangleCount;
+    private Triangle[] renderingTriangles = [];
     private Matrix4x4 previousView;
     private bool hasPreviousView;
 
@@ -48,12 +50,16 @@ internal sealed unsafe class NativeBackend : IDisposable
 
     public void Dispose() => buildPassesHook.Dispose();
 
-    internal void SubmitTriangle(TriangleSubmission submission)
+    internal void SubmitFrame(ReadOnlySpan<Triangle> triangles)
     {
         lock (submissionLock)
         {
-            pendingTriangle = submission;
-            Volatile.Write(ref hasPendingTriangle, 1);
+            if (pendingTriangles.Length < triangles.Length)
+                pendingTriangles = new Triangle[triangles.Length];
+
+            triangles.CopyTo(pendingTriangles);
+            pendingTriangleCount = triangles.Length;
+            Volatile.Write(ref hasPendingFrame, triangles.Length == 0 ? 0 : 1);
         }
     }
 
@@ -95,7 +101,7 @@ internal sealed unsafe class NativeBackend : IDisposable
 
         if (Volatile.Read(ref submissionDisabled) != 0)
             return result;
-        if (Volatile.Read(ref hasPendingTriangle) == 0)
+        if (Volatile.Read(ref hasPendingFrame) == 0)
             return result;
 
         var framework = Framework.Instance();
@@ -110,6 +116,7 @@ internal sealed unsafe class NativeBackend : IDisposable
         {
             resources.CreateConstants();
             resources.LoadWhiteTexture();
+            resources.WriteSharedConstants(material.ShaderPackage);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
                 resources.InstanceConstant,
@@ -138,7 +145,8 @@ internal sealed unsafe class NativeBackend : IDisposable
                 ulong commandUsedBefore;
                 nint commandBaseAfter;
                 ulong commandUsedAfter;
-                TriangleSubmission triangle;
+                Triangle[] triangles;
+                int triangleCount;
                 try
                 {
                     helperResult = materialHelper.Apply((ModelRenderer*)modelRenderer, (byte*)context, ownedMaterialParameters, selection);
@@ -159,29 +167,46 @@ internal sealed unsafe class NativeBackend : IDisposable
                         return result;
                     if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
                         return result;
-                    if (!TryTakeTriangle(out triangle))
+                    if (!TryTakeFrame(out triangles, out triangleCount))
                         return result;
 
-                    var currentWorldView = triangle.CurrentTransform * view;
-                    var previousWorldView = triangle.PreviousTransform * (hasPreviousView ? previousView : view);
-                    resources.WriteTriangleAlpha(triangle.Color.W);
-                    var instanceColor = new Vector4(triangle.Color.X, triangle.Color.Y, triangle.Color.Z, triangle.DitherFade);
-                    resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, instanceColor);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
-                    contextState.Install(resources);
                     commandBaseBefore = (nint)context->CommandAllocationBase;
                     commandUsedBefore = context->CommandAllocationUsedSize;
-                    buildPassesHook.Original(
-                        modelRenderer,
-                        (nint)ownedMaterialParameters,
-                        NativeResources.VertexCount,
-                        0,
-                        NativeResources.IndexCount
-                    );
+                    for (var index = 0; index < triangleCount; index++)
+                    {
+                        var triangle = triangles[index];
+                        var currentWorldView = triangle.CurrentTransform * view;
+                        var previousWorldView = triangle.PreviousTransform * (hasPreviousView ? previousView : view);
+                        var triangleResources = resources.WriteTriangle(
+                            triangle.Id,
+                            currentWorldView,
+                            previousWorldView,
+                            triangle.Color,
+                            triangle.Alpha,
+                            triangle.DitherFade
+                        );
+                        contextState.Install(resources, triangleResources);
+
+                        var drawCommandBaseBefore = (nint)context->CommandAllocationBase;
+                        var drawCommandUsedBefore = context->CommandAllocationUsedSize;
+                        buildPassesHook.Original(
+                            modelRenderer,
+                            (nint)ownedMaterialParameters,
+                            NativeResources.VertexCount,
+                            0,
+                            NativeResources.IndexCount
+                        );
+                        if (
+                            (nint)context->CommandAllocationBase == drawCommandBaseBefore
+                            && context->CommandAllocationUsedSize <= drawCommandUsedBefore
+                        )
+                            throw new InvalidOperationException(
+                                $"The native pass builder produced no command data for triangle {triangle.Id}."
+                            );
+                    }
                     commandBaseAfter = (nint)context->CommandAllocationBase;
                     commandUsedAfter = context->CommandAllocationUsedSize;
-                    if (commandBaseAfter == commandBaseBefore && commandUsedAfter <= commandUsedBefore)
-                        throw new InvalidOperationException("The native pass builder produced no command data.");
 
                     previousView = view;
                     hasPreviousView = true;
@@ -194,7 +219,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                 if (Interlocked.CompareExchange(ref loggedFirstSubmission, 1, 0) == 0)
                 {
                     log.Information(
-                        "[Underpaint] Submitted triangle {PrimitiveId} through the native pass builder: Frame={Frame}, "
+                        "[Underpaint] Submitted {PrimitiveCount} triangles through the native pass builder: Frame={Frame}, "
                             + "CommandArena=0x{CommandBaseBefore:X}+{CommandUsedBefore}->0x{CommandBaseAfter:X}+{CommandUsedAfter}, "
                             + "ActivePass={ActivePass}, OnRenderMaterial=0x{OnRenderMaterial:X}, "
                             + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
@@ -202,7 +227,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                             + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                             + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
                             + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
-                        triangle.Id,
+                        triangleCount,
                         frame,
                         commandBaseBefore,
                         commandUsedBefore,
@@ -236,18 +261,22 @@ internal sealed unsafe class NativeBackend : IDisposable
         return result;
     }
 
-    private bool TryTakeTriangle(out TriangleSubmission submission)
+    private bool TryTakeFrame(out Triangle[] triangles, out int triangleCount)
     {
         lock (submissionLock)
         {
-            if (Volatile.Read(ref hasPendingTriangle) == 0)
+            if (Volatile.Read(ref hasPendingFrame) == 0)
             {
-                submission = default;
+                triangles = [];
+                triangleCount = 0;
                 return false;
             }
 
-            submission = pendingTriangle;
-            Volatile.Write(ref hasPendingTriangle, 0);
+            (renderingTriangles, pendingTriangles) = (pendingTriangles, renderingTriangles);
+            triangles = renderingTriangles;
+            triangleCount = pendingTriangleCount;
+            pendingTriangleCount = 0;
+            Volatile.Write(ref hasPendingFrame, 0);
             return true;
         }
     }
@@ -266,11 +295,3 @@ internal sealed unsafe class NativeBackend : IDisposable
 
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
 }
-
-internal readonly record struct TriangleSubmission(
-    ulong Id,
-    Matrix4x4 CurrentTransform,
-    Matrix4x4 PreviousTransform,
-    Vector4 Color,
-    float DitherFade
-);

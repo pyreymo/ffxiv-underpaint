@@ -84,21 +84,20 @@ internal sealed unsafe class NativeResources : IDisposable
         new(1, 16, 0x1C, 8), // Stream1Vertex.TexCoord0, 8 bytes
     ];
 
+    private readonly delegate* unmanaged<Device*, int, uint, byte, nint> createVertexBuffer;
+    private readonly delegate* unmanaged<nint, void*, byte> initializeVertexBuffer;
+    private readonly Dictionary<ulong, NativeTriangleResources> triangles = [];
     private nint stream0Buffer;
-    private nint stream1Buffer;
     private nint indexBuffer;
     private nint vertexDeclaration;
-    private nint worldConstant;
     private nint instanceConstant;
     private nint modelConstant;
     private nint materialConstant;
     private TextureResourceHandle* whiteTextureResource;
 
     internal nint Stream0Buffer => stream0Buffer;
-    internal nint Stream1Buffer => stream1Buffer;
     internal nint IndexBuffer => indexBuffer;
     internal nint VertexDeclaration => vertexDeclaration;
-    internal ConstantBuffer* WorldConstant => (ConstantBuffer*)worldConstant;
     internal ConstantBuffer* InstanceConstant => (ConstantBuffer*)instanceConstant;
     internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
     internal ConstantBuffer* MaterialConstant => (ConstantBuffer*)materialConstant;
@@ -108,12 +107,12 @@ internal sealed unsafe class NativeResources : IDisposable
 
     internal NativeResources(ISigScanner sigScanner)
     {
-        var createVertexBuffer = (delegate* unmanaged<Device*, int, uint, byte, nint>)RequireSignature(
+        createVertexBuffer = (delegate* unmanaged<Device*, int, uint, byte, nint>)RequireSignature(
             sigScanner,
             CreateVertexBufferSignature,
             "CreateVertexBuffer"
         );
-        var initializeVertexBuffer = (delegate* unmanaged<nint, void*, byte>)RequireSignature(
+        initializeVertexBuffer = (delegate* unmanaged<nint, void*, byte>)RequireSignature(
             sigScanner,
             InitializeVertexBufferSignature,
             "InitializeVertexBuffer"
@@ -139,22 +138,16 @@ internal sealed unsafe class NativeResources : IDisposable
             throw new InvalidOperationException("The native graphics device is not available.");
 
         var stream0Bytes = VertexCount * sizeof(Stream0Vertex);
-        var stream1Bytes = VertexCount * sizeof(Stream1Vertex);
         var stream0 = stackalloc Stream0Vertex[VertexCount];
-        var stream1 = stackalloc Stream1Vertex[VertexCount];
 
         stream0[0] = new Stream0Vertex(new Vector3(-0.5f, 0, 0));
         stream0[1] = new Stream0Vertex(new Vector3(0.5f, 0, 0));
         stream0[2] = new Stream0Vertex(new Vector3(0, 1, 0));
-        stream1[0] = new Stream1Vertex(new Vector2(0, 1));
-        stream1[1] = new Stream1Vertex(new Vector2(1, 1));
-        stream1[2] = new Stream1Vertex(new Vector2(0.5f, 0));
         ushort* indices = stackalloc ushort[IndexCount] { 0, 1, 2 };
 
         try
         {
             stream0Buffer = createVertexBuffer(device, stream0Bytes, StaticBufferCreationFlags, VertexBufferFourthArgument);
-            stream1Buffer = createVertexBuffer(device, stream1Bytes, DynamicVertexBufferCreationFlags, VertexBufferFourthArgument);
             indexBuffer = createIndexBuffer(
                 device,
                 IndexCount * sizeof(ushort),
@@ -169,11 +162,9 @@ internal sealed unsafe class NativeResources : IDisposable
 
             if (
                 stream0Buffer == 0
-                || stream1Buffer == 0
                 || indexBuffer == 0
                 || vertexDeclaration == 0
                 || initializeVertexBuffer(stream0Buffer, stream0) == 0
-                || initializeVertexBuffer(stream1Buffer, stream1) == 0
                 || initializeIndexBuffer(indexBuffer, indices) == 0
             )
                 throw new InvalidOperationException("The game rejected the fixed triangle resources.");
@@ -192,17 +183,47 @@ internal sealed unsafe class NativeResources : IDisposable
         if (loadedWhiteTexture != null)
             loadedWhiteTexture->DecRef();
 
+        foreach (var triangle in triangles.Values)
+        {
+            var stream1 = triangle.Stream1Buffer;
+            var world = triangle.WorldConstant;
+            var instance = triangle.InstanceConstant;
+            Release(ref instance);
+            Release(ref world);
+            Release(ref stream1);
+        }
+        triangles.Clear();
+
         Release(ref materialConstant);
         Release(ref modelConstant);
         Release(ref instanceConstant);
-        Release(ref worldConstant);
         Release(ref vertexDeclaration);
         Release(ref indexBuffer);
-        Release(ref stream1Buffer);
         Release(ref stream0Buffer);
     }
 
-    internal void WriteTriangleAlpha(float alpha)
+    internal NativeTriangleResources WriteTriangle(
+        ulong id,
+        Matrix4x4 currentWorldView,
+        Matrix4x4 previousWorldView,
+        Vector3 color,
+        float alpha,
+        float ditherFade
+    )
+    {
+        if (!triangles.TryGetValue(id, out var triangle))
+        {
+            triangle = CreateTriangleResources();
+            triangles.Add(id, triangle);
+        }
+
+        WriteTriangleAlpha(triangle.Stream1Buffer, alpha);
+        WriteWorldConstant((ConstantBuffer*)triangle.WorldConstant, currentWorldView, previousWorldView);
+        WriteInstanceConstant((ConstantBuffer*)triangle.InstanceConstant, new Vector4(color.X, color.Y, color.Z, ditherFade));
+        return triangle;
+    }
+
+    private static void WriteTriangleAlpha(nint stream1Buffer, float alpha)
     {
         alpha = Math.Clamp(alpha, 0, 1);
         var mapInterface = stream1Buffer + BufferMapInterfaceOffset;
@@ -256,7 +277,7 @@ internal sealed unsafe class NativeResources : IDisposable
 
     internal void CreateConstants()
     {
-        if (worldConstant != 0)
+        if (instanceConstant != 0)
             return;
 
         var device = Device.Instance();
@@ -265,7 +286,6 @@ internal sealed unsafe class NativeResources : IDisposable
 
         try
         {
-            worldConstant = CreateAndClearConstantBuffer(device, WorldConstantBytes, "world");
             instanceConstant = CreateAndClearConstantBuffer(device, InstanceConstantBytes, "instance");
             modelConstant = CreateAndClearConstantBuffer(device, ModelConstantBytes, "model");
             materialConstant = CreateAndClearConstantBuffer(device, MaterialConstantBytes, "material");
@@ -275,27 +295,64 @@ internal sealed unsafe class NativeResources : IDisposable
             Release(ref materialConstant);
             Release(ref modelConstant);
             Release(ref instanceConstant);
-            Release(ref worldConstant);
             throw;
         }
     }
 
-    internal void WriteFixedTriangleConstants(
-        ShaderPackage* shaderPackage,
-        Matrix4x4 currentWorldView,
-        Matrix4x4 previousWorldView,
-        Vector4 color
-    )
+    internal void WriteSharedConstants(ShaderPackage* shaderPackage)
     {
-        var data = WorldConstant->LoadSourcePointer(0, WorldConstantBytes);
+        WriteInstanceConstant(InstanceConstant, Vector4.One);
+        WriteModelConstant();
+        WriteMaterialConstant(shaderPackage);
+    }
+
+    private static void WriteWorldConstant(ConstantBuffer* worldConstant, Matrix4x4 currentWorldView, Matrix4x4 previousWorldView)
+    {
+        var data = worldConstant->LoadSourcePointer(0, WorldConstantBytes);
         if (data == null)
             throw new InvalidOperationException("The world constant buffer has no writable storage.");
 
         *(Matrix4x4*)data = Matrix4x4.Transpose(currentWorldView);
         *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = Matrix4x4.Transpose(previousWorldView);
-        WriteInstanceConstant(color);
-        WriteModelConstant();
-        WriteMaterialConstant(shaderPackage);
+    }
+
+    private NativeTriangleResources CreateTriangleResources()
+    {
+        var device = Device.Instance();
+        if (device == null)
+            throw new InvalidOperationException("The native graphics device is not available.");
+
+        nint stream1 = 0;
+        nint world = 0;
+        nint instance = 0;
+        try
+        {
+            var vertices = stackalloc Stream1Vertex[VertexCount]
+            {
+                new(new Vector2(0, 1)),
+                new(new Vector2(1, 1)),
+                new(new Vector2(0.5f, 0)),
+            };
+            stream1 = createVertexBuffer(
+                device,
+                VertexCount * sizeof(Stream1Vertex),
+                DynamicVertexBufferCreationFlags,
+                VertexBufferFourthArgument
+            );
+            if (stream1 == 0 || initializeVertexBuffer(stream1, vertices) == 0)
+                throw new InvalidOperationException("The game rejected a triangle attribute buffer.");
+
+            world = CreateAndClearConstantBuffer(device, WorldConstantBytes, "triangle world");
+            instance = CreateAndClearConstantBuffer(device, InstanceConstantBytes, "triangle instance");
+            return new NativeTriangleResources(stream1, world, instance);
+        }
+        catch
+        {
+            Release(ref instance);
+            Release(ref world);
+            Release(ref stream1);
+            throw;
+        }
     }
 
     private static nint CreateAndClearConstantBuffer(Device* device, int byteSize, string name)
@@ -329,9 +386,9 @@ internal sealed unsafe class NativeResources : IDisposable
         *(Vector4*)data = new Vector4(1, 0, 0, 0);
     }
 
-    private void WriteInstanceConstant(Vector4 color)
+    private static void WriteInstanceConstant(ConstantBuffer* instanceConstant, Vector4 color)
     {
-        var data = InstanceConstant->LoadSourcePointer(0, InstanceConstantBytes);
+        var data = instanceConstant->LoadSourcePointer(0, InstanceConstantBytes);
         if (data == null)
             throw new InvalidOperationException("The instance constant buffer has no writable storage.");
 
@@ -435,3 +492,5 @@ internal sealed unsafe class NativeResources : IDisposable
         public readonly ulong TexCoord0;
     }
 }
+
+internal readonly record struct NativeTriangleResources(nint Stream1Buffer, nint WorldConstant, nint InstanceConstant);

@@ -476,3 +476,15 @@ stream 0、IB 和 declaration 保持静态；公开 alpha 恢复为平滑 vertex
 实验接口随后将 `ditherFade` 作为独立参数重新接入 `InstanceConstant[0].w`。它与 `alpha` 可以同时存在：
 `alpha` 仍只写 `Color0.a`，`ditherFade` 不再借用 alpha 的名称。当前固定 shader variant 中已经观察到
 它控制 dither coverage，但其通用引擎含义仍未知，代码注释和参数名都保留这一限制。
+
+## 最小帧批次
+
+单一待提交槽已替换为完整 triangle span。调用线程把本帧数组复制到可复用 buffer；render thread 在找到
+兼容 rendezvous 后交换两个数组并顺序提交。扩容只发生在本帧数量超过已有容量时，稳定数量下不产生逐帧
+数组分配。空 frame 停止绘制，尚未消费的新 frame 仍采用最后一次发布覆盖前一次的规则。
+
+pass builder command 保存 GPU resource 引用，不会为每个图元复制共享 buffer 的当前内容。因此两个图元
+若轮流改写同一个 world、instance 或 stream 1 buffer，前一个 command 最终也可能读取后一个图元的数据。
+稳定 ID 现在用于查找每图元原生资源：每个 ID 分别持有 world constant、instance constant 和动态 stream 1；
+单位 position stream、IB、declaration、model/material constants 和中性纹理继续共享。同一 frame 内要求
+ID 唯一。当前不做缓存淘汰，所有 ID 资源在 `Renderer.Dispose` 时释放。

@@ -72,18 +72,18 @@ internal unsafe ref struct NativeContextState
         tableSampler = GetSampler(tableSamplerId);
     }
 
-    internal void Install(NativeResources resources)
+    internal void Install(NativeResources resources, NativeTriangleResources triangle)
     {
         *(nint*)(context + IndexBufferOffset) = resources.IndexBuffer;
         *(nint*)(context + VertexDeclarationOffset) = resources.VertexDeclaration;
         SetStream(0, new StreamState(resources.Stream0Buffer, PackStreamBinding(0, NativeResources.Stream0Stride)));
-        SetStream(1, new StreamState(resources.Stream1Buffer, PackStreamBinding(0, NativeResources.Stream1Stride)));
+        SetStream(1, new StreamState(triangle.Stream1Buffer, PackStreamBinding(0, NativeResources.Stream1Stride)));
         SetStream(2, default);
         SetStream(3, default);
 
-        SetConstant(worldConstantId, (nint)resources.WorldConstant);
+        SetConstant(worldConstantId, triangle.WorldConstant);
         SetConstant(materialConstantId, (nint)resources.MaterialConstant);
-        SetConstant(instanceConstantId, (nint)resources.InstanceConstant);
+        SetConstant(instanceConstantId, triangle.InstanceConstant);
         SetConstant(modelConstantId, (nint)resources.ModelConstant);
         SetSampler(normalSamplerId, resources.WhiteTexture);
         SetSampler(indexSamplerId, resources.WhiteTexture);
