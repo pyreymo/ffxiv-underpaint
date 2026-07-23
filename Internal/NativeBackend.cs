@@ -26,6 +26,8 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int submissionDisabled;
     private Matrix4x4 fixedTriangleWorld;
     private bool hasFixedTriangleWorld;
+    private Matrix4x4 previousTriangleWorldView;
+    private bool hasPreviousTriangleWorldView;
 
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
@@ -152,7 +154,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                     }
 
                     var currentWorldView = fixedTriangleWorld * view;
-                    var previousWorldView = currentWorldView;
+                    var previousWorldView = hasPreviousTriangleWorldView ? previousTriangleWorldView : currentWorldView;
                     var triangleColor = new Vector4(1, 0, 0, 0.5f);
                     resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, triangleColor);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
@@ -170,6 +172,9 @@ internal sealed unsafe class NativeBackend : IDisposable
                     commandUsedAfter = context->CommandAllocationUsedSize;
                     if (commandBaseAfter == commandBaseBefore && commandUsedAfter <= commandUsedBefore)
                         throw new InvalidOperationException("The native pass builder produced no command data.");
+
+                    previousTriangleWorldView = currentWorldView;
+                    hasPreviousTriangleWorldView = true;
                 }
                 finally
                 {

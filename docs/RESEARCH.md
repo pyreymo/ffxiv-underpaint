@@ -438,3 +438,10 @@ subview 12；subview 11 的 `Camera*` 实际为空。
 该 render camera 的 `ViewMatrix.M44` 在运行时不是齐次矩阵所需的 `1`；Brio 和 Intoner 的相机路径都在
 做矩阵求逆或 gizmo 计算前明确将它恢复为 `1`。当前实现只做同一修正，再检查矩阵有限且可逆。相机未就绪时
 只跳过当前 rendezvous，并且在检查通过后才占用本帧。
+
+实机确认红色三角形可见；转动相机后它留在首次固定的世界位置，不再固定在屏幕中央。背面不可见说明当前
+原生 pass 保留了背面裁剪，本阶段不改成双面。
+
+previous world-view 现在保存最后一次成功生成 command 时使用的 current world-view。首次提交没有历史，
+因此 previous 等于 current；后续提交先写入保存值，只有 pass builder 确认产生 command 后才推进历史。
+不兼容 pass、未就绪 camera 或失败提交都不会污染下一次有效提交的 previous。
