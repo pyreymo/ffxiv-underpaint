@@ -25,9 +25,8 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
     private Matrix4x4 fixedTriangleWorld;
-    private Matrix4x4 initialTriangleView;
     private bool hasFixedTriangleWorld;
-    private int worldViewProbeFrames;
+    private int loggedCameraState;
 
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
@@ -134,6 +133,9 @@ internal sealed unsafe class NativeBackend : IDisposable
                     if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
                         return result;
 
+                    if (Interlocked.CompareExchange(ref loggedCameraState, 1, 0) == 0)
+                        log.Information("[Underpaint] System camera probe: {CameraState}", CameraStateProbe.Describe((byte*)context));
+
                     var cameraManager = CameraManager.Instance();
                     var camera = cameraManager == null ? null : cameraManager->CurrentCamera;
                     var renderCamera = camera == null ? null : camera->RenderCamera;
@@ -146,46 +148,12 @@ internal sealed unsafe class NativeBackend : IDisposable
                         if (!Matrix4x4.Invert(view, out var inverseView))
                             throw new InvalidOperationException("The current render view matrix is not invertible.");
                         fixedTriangleWorld = Matrix4x4.CreateTranslation(0, 0, -5) * inverseView;
-                        initialTriangleView = view;
                         hasFixedTriangleWorld = true;
                     }
 
                     var currentWorldView = fixedTriangleWorld * view;
                     var previousWorldView = currentWorldView;
                     var triangleColor = new Vector4(1, 0, 0, 0.5f);
-                    if (worldViewProbeFrames < 8)
-                    {
-                        log.Information(
-                            "[Underpaint] World-view probe {Probe}: Frame={Frame}, Camera=0x{Camera:X}, "
-                                + "RenderCamera=0x{RenderCamera:X}, ViewDifference={ViewDifference:F6}, "
-                                + "WorldView=[{M11:F4},{M12:F4},{M13:F4},{M14:F4};"
-                                + "{M21:F4},{M22:F4},{M23:F4},{M24:F4};"
-                                + "{M31:F4},{M32:F4},{M33:F4},{M34:F4};"
-                                + "{M41:F4},{M42:F4},{M43:F4},{M44:F4}].",
-                            worldViewProbeFrames,
-                            frame,
-                            (nint)camera,
-                            (nint)renderCamera,
-                            MatrixDifference(initialTriangleView, view),
-                            currentWorldView.M11,
-                            currentWorldView.M12,
-                            currentWorldView.M13,
-                            currentWorldView.M14,
-                            currentWorldView.M21,
-                            currentWorldView.M22,
-                            currentWorldView.M23,
-                            currentWorldView.M24,
-                            currentWorldView.M31,
-                            currentWorldView.M32,
-                            currentWorldView.M33,
-                            currentWorldView.M34,
-                            currentWorldView.M41,
-                            currentWorldView.M42,
-                            currentWorldView.M43,
-                            currentWorldView.M44
-                        );
-                        worldViewProbeFrames++;
-                    }
                     resources.WriteFixedTriangleConstants(material.ShaderPackage, currentWorldView, previousWorldView, triangleColor);
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
@@ -250,16 +218,6 @@ internal sealed unsafe class NativeBackend : IDisposable
         }
 
         return result;
-    }
-
-    private static float MatrixDifference(Matrix4x4 left, Matrix4x4 right)
-    {
-        var leftValues = new ReadOnlySpan<float>(&left, 16);
-        var rightValues = new ReadOnlySpan<float>(&right, 16);
-        var difference = 0f;
-        for (var i = 0; i < leftValues.Length; i++)
-            difference = MathF.Max(difference, MathF.Abs(leftValues[i] - rightValues[i]));
-        return difference;
     }
 
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
