@@ -509,3 +509,34 @@ position VB 和 IB，共用已经验证的两 stream vertex declaration。三角
 每个稳定 ID 仍单独持有动态 stream 1、world constant 和 instance constant。类型变化时只释放并重建
 该 ID 的三项可变资源；固定 mesh、material/model constants、纹理和 declaration 继续共享。原生执行顺序
 没有变化：安装所选 mesh 和该 ID 的输入后，以对应 vertex/index count 调用同一个 pass builder。
+
+## 局部材质脏痕与中性 color table
+
+实机确认红色三角形和蓝色四边形内部存在稳定的局部脏痕；镜头静止后不消失，移动图元时随图元局部位置
+一起移动。因此它不是此前记录的 TAA 拖影，也不是 quad 内部索引接缝。
+
+一次单变量 probe 把 pass 4 的未识别 class-1 sampler（CRC `0x800BE99B`、运行时 ID 49）覆盖为
+`white.tex`。脏痕不变，约三分钟后游戏进入 GPU hang；最后一次 Underpaint 日志仍显示三项 command
+成功生成，没有托管异常或 context restore 失败，随后 crash handler 因无法读取异常信息而终止无响应进程。
+该 probe 已完整回退。结论是 ID 49 不是普通 material texture，不能用白纹理中性化。
+
+IDA 中的 `MaterialResourceHandle.PrepareColorTable` 明确显示，原生颜色表固定创建为：
+
+```text
+width=8
+height=32
+mipLevels=1
+format=R16G16B16A16_FLOAT (0x2460)
+flags=TextureNoSwizzle | Immutable | Managed (0x80000804)
+lastArgument=7
+contents=2048 bytes
+```
+
+此前把普通 `white.tex` 同时绑定到 `g_SamplerTable` 是错误的。全白不仅把 diffuse 设为白色，也会把
+specular、emissive、tile alpha、sphere-map mask 和相关 index/transform 全部置为 1，足以启用本应关闭的
+局部材质效果。
+
+Underpaint 现在按原生相同尺寸、格式和创建参数生成自己的中性 color table。32 行内容完全相同：
+diffuse 为白色，specular/emissive 为黑色，roughness 为 1，metalness、sheen、tile 和 sphere-map 输入
+全部关闭。数据不复制 donor color table；ID 62 改为绑定这份自有纹理，normal/index 暂时仍使用固定
+`white.tex`。
