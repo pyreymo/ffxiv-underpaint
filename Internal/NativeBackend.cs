@@ -5,6 +5,7 @@ using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.Interop;
 using GameCameraManager = FFXIVClientStructs.FFXIV.Client.Game.Control.CameraManager;
+using GameControl = FFXIVClientStructs.FFXIV.Client.Game.Control.Control;
 
 namespace Underpaint.Internal;
 
@@ -129,21 +130,27 @@ internal sealed unsafe class NativeBackend : IDisposable
                     helperResult = materialHelper.Apply((ModelRenderer*)modelRenderer, (byte*)context, ownedMaterialParameters, selection);
                     if (!MaterialHelper.TryResolveActiveShaders((byte*)context, helperResult.ShaderDescriptor, out shaders))
                         return result;
-                    if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
-                        return result;
 
                     var cameraManager = GameCameraManager.Instance();
                     var camera = cameraManager == null ? null : cameraManager->GetActiveCamera();
-                    if (camera == null)
-                        throw new InvalidOperationException("The active game camera is not available.");
+                    var renderCamera = camera == null ? null : camera->SceneCamera.RenderCamera;
+                    var control = GameControl.Instance();
+                    if (renderCamera == null || control == null)
+                        return result;
 
-                    var view = (Matrix4x4)camera->SceneCamera.ViewMatrix;
-                    if (!IsFinite(view))
-                        throw new InvalidOperationException("The active game camera view matrix is not finite.");
+                    var projection = (Matrix4x4)renderCamera->ProjectionMatrix;
+                    var viewProjection = (Matrix4x4)control->ViewProjectionMatrix;
+                    if (!IsFinite(projection) || !IsFinite(viewProjection) || !Matrix4x4.Invert(projection, out var inverseProjection))
+                        return result;
+
+                    var view = viewProjection * inverseProjection;
+                    if (!IsFinite(view) || !Matrix4x4.Invert(view, out var inverseView))
+                        return result;
+                    if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
+                        return result;
+
                     if (!hasFixedTriangleWorld)
                     {
-                        if (!Matrix4x4.Invert(view, out var inverseView))
-                            throw new InvalidOperationException("The active game camera view matrix is not invertible.");
                         fixedTriangleWorld = Matrix4x4.CreateTranslation(0, 0, -5) * inverseView;
                         hasFixedTriangleWorld = true;
                     }

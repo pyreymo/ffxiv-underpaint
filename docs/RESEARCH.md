@@ -428,3 +428,10 @@ context system CameraParameter（ID 24、944 bytes）确实存在，但作为 GP
 `SceneCamera.ViewMatrix` 是游戏逻辑侧当前相机矩阵，也是 FFCS `SceneCamera.WorldToScreen` 使用的输入。
 实现改为只使用这条路径，并在求逆前明确检查全部 16 个 float 为有限值。调查用的 world-view 和 system
 camera probes 已删除。
+
+active game camera 的 `SceneCamera.ViewMatrix` 在 ModelRenderer hook 时刻仍不是完整可逆矩阵。Brio 在
+UI 路径中用它做 `WorldToScreen`，只能证明它适合正向投影，不能证明此处可以反求 world transform。
+FFCS 另行公开 `Game.Control.Control.ViewProjectionMatrix`，active camera 的 render camera 则公开完整
+projection。按同一 row-vector 约定，当前主 view 使用
+`view = viewProjection * inverse(projection)` 重建完整 view。projection、view-projection 和重建后的
+view 都必须有限且可逆；未就绪时只跳过当前 rendezvous，并且在这些检查通过后才占用本帧。
