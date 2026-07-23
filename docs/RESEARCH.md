@@ -400,3 +400,13 @@ world constant，也没有复制 draw command 状态。
 render camera `+0x10`，更直接对应当前渲染状态。实现随即改为只读取这个 render-camera 矩阵；没有在
 两个矩阵间加入 fallback 或复制自然 draw constant。前一段引用 `WorldToScreen` 的乘法顺序仍成立，
 但不能据此假设 scene-side matrix 在 ModelRenderer hook 时刻已经有效。
+
+游戏重启后的下一次验证中，首帧在 active pass 1 成功生成 command，随后同一 view 30/subview 11 的
+rendezvous 出现 active pass 6。固定 selection 没有 pass 6 的 VS/PS；旧代码在进入 selection 前就占用了
+本帧，并将这个不兼容调用时机当成永久 shader failure，导致后续所有提交关闭。active pass 因而也是
+提交 gate 的一部分，不能仅凭 view/subview 判定时机。
+
+现在先解析本次固定 material selection，再检查该 descriptor 是否为当前 active pass 提供 VS/PS。没有
+对应 shader 时恢复 context、销毁 selection，并继续等待同帧或后续的兼容 rendezvous；只有找到兼容
+pass 后才占用本帧并安装自有输入。`ApplyMaterial` 未安装固定 material、selection descriptor 为空等
+真正的固定路径失效仍会抛出异常并永久停止提交，不会被这个 gate 吞掉。

@@ -89,7 +89,7 @@ internal sealed unsafe class NativeBackend : IDisposable
             return result;
 
         var frame = unchecked((int)framework->FrameCounter);
-        if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
+        if (Volatile.Read(ref lastSubmittedFrame) == frame)
             return result;
 
         try
@@ -146,7 +146,10 @@ internal sealed unsafe class NativeBackend : IDisposable
                 try
                 {
                     helperResult = materialHelper.Apply((ModelRenderer*)modelRenderer, (byte*)context, ownedMaterialParameters, selection);
-                    shaders = MaterialHelper.ResolveActiveShaders((byte*)context, helperResult.ShaderDescriptor);
+                    if (!MaterialHelper.TryResolveActiveShaders((byte*)context, helperResult.ShaderDescriptor, out shaders))
+                        return result;
+                    if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
+                        return result;
                     contextState.InstallShaders(shaders, helperResult.ShaderDescriptor);
                     contextState.Install(resources);
                     commandBaseBefore = (nint)context->CommandAllocationBase;

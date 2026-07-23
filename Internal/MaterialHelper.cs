@@ -173,13 +173,17 @@ internal sealed unsafe class MaterialHelper
 
     internal void Destroy(ShaderSelection* selection) => destroyShaderSelection(selection);
 
-    internal static ShaderPair ResolveActiveShaders(byte* context, nint shaderDescriptor)
+    internal static bool TryResolveActiveShaders(byte* context, nint shaderDescriptor, out ShaderPair shaders)
     {
         var pass = context[0x0B] & 0x0F;
         if (!TryGetPassShaders(shaderDescriptor, pass, out var vertexShader, out var pixelShader))
-            throw new InvalidOperationException($"The fixed shader selection has no shaders for active pass {pass}.");
+        {
+            shaders = default;
+            return false;
+        }
 
-        return new ShaderPair(pass, vertexShader, pixelShader);
+        shaders = new ShaderPair(pass, vertexShader, pixelShader);
+        return true;
     }
 
     private static bool TryGetPassShaders(nint shaderDescriptor, int pass, out nint vertexShader, out nint pixelShader)
