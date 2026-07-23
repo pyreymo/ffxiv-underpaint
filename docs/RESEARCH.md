@@ -430,8 +430,10 @@ context system CameraParameter（ID 24、944 bytes）确实存在，但作为 GP
 camera probes 已删除。
 
 此前把 `SceneCamera.ViewMatrix` 不可逆误判为矩阵来源错误。FFCS 的 render manager 直接公开 87 个
-`View`，每个 view 又公开 16 个 `SubView` 及其 `Camera*`，因此在已验证的 view 30 / subview 11
-rendezvous 上可以取得完全相同的 render camera，不需要从 game-control projection 反推 view。
+`View`，每个 view 又公开 16 个 `SubView` 及其 `Camera*`，因此不需要从 game-control projection
+反推 view。这里必须区分两个编号：原生提交 rendezvous 是 view 30 / subview 11，而该 view 的主
+render camera 位于 subview 12。运行日志中最先观察到的 pass builder 调用也一直是 view 30 /
+subview 12；subview 11 的 `Camera*` 实际为空。
 
 该 render camera 的 `ViewMatrix.M44` 在运行时不是齐次矩阵所需的 `1`；Brio 和 Intoner 的相机路径都在
 做矩阵求逆或 gizmo 计算前明确将它恢复为 `1`。当前实现只做同一修正，再检查矩阵有限且可逆。相机未就绪时

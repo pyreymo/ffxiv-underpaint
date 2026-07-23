@@ -12,6 +12,7 @@ internal sealed unsafe class NativeBackend : IDisposable
     private const string BuildPassesSignature = "44 89 4C 24 ?? 44 89 44 24 ?? 53 56 57 41 54 41 55";
     private const int ExpectedMainView = 30;
     private const int ExpectedMainSubView = 11;
+    private const int MainRenderCameraSubView = 12;
 
     private readonly Hook<BuildPassesDelegate> buildPassesHook;
     private readonly MaterialHelper materialHelper;
@@ -133,7 +134,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                     if (renderManager == null)
                         return result;
 
-                    var camera = renderManager->Views[ExpectedMainView].SubViews[ExpectedMainSubView].Camera;
+                    var camera = renderManager->Views[ExpectedMainView].SubViews[MainRenderCameraSubView].Camera;
                     if (camera == null)
                         return result;
 
