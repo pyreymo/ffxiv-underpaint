@@ -66,7 +66,8 @@ internal sealed unsafe class MaterialHelper
         ConstantBuffer* instanceConstant,
         ConstantBuffer* modelConstant,
         ConstantBuffer* materialConstant,
-        Texture* whiteTexture,
+        Texture* normalTexture,
+        Texture* indexTexture,
         Texture* neutralColorTable
     )
     {
@@ -87,8 +88,10 @@ internal sealed unsafe class MaterialHelper
             throw new InvalidOperationException("The owned instance constant does not match the fixed shader package.");
         if (materialConstant == null || materialConstant->ByteSize != shaderPackage->MaterialConstantBufferSize)
             throw new InvalidOperationException("The owned material constant does not match the fixed shader package.");
-        if (whiteTexture == null)
-            throw new InvalidOperationException("The fixed white texture is not ready.");
+        if (normalTexture == null)
+            throw new InvalidOperationException("The fixed normal texture is not ready.");
+        if (indexTexture == null)
+            throw new InvalidOperationException("The neutral index texture is not ready.");
         if (neutralColorTable == null)
             throw new InvalidOperationException("The neutral color table is not ready.");
 

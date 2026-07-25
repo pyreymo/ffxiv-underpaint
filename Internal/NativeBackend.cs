@@ -116,6 +116,7 @@ internal sealed unsafe class NativeBackend : IDisposable
         {
             resources.CreateConstants();
             resources.LoadWhiteTexture();
+            resources.CreateNeutralIndexTexture();
             resources.CreateNeutralColorTable();
             resources.WriteSharedConstants(material.ShaderPackage);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
@@ -124,6 +125,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                 resources.ModelConstant,
                 resources.MaterialConstant,
                 resources.WhiteTexture,
+                resources.NeutralIndexTexture,
                 resources.NeutralColorTable
             );
             var model = stackalloc Model[1];
@@ -224,7 +226,8 @@ internal sealed unsafe class NativeBackend : IDisposable
                             + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
                             + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                             + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
-                            + "TableSamplerId={TableSamplerId}, WhiteTexture=ready, NeutralColorTable=ready.",
+                            + "TableSamplerId={TableSamplerId}, SamplerExperiment=ZeroIndexRGBA, "
+                            + "NormalTexture=white.tex, IndexTexture=owned-4x4-zero, NeutralColorTable=owned.",
                         primitiveCount,
                         frame,
                         commandBaseBefore,

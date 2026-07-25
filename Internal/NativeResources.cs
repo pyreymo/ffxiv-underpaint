@@ -64,6 +64,17 @@ internal sealed unsafe class NativeResources : IDisposable
     private const uint ColorTableLastArgument = 7;
     private const TextureFlags ColorTableFlags = TextureFlags.TextureNoSwizzle | TextureFlags.Immutable | TextureFlags.Managed;
 
+    // Diagnostic A/B texture for the material index sampler. white.tex encodes R=G=1,
+    // which selects the last colorset pair and the odd-row blend. A zero RGBA texture
+    // instead selects colorset row 0 without interpolation and disables all currently
+    // unused channels. Keep this as an owned resource so the test changes only sampler
+    // contents, not the native sampler state produced by ApplyMaterial.
+    private const int NeutralIndexTextureWidth = 4;
+    private const int NeutralIndexTextureHeight = 4;
+    private const byte NeutralIndexTextureMipLevels = 1;
+    private const uint NeutralIndexTextureLastArgument = 7;
+    private const TextureFlags NeutralIndexTextureFlags = TextureFlags.TextureNoSwizzle | TextureFlags.Immutable | TextureFlags.Managed;
+
     // Captured byte-for-byte from the same native two-stream charactertransparency draw.
     // Each record is the binary element accepted by the game's vertex-declaration creator.
     // Format and attribute are game identifiers; their general enum names are not yet known.
@@ -88,6 +99,7 @@ internal sealed unsafe class NativeResources : IDisposable
     private nint modelConstant;
     private nint materialConstant;
     private TextureResourceHandle* whiteTextureResource;
+    private Texture* neutralIndexTexture;
     private Texture* neutralColorTable;
 
     internal nint VertexDeclaration => vertexDeclaration;
@@ -95,6 +107,7 @@ internal sealed unsafe class NativeResources : IDisposable
     internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
     internal ConstantBuffer* MaterialConstant => (ConstantBuffer*)materialConstant;
     internal Texture* WhiteTexture => whiteTextureResource == null ? null : whiteTextureResource->Texture;
+    internal Texture* NeutralIndexTexture => neutralIndexTexture;
     internal Texture* NeutralColorTable => neutralColorTable;
     internal static int Stream0Stride => sizeof(Stream0Vertex);
     internal static int Stream1Stride => sizeof(Stream1Vertex);
@@ -172,6 +185,11 @@ internal sealed unsafe class NativeResources : IDisposable
         whiteTextureResource = null;
         if (loadedWhiteTexture != null)
             loadedWhiteTexture->DecRef();
+
+        var loadedIndexTexture = neutralIndexTexture;
+        neutralIndexTexture = null;
+        if (loadedIndexTexture != null)
+            loadedIndexTexture->DecRef();
 
         var loadedColorTable = neutralColorTable;
         neutralColorTable = null;
@@ -265,6 +283,37 @@ internal sealed unsafe class NativeResources : IDisposable
         }
 
         whiteTextureResource = loaded;
+    }
+
+    internal void CreateNeutralIndexTexture()
+    {
+        if (neutralIndexTexture != null)
+            return;
+
+        Span<uint> pixels = stackalloc uint[NeutralIndexTextureWidth * NeutralIndexTextureHeight];
+        pixels.Clear();
+
+        var texture = Texture.CreateTexture2D(
+            NeutralIndexTextureWidth,
+            NeutralIndexTextureHeight,
+            NeutralIndexTextureMipLevels,
+            TextureFormat.B8G8R8A8_UNORM,
+            NeutralIndexTextureFlags,
+            NeutralIndexTextureLastArgument
+        );
+        if (texture == null)
+            throw new InvalidOperationException("The game rejected the neutral index texture.");
+
+        fixed (uint* contents = pixels)
+        {
+            if (!texture->InitializeContents(contents))
+            {
+                texture->DecRef();
+                throw new InvalidOperationException("The game rejected the neutral index texture contents.");
+            }
+        }
+
+        neutralIndexTexture = texture;
     }
 
     internal void CreateNeutralColorTable()
