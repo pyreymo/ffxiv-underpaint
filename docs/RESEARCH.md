@@ -493,10 +493,20 @@ pass builder command 保存 GPU resource 引用，不会为每个图元复制共
 单位 position stream、IB、declaration、model/material constants 和中性纹理继续共享。同一 frame 内要求
 ID 唯一。当前不做缓存淘汰，所有 ID 资源在 `Renderer.Dispose` 时释放。
 
-## 两次不安全的 sampler probe
+## 无纹理图元的固定中心 UV
+
+**实机确认：** triangle 和 quad 将所有顶点的 `TexCoord0` 固定为 `(0.5, 0.5)` 后，原先随图元局部位置
+移动的脏纹理和横纹消失。这证明原因类别是 UV 驱动的局部采样路径，但现有证据仍不能进一步区分 index、
+color table、tile/sphere 或 shader 内部其他分支。
+
+固定中心 UV 现在是 Underpaint 无纹理 primitive 的正式输入约定，不再是待验证 probe。它不表示已命名
+具体 sampler 或 shader 分支；只有未来引入有纹理 primitive 时，才需要重新定义相应 UV 契约。
+
+## 两次不安全的 sampler probe（历史）
 
 红色三角形和蓝色四边形内部的稳定局部脏痕会随图元移动，不会在镜头静止后消失。它不是此前记录的
-TAA 拖影；红色单三角形也存在，因此不能只归因于 quad 内部索引接缝。
+TAA 拖影；红色单三角形也存在，因此不能只归因于 quad 内部索引接缝。该现象后来由上文的固定中心 UV
+消除；以下内容只保留此前排除路径的历史。
 
 第一次 probe 把 pass 4 的未识别 class-1 sampler（CRC `0x800BE99B`、运行时 ID 49）覆盖为
 `white.tex`，脏痕不变。第二次创建 `8×32 R16G16B16A16_FLOAT` 自有颜色表并绑定 ID 62。两次运行都
@@ -529,14 +539,17 @@ previous view。尚未通过对照实验确认 previous world-view 是否与游�
 
 ## 待提交 frame 覆盖时的 previous transform
 
-移动图元时出现的明显拖影与此前仅移动镜头时的轻微边缘拖影是两个独立现象。代码检查确认，render 侧的
-previous view 只在原生 pass builder 成功生成 command 后推进；但调用侧连续发布 frame 时，未消费的
-pending frame 会被覆盖，新的 `PreviousTransform` 也会随之覆盖。此时 object previous 来自最后一次
-framework update，而 camera previous 仍来自上一条实际 command，两部分 history 不再属于同一渲染帧。
+**代码调查：** render 侧的 previous view 只在原生 pass builder 成功生成 command 后推进；调用侧连续发布
+frame 时，未消费的 pending frame 会被覆盖，新的 `PreviousTransform` 也会随之覆盖。因此 object previous
+可能来自最后一次尚未渲染的 framework update，而 camera previous 仍来自上一条实际 command，两部分
+history 不再属于同一渲染帧。该时序错配是目前受代码证据支持的原因。
 
-`SubmitFrame` 现在在覆盖尚未消费的 frame 时，按相同 ID 和类型保留最早 pending frame 的
-`PreviousTransform`。current transform 和其他属性仍采用最后一次发布值；首次出现或改变类型的 ID 不继承
-旧 history。该修复不改变 world-view 乘法、矩阵转置、constant 布局、固定 UV 或 mesh。
+**实现与构建已验证：** `SubmitFrame` 在覆盖尚未消费的 frame 时，按相同 ID 和类型保留最早 pending
+frame 的 `PreviousTransform`；current transform 和其他属性仍采用最后一次发布值。首次出现或改变类型的
+ID 不继承旧 history。该修复不改变 world-view 乘法、矩阵转置、constant 布局、固定 UV 或 mesh。
+
+**实机视觉效果尚未确认：** 用户目前无法可靠判断拖影是否消失，因此不能宣称该修复已经通过肉眼验证。
+仍需建立能稳定放大或量化差异的测试方法；临时的整体水平位移 debug slider 已删除，不是当前可用工具。
 
 ## 固定四边形
 

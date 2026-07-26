@@ -92,20 +92,14 @@ donor 只保留：
 ## 当前视觉限制
 
 - 最近的自建 index/table 纹理会产生不需要的图案，现已移除；
-- 回退后应恢复原来的基本纯色外观，但此前观察到的局部横向“脏痕”可能仍然存在；
+- triangle/quad 已实机确认：固定 `TexCoord0 = (0.5, 0.5)` 会消除随图元局部位置移动的脏纹理和横纹；
+  已确认原因类别是 UV 驱动的局部采样，但具体 sampler 或 shader 分支仍未指认；
+- 固定中心 UV 已是无纹理 primitive 的正式行为，不再是 probe；
 - 镜头运动时边缘有轻微拖影，暂时记录，不在当前阶段增加 velocity pipeline；
+- pending frame 的 motion-history 时序修复已实现并通过构建，但实机视觉效果尚未确认；
 - 背面不可见，当前按原生背面裁剪处理。
 
-## 下一步最小任务
+## 下一步验证
 
-先只解决固定 shader variant 的纯色输入，不再创建或替换未知纹理。
-
-建议顺序：
-
-1. 冷启动确认本次回退恢复稳定、无新图案；
-2. 对比固定 shader selection 的 material keys 和 416-byte material defaults，找出仍启用颜色表、tile、
-   sphere-map 或其他局部材质效果的明确开关；
-3. 每次只修改一个有来源的 key 或 material field，验证局部脏痕；
-4. 得到纯色后删除 probe，并把固定值的来源和验证结果写入 `RESEARCH.md`。
-
-在纯色三角形稳定前，不继续加入圆盘、圆环、扇形或球体。
+motion-history 修复仍需一个能稳定放大或量化差异的测试方法。临时整体水平位移 debug slider 已删除，
+当前没有可复用的视觉判定工具；在建立可靠观察条件前，不把肉眼无法区分解释为修复成功或失败。
