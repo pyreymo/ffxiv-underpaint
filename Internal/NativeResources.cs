@@ -397,20 +397,20 @@ internal sealed unsafe class NativeResources : IDisposable
 
     private static void WriteStream1(PrimitiveType type, Span<Stream1Vertex> vertices, float alpha)
     {
-        vertices[0] = new Stream1Vertex(new Vector2(0, 1), alpha);
-        vertices[1] = new Stream1Vertex(new Vector2(1, 1), alpha);
+        // UV-isolation probe: collapse triangle and quad sampling to one material location.
+        var probeUv = new Vector2(0.5f, 0.5f);
         switch (type)
         {
             case PrimitiveType.Triangle:
-                // UV-isolation probe: collapse triangle sampling to one material location.
-                var triangleUv = new Vector2(0.5f, 0.5f);
-                vertices[0] = new Stream1Vertex(triangleUv, alpha);
-                vertices[1] = new Stream1Vertex(triangleUv, alpha);
-                vertices[2] = new Stream1Vertex(triangleUv, alpha);
+                vertices[0] = new Stream1Vertex(probeUv, alpha);
+                vertices[1] = new Stream1Vertex(probeUv, alpha);
+                vertices[2] = new Stream1Vertex(probeUv, alpha);
                 break;
             case PrimitiveType.Quad:
-                vertices[2] = new Stream1Vertex(new Vector2(1, 0), alpha);
-                vertices[3] = new Stream1Vertex(new Vector2(0, 0), alpha);
+                vertices[0] = new Stream1Vertex(probeUv, alpha);
+                vertices[1] = new Stream1Vertex(probeUv, alpha);
+                vertices[2] = new Stream1Vertex(probeUv, alpha);
+                vertices[3] = new Stream1Vertex(probeUv, alpha);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(type));
