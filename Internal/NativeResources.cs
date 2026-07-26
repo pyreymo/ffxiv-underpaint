@@ -402,7 +402,11 @@ internal sealed unsafe class NativeResources : IDisposable
         switch (type)
         {
             case PrimitiveType.Triangle:
-                vertices[2] = new Stream1Vertex(new Vector2(0.5f, 0), alpha);
+                // UV-isolation probe: collapse triangle sampling to one material location.
+                var triangleUv = new Vector2(0.5f, 0.5f);
+                vertices[0] = new Stream1Vertex(triangleUv, alpha);
+                vertices[1] = new Stream1Vertex(triangleUv, alpha);
+                vertices[2] = new Stream1Vertex(triangleUv, alpha);
                 break;
             case PrimitiveType.Quad:
                 vertices[2] = new Stream1Vertex(new Vector2(1, 0), alpha);
