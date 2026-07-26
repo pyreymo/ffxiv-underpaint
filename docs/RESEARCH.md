@@ -540,16 +540,3 @@ position VB 和 IB，共用已经验证的两 stream vertex declaration。三角
 每个稳定 ID 仍单独持有静态 stream 1、world constant 和 instance constant。类型变化时只释放并重建
 该 ID 的三项可变资源；固定 mesh、material/model constants、纹理和 declaration 继续共享。原生执行顺序
 没有变化：安装所选 mesh 和该 ID 的输入后，以对应 vertex/index count 调用同一个 pass builder。
-
-## 2026-07-25：中性颜色表实机结果与 index sampler A/B
-
-最新三图元截图中，自建 `8×32 R16G16B16A16_FLOAT` 中性颜色表已经绑定，红、绿三角形和
-蓝色四边形仍出现稳定、随图元 UV 移动的横向局部脏痕。该截图证明“仅替换 ID 62 的颜色表”
-不足以消除现象；它没有单独证明冷启动稳定性，也不用于判断时域拖影。
-
-下一轮只改变 material index sampler（运行时 ID 6）：normal ID 5 继续使用 `white.tex`，table ID 62
-继续使用当前自建中性表，ID 49 和其他 system/scene sampler 不修改。ID 6 从 `white.tex` 改为
-Underpaint 自建的 `4×4 B8G8R8A8_UNORM` 全零纹理。依据当前 shader 参考，index R/G 分别选择
-colorset pair 和 even/odd blend；全零输入固定选择 row 0 且不插值。该轮的目的不是预先宣称
-全零 index 是最终协议，而是用单变量 A/B 判断脏痕是否来自 `white.tex` 对 index sampler 的错误
-中性假设。首次成功提交日志包含 `SamplerExperiment=ZeroIndexRGBA`，用于确认运行的是本轮构建。
