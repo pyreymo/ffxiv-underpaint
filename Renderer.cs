@@ -35,7 +35,8 @@ public sealed class Renderer : IDisposable
 
     /// <summary>
     /// Publishes the complete primitive set for the next native render frame.
-    /// IDs must be unique within the frame.
+    /// IDs must be unique within the frame. If an unconsumed frame is replaced,
+    /// matching IDs retain the earliest previous transform.
     /// </summary>
     public void SubmitFrame(ReadOnlySpan<Primitive> primitives) => backend.SubmitFrame(primitives);
 

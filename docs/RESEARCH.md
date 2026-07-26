@@ -527,6 +527,17 @@ previous view。尚未通过对照实验确认 previous world-view 是否与游�
 也未证明固定透明 pass 是否需要额外 velocity 输入。第一版暂时记录该限制，不增加 velocity pipeline、
 额外 hook 或猜测性的时域修正。
 
+## 待提交 frame 覆盖时的 previous transform
+
+移动图元时出现的明显拖影与此前仅移动镜头时的轻微边缘拖影是两个独立现象。代码检查确认，render 侧的
+previous view 只在原生 pass builder 成功生成 command 后推进；但调用侧连续发布 frame 时，未消费的
+pending frame 会被覆盖，新的 `PreviousTransform` 也会随之覆盖。此时 object previous 来自最后一次
+framework update，而 camera previous 仍来自上一条实际 command，两部分 history 不再属于同一渲染帧。
+
+`SubmitFrame` 现在在覆盖尚未消费的 frame 时，按相同 ID 和类型保留最早 pending frame 的
+`PreviousTransform`。current transform 和其他属性仍采用最后一次发布值；首次出现或改变类型的 ID 不继承
+旧 history。该修复不改变 world-view 乘法、矩阵转置、constant 布局、固定 UV 或 mesh。
+
 ## 固定四边形
 
 公开帧输入收敛为 `Primitive`，由 `PrimitiveType` 明确选择三角形或四边形。两种类型分别持有简单的单位

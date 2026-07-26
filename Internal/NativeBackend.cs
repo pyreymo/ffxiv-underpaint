@@ -28,6 +28,7 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int hasPendingFrame;
     private Primitive[] pendingPrimitives = [];
     private int pendingPrimitiveCount;
+    private PendingPrimitiveHistory[] pendingHistory = [];
     private Primitive[] renderingPrimitives = [];
     private Matrix4x4 previousView;
     private bool hasPreviousView;
@@ -54,10 +55,33 @@ internal sealed unsafe class NativeBackend : IDisposable
     {
         lock (submissionLock)
         {
+            var previousPendingCount = Volatile.Read(ref hasPendingFrame) == 0 ? 0 : pendingPrimitiveCount;
+            if (pendingHistory.Length < previousPendingCount)
+                pendingHistory = new PendingPrimitiveHistory[previousPendingCount];
+
+            for (var index = 0; index < previousPendingCount; index++)
+            {
+                var primitive = pendingPrimitives[index];
+                pendingHistory[index] = new PendingPrimitiveHistory(primitive.Type, primitive.Id, primitive.PreviousTransform);
+            }
+
             if (pendingPrimitives.Length < primitives.Length)
                 pendingPrimitives = new Primitive[primitives.Length];
 
             primitives.CopyTo(pendingPrimitives);
+            for (var index = 0; index < primitives.Length; index++)
+            {
+                for (var historyIndex = 0; historyIndex < previousPendingCount; historyIndex++)
+                {
+                    var history = pendingHistory[historyIndex];
+                    if (history.Type != pendingPrimitives[index].Type || history.Id != pendingPrimitives[index].Id)
+                        continue;
+
+                    pendingPrimitives[index] = pendingPrimitives[index] with { PreviousTransform = history.PreviousTransform };
+                    break;
+                }
+            }
+
             pendingPrimitiveCount = primitives.Length;
             Volatile.Write(ref hasPendingFrame, primitives.Length == 0 ? 0 : 1);
         }
@@ -290,4 +314,6 @@ internal sealed unsafe class NativeBackend : IDisposable
     }
 
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
+
+    private readonly record struct PendingPrimitiveHistory(PrimitiveType Type, ulong Id, Matrix4x4 PreviousTransform);
 }
