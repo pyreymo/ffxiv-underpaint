@@ -4,4 +4,5 @@ public enum PrimitiveType
 {
     Triangle,
     Quad,
+    Icosahedron,
 }

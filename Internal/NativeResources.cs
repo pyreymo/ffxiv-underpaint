@@ -56,6 +56,25 @@ internal sealed unsafe class NativeResources : IDisposable
     // Lumina.Misc.Crc32.Get(WhiteTexturePath).
     private const uint WhiteTexturePathHash = 0x84815A1A;
 
+    private const float IcosahedronShort = 0.26286556f;
+    private const float IcosahedronLong = 0.4253254f;
+
+    private static readonly Vector3[] IcosahedronPositions =
+    [
+        new(-IcosahedronShort, IcosahedronLong, 0),
+        new(IcosahedronShort, IcosahedronLong, 0),
+        new(-IcosahedronShort, -IcosahedronLong, 0),
+        new(IcosahedronShort, -IcosahedronLong, 0),
+        new(0, -IcosahedronShort, IcosahedronLong),
+        new(0, IcosahedronShort, IcosahedronLong),
+        new(0, -IcosahedronShort, -IcosahedronLong),
+        new(0, IcosahedronShort, -IcosahedronLong),
+        new(IcosahedronLong, 0, -IcosahedronShort),
+        new(IcosahedronLong, 0, IcosahedronShort),
+        new(-IcosahedronLong, 0, -IcosahedronShort),
+        new(-IcosahedronLong, 0, IcosahedronShort),
+    ];
+
     // Captured byte-for-byte from the same native two-stream charactertransparency draw.
     // Each record is the binary element accepted by the game's vertex-declaration creator.
     // Format and attribute are game identifiers; their general enum names are not yet known.
@@ -75,6 +94,7 @@ internal sealed unsafe class NativeResources : IDisposable
     private readonly Dictionary<ulong, NativePrimitiveResources> primitives = [];
     private NativeMesh triangleMesh;
     private NativeMesh quadMesh;
+    private NativeMesh icosahedronMesh;
     private nint vertexDeclaration;
     private nint instanceConstant;
     private nint modelConstant;
@@ -136,11 +156,78 @@ internal sealed unsafe class NativeResources : IDisposable
             new(new Vector3(-0.5f, 1, 0)),
         ];
         ReadOnlySpan<ushort> quadIndices = [0, 1, 2, 0, 2, 3];
+        Span<Stream0Vertex> icosahedronVertices = stackalloc Stream0Vertex[IcosahedronPositions.Length];
+        for (var index = 0; index < IcosahedronPositions.Length; index++)
+            icosahedronVertices[index] = new Stream0Vertex(IcosahedronPositions[index]);
+        ReadOnlySpan<ushort> icosahedronIndices =
+        [
+            0,
+            11,
+            5,
+            0,
+            5,
+            1,
+            0,
+            1,
+            7,
+            0,
+            7,
+            10,
+            0,
+            10,
+            11,
+            1,
+            5,
+            9,
+            5,
+            11,
+            4,
+            11,
+            10,
+            2,
+            10,
+            7,
+            6,
+            7,
+            1,
+            8,
+            3,
+            9,
+            4,
+            3,
+            4,
+            2,
+            3,
+            2,
+            6,
+            3,
+            6,
+            8,
+            3,
+            8,
+            9,
+            4,
+            9,
+            5,
+            2,
+            4,
+            11,
+            6,
+            2,
+            10,
+            8,
+            6,
+            7,
+            9,
+            8,
+            1,
+        ];
 
         try
         {
             triangleMesh = CreateMesh(device, triangleVertices, triangleIndices, createIndexBuffer, initializeIndexBuffer);
             quadMesh = CreateMesh(device, quadVertices, quadIndices, createIndexBuffer, initializeIndexBuffer);
+            icosahedronMesh = CreateMesh(device, icosahedronVertices, icosahedronIndices, createIndexBuffer, initializeIndexBuffer);
             fixed (VertexElement* elements = VertexElements)
             {
                 vertexDeclaration = createVertexDeclaration(device, (byte*)elements, (uint)VertexElements.Length);
@@ -178,6 +265,7 @@ internal sealed unsafe class NativeResources : IDisposable
         Release(ref modelConstant);
         Release(ref instanceConstant);
         Release(ref vertexDeclaration);
+        ReleaseMesh(ref icosahedronMesh);
         ReleaseMesh(ref quadMesh);
         ReleaseMesh(ref triangleMesh);
     }
@@ -187,6 +275,7 @@ internal sealed unsafe class NativeResources : IDisposable
         {
             PrimitiveType.Triangle => triangleMesh,
             PrimitiveType.Quad => quadMesh,
+            PrimitiveType.Icosahedron => icosahedronMesh,
             _ => throw new ArgumentOutOfRangeException(nameof(type)),
         };
 
@@ -392,6 +481,7 @@ internal sealed unsafe class NativeResources : IDisposable
         {
             PrimitiveType.Triangle => 3,
             PrimitiveType.Quad => 4,
+            PrimitiveType.Icosahedron => IcosahedronPositions.Length,
             _ => throw new ArgumentOutOfRangeException(nameof(type)),
         };
 
@@ -411,6 +501,10 @@ internal sealed unsafe class NativeResources : IDisposable
                 vertices[1] = new Stream1Vertex(probeUv, alpha);
                 vertices[2] = new Stream1Vertex(probeUv, alpha);
                 vertices[3] = new Stream1Vertex(probeUv, alpha);
+                break;
+            case PrimitiveType.Icosahedron:
+                for (var index = 0; index < IcosahedronPositions.Length; index++)
+                    vertices[index] = new Stream1Vertex(Vector3.Normalize(IcosahedronPositions[index]), probeUv, alpha);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(type));
@@ -560,8 +654,11 @@ internal sealed unsafe class NativeResources : IDisposable
     private readonly struct Stream1Vertex
     {
         public Stream1Vertex(Vector2 textureCoordinate, float alpha = 1)
+            : this(Vector3.UnitZ, textureCoordinate, alpha) { }
+
+        public Stream1Vertex(Vector3 normal, Vector2 textureCoordinate, float alpha = 1)
         {
-            Normal = PackHalf4(0, 0, 1, 0);
+            Normal = PackHalf4(normal.X, normal.Y, normal.Z, 0);
 
             // The captured declaration identifies the input as Binormal, but the official
             // name and channel encoding of format 0x24 have not been identified.
