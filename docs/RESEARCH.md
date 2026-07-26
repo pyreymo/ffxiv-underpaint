@@ -513,12 +513,8 @@ IDA 中的 `MaterialResourceHandle.PrepareColorTable` 确认原生表使用 2048
 
 检查 context 安装逻辑发现，24-byte sampler state 中除了 `Texture*` 还有未识别的首字段和 flags。
 此前替换 normal/index/table 纹理时把两者都清零；`ApplyMaterial` 已经为当前 shader selection 生成了
-对应状态，因此当前只替换中间的 `Texture*`，保留另外两个字段。
-
-冷启动二分并删除 dynamic stream 1 后，完整三图元版本已重新确认稳定。现在才重新引入自建中性颜色表，
-作为独立变量绑定 ID 62：尺寸、格式、flags 和初始化方式来自原生 `PrepareColorTable`，内容不复制 donor；
-ID 5/6 继续使用 `white.tex`，未识别的 ID 49 不修改。本轮需要分别验证冷启动稳定性和局部脏痕是否变化，
-不能再把“builder 产生 command”当作颜色表正确的结论。
+对应状态，因此更直接的行为是只替换中间的 `Texture*`，保留另外两个字段。当前先只修正这项状态写入，
+继续使用原有纹理，以单独验证稳定性；尚未重新引入自建颜色表。
 
 ## 相机运动时的轻微边缘拖影
 
