@@ -175,7 +175,8 @@ internal sealed unsafe class NativeResources : IDisposable
         Matrix4x4 currentWorldView,
         Matrix4x4 previousWorldView,
         Vector3 color,
-        float alpha
+        float alpha,
+        float dither
     )
     {
         var mesh = GetMesh(meshKind);
@@ -201,7 +202,7 @@ internal sealed unsafe class NativeResources : IDisposable
         }
 
         WriteWorldConstant((ConstantBuffer*)primitive.WorldConstant, currentWorldView, previousWorldView);
-        WriteInstanceConstant((ConstantBuffer*)primitive.InstanceConstant, new Vector4(color, 1f));
+        WriteInstanceConstant((ConstantBuffer*)primitive.InstanceConstant, new Vector4(color, dither));
         return primitive;
     }
 

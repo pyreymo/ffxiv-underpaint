@@ -222,7 +222,8 @@ internal sealed unsafe class NativeBackend : IDisposable
                             currentWorldView,
                             previousWorldView,
                             primitive.Color,
-                            primitive.Alpha
+                            primitive.Alpha,
+                            primitive.Dither
                         );
                         contextState.Install(resources, mesh, primitiveResources);
 
@@ -336,7 +337,8 @@ internal sealed unsafe class NativeBackend : IDisposable
                     previousTransform,
                     hasPrevious,
                     primitive.Color,
-                    primitive.Alpha
+                    primitive.Alpha,
+                    primitive.Dither
                 );
             }
 
@@ -369,8 +371,16 @@ internal sealed unsafe class NativeBackend : IDisposable
         Matrix4x4 PreviousTransform,
         bool HasPrevious,
         Vector3 Color,
-        float Alpha
+        float Alpha,
+        float Dither
     );
 }
 
-internal readonly record struct FrameCommand(ulong DrawableId, MeshKind Mesh, Matrix4x4 CurrentTransform, Vector3 Color, float Alpha);
+internal readonly record struct FrameCommand(
+    ulong DrawableId,
+    MeshKind Mesh,
+    Matrix4x4 CurrentTransform,
+    Vector3 Color,
+    float Alpha,
+    float Dither
+);

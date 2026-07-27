@@ -17,16 +17,16 @@ public sealed class PrimitiveFrame : IDisposable
         this.renderer = renderer;
     }
 
-    public void DrawTriangle(TriangleDrawable drawable, Matrix4x4 transform, Vector3 color, float alpha = 1f)
+    public void DrawTriangle(TriangleDrawable drawable, Matrix4x4 transform, Vector3 color, float alpha = 1f, float dither = 1f)
     {
         ArgumentNullException.ThrowIfNull(drawable);
-        Add(drawable.State, transform, color, alpha);
+        Add(drawable.State, transform, color, alpha, dither);
     }
 
-    public void DrawRectangle(RectangleDrawable drawable, Matrix4x4 transform, Vector3 color, float alpha = 1f)
+    public void DrawRectangle(RectangleDrawable drawable, Matrix4x4 transform, Vector3 color, float alpha = 1f, float dither = 1f)
     {
         ArgumentNullException.ThrowIfNull(drawable);
-        Add(drawable.State, Matrix4x4.CreateScale(drawable.Width, drawable.Height, 1f) * transform, color, alpha);
+        Add(drawable.State, Matrix4x4.CreateScale(drawable.Width, drawable.Height, 1f) * transform, color, alpha, dither);
     }
 
     public void Publish()
@@ -38,7 +38,7 @@ public sealed class PrimitiveFrame : IDisposable
 
     public void Dispose() => disposed = true;
 
-    private void Add(DrawableState drawable, Matrix4x4 transform, Vector3 color, float alpha)
+    private void Add(DrawableState drawable, Matrix4x4 transform, Vector3 color, float alpha, float dither)
     {
         ThrowIfClosed();
         if (!ReferenceEquals(drawable.Owner, renderer))
@@ -47,7 +47,7 @@ public sealed class PrimitiveFrame : IDisposable
         if (!drawnDrawableIds.Add(drawable.Id))
             throw new InvalidOperationException("A drawable can only be drawn once per frame.");
 
-        commands.Add(new FrameCommand(drawable.Id, drawable.Mesh, transform, color, Math.Clamp(alpha, 0f, 1f)));
+        commands.Add(new FrameCommand(drawable.Id, drawable.Mesh, transform, color, Math.Clamp(alpha, 0f, 1f), Math.Clamp(dither, 0f, 1f)));
     }
 
     private void ThrowIfClosed()
