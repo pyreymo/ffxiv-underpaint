@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 
 namespace Underpaint.Internal;
 
@@ -21,11 +20,12 @@ internal unsafe ref struct NativeContextState
     private readonly byte* context;
     private readonly uint worldConstantId;
     private readonly uint materialConstantId;
-    private readonly uint instanceConstantId;
+    private readonly uint instanceParameterId;
     private readonly uint modelConstantId;
-    private readonly uint normalSamplerId;
-    private readonly uint indexSamplerId;
-    private readonly uint tableSamplerId;
+    private readonly uint normalMapSamplerId;
+    private readonly uint indexMapSamplerId;
+    private readonly uint maskMapSamplerId;
+    private readonly uint colorTableSamplerId;
     private readonly nint indexBuffer;
     private readonly nint vertexDeclaration;
     private readonly nint vertexShader;
@@ -37,22 +37,24 @@ internal unsafe ref struct NativeContextState
     private readonly StreamState stream3;
     private readonly nint worldConstant;
     private readonly nint materialConstant;
-    private readonly nint instanceConstant;
+    private readonly nint instanceParameters;
     private readonly nint modelConstant;
-    private readonly SamplerState normalSampler;
-    private readonly SamplerState indexSampler;
-    private readonly SamplerState tableSampler;
+    private readonly SamplerState normalMapSampler;
+    private readonly SamplerState indexMapSampler;
+    private readonly SamplerState maskMapSampler;
+    private readonly SamplerState colorTableSampler;
 
     internal NativeContextState(byte* context, uint worldConstantId, MaterialBindingIds material)
     {
         this.context = context;
         this.worldConstantId = worldConstantId;
         materialConstantId = material.MaterialConstantId;
-        instanceConstantId = material.InstanceConstantId;
+        instanceParameterId = material.InstanceParameterId;
         modelConstantId = material.ModelConstantId;
-        normalSamplerId = material.NormalSamplerId;
-        indexSamplerId = material.IndexSamplerId;
-        tableSamplerId = material.TableSamplerId;
+        normalMapSamplerId = material.NormalMapSamplerId;
+        indexMapSamplerId = material.IndexMapSamplerId;
+        maskMapSamplerId = material.MaskMapSamplerId;
+        colorTableSamplerId = material.ColorTableSamplerId;
 
         indexBuffer = *(nint*)(context + IndexBufferOffset);
         vertexDeclaration = *(nint*)(context + VertexDeclarationOffset);
@@ -65,11 +67,12 @@ internal unsafe ref struct NativeContextState
         stream3 = GetStream(3);
         worldConstant = GetConstant(worldConstantId);
         materialConstant = GetConstant(materialConstantId);
-        instanceConstant = GetConstant(instanceConstantId);
+        instanceParameters = GetConstant(instanceParameterId);
         modelConstant = GetConstant(modelConstantId);
-        normalSampler = GetSampler(normalSamplerId);
-        indexSampler = GetSampler(indexSamplerId);
-        tableSampler = GetSampler(tableSamplerId);
+        normalMapSampler = GetSampler(normalMapSamplerId);
+        indexMapSampler = GetSampler(indexMapSamplerId);
+        maskMapSampler = GetSampler(maskMapSamplerId);
+        colorTableSampler = GetSampler(colorTableSamplerId);
     }
 
     internal void Install(NativeResources resources, NativeMesh mesh, NativePrimitiveResources primitive)
@@ -83,11 +86,8 @@ internal unsafe ref struct NativeContextState
 
         SetConstant(worldConstantId, primitive.WorldConstant);
         SetConstant(materialConstantId, (nint)resources.MaterialConstant);
-        SetConstant(instanceConstantId, primitive.InstanceConstant);
+        SetConstant(instanceParameterId, primitive.InstanceParameters);
         SetConstant(modelConstantId, (nint)resources.ModelConstant);
-        SetSampler(normalSamplerId, resources.WhiteTexture);
-        SetSampler(indexSamplerId, resources.WhiteTexture);
-        SetSampler(tableSamplerId, resources.WhiteTexture);
     }
 
     internal void InstallShaders(ShaderPair shaders, nint descriptor)
@@ -110,11 +110,12 @@ internal unsafe ref struct NativeContextState
         SetStream(3, stream3);
         SetConstant(worldConstantId, worldConstant);
         SetConstant(materialConstantId, materialConstant);
-        SetConstant(instanceConstantId, instanceConstant);
+        SetConstant(instanceParameterId, instanceParameters);
         SetConstant(modelConstantId, modelConstant);
-        SetSampler(normalSamplerId, normalSampler);
-        SetSampler(indexSamplerId, indexSampler);
-        SetSampler(tableSamplerId, tableSampler);
+        SetSampler(normalMapSamplerId, normalMapSampler);
+        SetSampler(indexMapSamplerId, indexMapSampler);
+        SetSampler(maskMapSamplerId, maskMapSampler);
+        SetSampler(colorTableSamplerId, colorTableSampler);
     }
 
     private readonly StreamState GetStream(int index) => *(StreamState*)(context + StreamOffset + index * StreamSize);
@@ -126,12 +127,6 @@ internal unsafe ref struct NativeContextState
     private readonly void SetConstant(uint id, nint value) => *(nint*)(context + ConstantOffset + id * sizeof(nint)) = value;
 
     private readonly SamplerState GetSampler(uint id) => *(SamplerState*)(context + SamplerOffset + id * SamplerSize);
-
-    private readonly void SetSampler(uint id, Texture* texture)
-    {
-        var current = GetSampler(id);
-        SetSampler(id, new SamplerState(current.Unknown, (nint)texture, current.Flags));
-    }
 
     private readonly void SetSampler(uint id, SamplerState value) => *(SamplerState*)(context + SamplerOffset + id * SamplerSize) = value;
 

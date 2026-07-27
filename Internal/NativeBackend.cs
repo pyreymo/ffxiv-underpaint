@@ -150,14 +150,12 @@ internal sealed unsafe class NativeBackend : IDisposable
         try
         {
             resources.CreateConstants();
-            resources.LoadWhiteTexture();
             resources.WriteSharedConstants(material.ShaderPackage);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
-                resources.InstanceConstant,
+                resources.InstanceParameters,
                 resources.ModelConstant,
-                resources.MaterialConstant,
-                resources.WhiteTexture
+                resources.MaterialConstant
             );
             var model = stackalloc Model[1];
             var modelParameters = stackalloc ModelRenderer.OnRenderModelParams[1];
@@ -169,7 +167,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                 modelParameters,
                 ownedMaterialParameters,
                 selection,
-                resources.InstanceConstant
+                resources.InstanceParameters
             );
             try
             {
@@ -256,10 +254,10 @@ internal sealed unsafe class NativeBackend : IDisposable
                             + "CommandArena=0x{CommandBaseBefore:X}+{CommandUsedBefore}->0x{CommandBaseAfter:X}+{CommandUsedAfter}, "
                             + "ActivePass={ActivePass}, OnRenderMaterial=0x{OnRenderMaterial:X}, "
                             + "Output40=0x{Output:X8}, Descriptor=0x{Descriptor:X}, "
-                            + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
+                            + "MaterialConstantId={MaterialConstantId}, InstanceParameterId={InstanceParameterId}, "
                             + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
-                            + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
-                            + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
+                            + "NormalMapSamplerId={NormalMapSamplerId}, IndexMapSamplerId={IndexMapSamplerId}, "
+                            + "MaskMapSamplerId={MaskMapSamplerId}, ColorTableSamplerId={ColorTableSamplerId}.",
                         primitiveCount,
                         frame,
                         commandBaseBefore,
@@ -271,12 +269,13 @@ internal sealed unsafe class NativeBackend : IDisposable
                         helperResult.Output,
                         helperResult.ShaderDescriptor,
                         bindings.MaterialConstantId,
-                        bindings.InstanceConstantId,
+                        bindings.InstanceParameterId,
                         bindings.ModelConstantId,
                         worldConstantId,
-                        bindings.NormalSamplerId,
-                        bindings.IndexSamplerId,
-                        bindings.TableSamplerId
+                        bindings.NormalMapSamplerId,
+                        bindings.IndexMapSamplerId,
+                        bindings.MaskMapSamplerId,
+                        bindings.ColorTableSamplerId
                     );
                 }
             }
