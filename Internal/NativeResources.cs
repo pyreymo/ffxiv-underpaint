@@ -2,8 +2,6 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
-using FFXIVClientStructs.FFXIV.Client.System.Resource;
-using FFXIVClientStructs.FFXIV.Client.System.Resource.Handle;
 
 namespace Underpaint.Internal;
 
@@ -47,15 +45,6 @@ internal sealed unsafe class NativeResources : IDisposable
     // Captured from a natural charactertransparency material constant buffer.
     private const int MaterialConstantBytes = 416;
 
-    private const string WhiteTexturePath = "chara/common/texture/white.tex";
-
-    // ResourceType.Tex in the game's resource-loading ABI.
-    // A transposed value returned a different handle type and crashed when +0x128 was used as Texture*.
-    private const uint TextureFileType = 0x00746578;
-
-    // Lumina.Misc.Crc32.Get(WhiteTexturePath).
-    private const uint WhiteTexturePathHash = 0x84815A1A;
-
     // Captured byte-for-byte from the same native two-stream charactertransparency draw.
     // Each record is the binary element accepted by the game's vertex-declaration creator.
     // Format and attribute are game identifiers; their general enum names are not yet known.
@@ -74,17 +63,17 @@ internal sealed unsafe class NativeResources : IDisposable
     private readonly delegate* unmanaged<nint, void*, byte> initializeVertexBuffer;
     private readonly Dictionary<MeshKind, NativeMesh> meshes = [];
     private readonly Dictionary<ulong, NativePrimitiveResources> primitives = [];
+    private readonly MaterialTextures materialTextures = new();
     private nint vertexDeclaration;
     private nint instanceConstant;
     private nint modelConstant;
     private nint materialConstant;
-    private TextureResourceHandle* whiteTextureResource;
 
     internal nint VertexDeclaration => vertexDeclaration;
     internal ConstantBuffer* InstanceConstant => (ConstantBuffer*)instanceConstant;
     internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
     internal ConstantBuffer* MaterialConstant => (ConstantBuffer*)materialConstant;
-    internal Texture* WhiteTexture => whiteTextureResource == null ? null : whiteTextureResource->Texture;
+    internal MaterialTextures MaterialTextures => materialTextures;
     internal static int Stream0Stride => sizeof(Stream0Vertex);
     internal static int Stream1Stride => sizeof(Stream1Vertex);
 
@@ -142,10 +131,7 @@ internal sealed unsafe class NativeResources : IDisposable
 
     public void Dispose()
     {
-        var loadedWhiteTexture = whiteTextureResource;
-        whiteTextureResource = null;
-        if (loadedWhiteTexture != null)
-            loadedWhiteTexture->DecRef();
+        materialTextures.Dispose();
 
         foreach (var primitive in primitives.Values)
         {
@@ -211,32 +197,6 @@ internal sealed unsafe class NativeResources : IDisposable
         if (!primitives.Remove(drawableId, out var primitive))
             return;
         ReleasePrimitive(ref primitive);
-    }
-
-    internal void LoadWhiteTexture()
-    {
-        if (whiteTextureResource != null)
-            return;
-
-        var resourceManager = ResourceManager.Instance();
-        if (resourceManager == null)
-            throw new InvalidOperationException("The native resource manager is not available.");
-
-        var category = ResourceCategory.Chara;
-        var fileType = TextureFileType;
-        var pathHash = WhiteTexturePathHash;
-        var loaded = (TextureResourceHandle*)
-            resourceManager->GetResourceSync(&category, &fileType, &pathHash, WhiteTexturePath, null, null, 0);
-        if (loaded == null)
-            throw new InvalidOperationException("The fixed white texture could not be loaded.");
-
-        if (loaded->Texture == null)
-        {
-            loaded->DecRef();
-            throw new InvalidOperationException("The fixed white texture is not ready.");
-        }
-
-        whiteTextureResource = loaded;
     }
 
     internal void CreateConstants()

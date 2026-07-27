@@ -150,14 +150,14 @@ internal sealed unsafe class NativeBackend : IDisposable
         try
         {
             resources.CreateConstants();
-            resources.LoadWhiteTexture();
+            resources.MaterialTextures.EnsureCreated();
             resources.WriteSharedConstants(material.ShaderPackage);
             var worldConstantId = ((ModelRenderer*)modelRenderer)->ConstantSamplerIds[(int)ModelRenderer.WellKnownConstant.WorldViewMatrix];
             var bindings = materialHelper.ValidateResources(
                 resources.InstanceConstant,
                 resources.ModelConstant,
                 resources.MaterialConstant,
-                resources.WhiteTexture
+                resources.MaterialTextures
             );
             var model = stackalloc Model[1];
             var modelParameters = stackalloc ModelRenderer.OnRenderModelParams[1];
@@ -259,7 +259,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                             + "MaterialConstantId={MaterialConstantId}, InstanceConstantId={InstanceConstantId}, "
                             + "ModelConstantId={ModelConstantId}, WorldConstantId={WorldConstantId}, "
                             + "NormalSamplerId={NormalSamplerId}, IndexSamplerId={IndexSamplerId}, "
-                            + "TableSamplerId={TableSamplerId}, WhiteTexture=ready.",
+                            + "TableSamplerId={TableSamplerId}, GeneratedMaterialTextures=ready.",
                         primitiveCount,
                         frame,
                         commandBaseBefore,
