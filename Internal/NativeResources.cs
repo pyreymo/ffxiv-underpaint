@@ -2,7 +2,8 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
-using FFXIVClientStructs.FFXIV.Shader;
+using FFXIVClientStructs.FFXIV.Client.System.Resource;
+using FFXIVClientStructs.FFXIV.Client.System.Resource.Handle;
 
 namespace Underpaint.Internal;
 
@@ -40,11 +41,20 @@ internal sealed unsafe class NativeResources : IDisposable
 
     // Captured from charactertransparency.shpk package constants:
     // CRC 0x20A30B34 has 11 float4 registers; CRC 0x4E0A5472 has one.
-    private const int InstanceParameterBytes = 11 * 16;
+    private const int InstanceConstantBytes = 11 * 16;
     private const int ModelConstantBytes = 16;
 
     // Captured from a natural charactertransparency material constant buffer.
     private const int MaterialConstantBytes = 416;
+
+    private const string WhiteTexturePath = "chara/common/texture/white.tex";
+
+    // ResourceType.Tex in the game's resource-loading ABI.
+    // A transposed value returned a different handle type and crashed when +0x128 was used as Texture*.
+    private const uint TextureFileType = 0x00746578;
+
+    // Lumina.Misc.Crc32.Get(WhiteTexturePath).
+    private const uint WhiteTexturePathHash = 0x84815A1A;
 
     // Captured byte-for-byte from the same native two-stream charactertransparency draw.
     // Each record is the binary element accepted by the game's vertex-declaration creator.
@@ -65,14 +75,16 @@ internal sealed unsafe class NativeResources : IDisposable
     private readonly Dictionary<MeshKind, NativeMesh> meshes = [];
     private readonly Dictionary<ulong, NativePrimitiveResources> primitives = [];
     private nint vertexDeclaration;
-    private nint instanceParameters;
+    private nint instanceConstant;
     private nint modelConstant;
     private nint materialConstant;
+    private TextureResourceHandle* whiteTextureResource;
 
     internal nint VertexDeclaration => vertexDeclaration;
-    internal ConstantBuffer* InstanceParameters => (ConstantBuffer*)instanceParameters;
+    internal ConstantBuffer* InstanceConstant => (ConstantBuffer*)instanceConstant;
     internal ConstantBuffer* ModelConstant => (ConstantBuffer*)modelConstant;
     internal ConstantBuffer* MaterialConstant => (ConstantBuffer*)materialConstant;
+    internal Texture* WhiteTexture => whiteTextureResource == null ? null : whiteTextureResource->Texture;
     internal static int Stream0Stride => sizeof(Stream0Vertex);
     internal static int Stream1Stride => sizeof(Stream1Vertex);
 
@@ -130,12 +142,17 @@ internal sealed unsafe class NativeResources : IDisposable
 
     public void Dispose()
     {
+        var loadedWhiteTexture = whiteTextureResource;
+        whiteTextureResource = null;
+        if (loadedWhiteTexture != null)
+            loadedWhiteTexture->DecRef();
+
         foreach (var primitive in primitives.Values)
         {
             var stream1 = primitive.Stream1Buffer;
             var world = primitive.WorldConstant;
-            var parameters = primitive.InstanceParameters;
-            Release(ref parameters);
+            var instance = primitive.InstanceConstant;
+            Release(ref instance);
             Release(ref world);
             Release(ref stream1);
         }
@@ -143,7 +160,7 @@ internal sealed unsafe class NativeResources : IDisposable
 
         Release(ref materialConstant);
         Release(ref modelConstant);
-        Release(ref instanceParameters);
+        Release(ref instanceConstant);
         Release(ref vertexDeclaration);
         foreach (var mesh in meshes.Values)
             ReleaseMesh(mesh);
@@ -185,7 +202,7 @@ internal sealed unsafe class NativeResources : IDisposable
         }
 
         WriteWorldConstant((ConstantBuffer*)primitive.WorldConstant, currentWorldView, previousWorldView);
-        WriteInstanceParameters((ConstantBuffer*)primitive.InstanceParameters, new Vector4(color, dither));
+        WriteInstanceConstant((ConstantBuffer*)primitive.InstanceConstant, new Vector4(color, dither));
         return primitive;
     }
 
@@ -196,9 +213,35 @@ internal sealed unsafe class NativeResources : IDisposable
         ReleasePrimitive(ref primitive);
     }
 
+    internal void LoadWhiteTexture()
+    {
+        if (whiteTextureResource != null)
+            return;
+
+        var resourceManager = ResourceManager.Instance();
+        if (resourceManager == null)
+            throw new InvalidOperationException("The native resource manager is not available.");
+
+        var category = ResourceCategory.Chara;
+        var fileType = TextureFileType;
+        var pathHash = WhiteTexturePathHash;
+        var loaded = (TextureResourceHandle*)
+            resourceManager->GetResourceSync(&category, &fileType, &pathHash, WhiteTexturePath, null, null, 0);
+        if (loaded == null)
+            throw new InvalidOperationException("The fixed white texture could not be loaded.");
+
+        if (loaded->Texture == null)
+        {
+            loaded->DecRef();
+            throw new InvalidOperationException("The fixed white texture is not ready.");
+        }
+
+        whiteTextureResource = loaded;
+    }
+
     internal void CreateConstants()
     {
-        if (instanceParameters != 0)
+        if (instanceConstant != 0)
             return;
 
         var device = Device.Instance();
@@ -207,7 +250,7 @@ internal sealed unsafe class NativeResources : IDisposable
 
         try
         {
-            instanceParameters = CreateAndClearConstantBuffer(device, InstanceParameterBytes, "instance parameters");
+            instanceConstant = CreateAndClearConstantBuffer(device, InstanceConstantBytes, "instance");
             modelConstant = CreateAndClearConstantBuffer(device, ModelConstantBytes, "model");
             materialConstant = CreateAndClearConstantBuffer(device, MaterialConstantBytes, "material");
         }
@@ -215,14 +258,14 @@ internal sealed unsafe class NativeResources : IDisposable
         {
             Release(ref materialConstant);
             Release(ref modelConstant);
-            Release(ref instanceParameters);
+            Release(ref instanceConstant);
             throw;
         }
     }
 
     internal void WriteSharedConstants(ShaderPackage* shaderPackage)
     {
-        WriteInstanceParameters(InstanceParameters, Vector4.One);
+        WriteInstanceConstant(InstanceConstant, Vector4.One);
         WriteModelConstant();
         WriteMaterialConstant(shaderPackage);
     }
@@ -245,17 +288,17 @@ internal sealed unsafe class NativeResources : IDisposable
 
         nint stream1 = 0;
         nint world = 0;
-        nint parameters = 0;
+        nint instance = 0;
         try
         {
             stream1 = CreateStream1Buffer(mesh, alpha);
             world = CreateAndClearConstantBuffer(device, WorldConstantBytes, $"{mesh.Definition.Kind} world");
-            parameters = CreateAndClearConstantBuffer(device, InstanceParameterBytes, $"{mesh.Definition.Kind} instance parameters");
-            return new NativePrimitiveResources(mesh.Definition.Kind, stream1, world, parameters, alpha);
+            instance = CreateAndClearConstantBuffer(device, InstanceConstantBytes, $"{mesh.Definition.Kind} instance");
+            return new NativePrimitiveResources(mesh.Definition.Kind, stream1, world, instance, alpha);
         }
         catch
         {
-            Release(ref parameters);
+            Release(ref instance);
             Release(ref world);
             Release(ref stream1);
             throw;
@@ -372,23 +415,23 @@ internal sealed unsafe class NativeResources : IDisposable
         *(Vector4*)data = new Vector4(1, 0, 0, 0);
     }
 
-    private static void WriteInstanceParameters(ConstantBuffer* buffer, Vector4 multiplyColor)
+    private static void WriteInstanceConstant(ConstantBuffer* instanceConstant, Vector4 color)
     {
-        var data = buffer->LoadSourcePointer(0, InstanceParameterBytes);
+        var data = instanceConstant->LoadSourcePointer(0, InstanceConstantBytes);
         if (data == null)
-            throw new InvalidOperationException("The instance-parameter buffer has no writable storage.");
+            throw new InvalidOperationException("The instance constant buffer has no writable storage.");
 
-        new Span<byte>(data, InstanceParameterBytes).Clear();
-        var parameters = (InstanceParameter*)data;
-        parameters->MulColor = multiplyColor;
-        parameters->EnvParameter = Vector4.One;
-        parameters->CameraLight.DiffuseSpecular = Vector4.One;
-        parameters->CameraLight.Rim = Vector4.One;
-        parameters->Wetness = new Vector4(0, 2, 0, 1);
+        var registers = new Span<Vector4>(data, InstanceConstantBytes / sizeof(Vector4));
+        registers.Clear();
 
-        // The selected charactertransparency variant reads one captured value beyond
-        // the fields currently named by FFXIVClientStructs.
-        *(Vector4*)((byte*)data + 0xA0) = new Vector4(0, 1, 0, 0);
+        // Fixed A/B tests confirmed that register 0 controls output RGB and dither fade
+        // for the selected charactertransparency variant. Its general engine name is unknown.
+        registers[0] = color;
+        registers[1] = Vector4.One;
+        registers[2] = Vector4.One;
+        registers[3] = Vector4.One;
+        registers[4] = new Vector4(0, 2, 0, 1);
+        registers[10] = new Vector4(0, 1, 0, 0);
     }
 
     private void WriteMaterialConstant(ShaderPackage* shaderPackage)
@@ -434,11 +477,11 @@ internal sealed unsafe class NativeResources : IDisposable
 
     private static void ReleasePrimitive(ref NativePrimitiveResources primitive)
     {
-        var parameters = primitive.InstanceParameters;
+        var instance = primitive.InstanceConstant;
         var world = primitive.WorldConstant;
         var stream1 = primitive.Stream1Buffer;
         primitive = default;
-        Release(ref parameters);
+        Release(ref instance);
         Release(ref world);
         Release(ref stream1);
     }
@@ -513,6 +556,6 @@ internal readonly record struct NativePrimitiveResources(
     MeshKind Mesh,
     nint Stream1Buffer,
     nint WorldConstant,
-    nint InstanceParameters,
+    nint InstanceConstant,
     byte Alpha
 );

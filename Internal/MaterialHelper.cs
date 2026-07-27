@@ -19,18 +19,13 @@ internal sealed unsafe class MaterialHelper
     private const uint MaterialConstantId = 25;
     private const uint ModelConstantCrc = 0x4E0A5472;
     private const ushort ModelConstantRegisters = 1;
-    private const uint InstanceParameterCrc = 0x20A30B34;
-    private const ushort InstanceParameterRegisters = 11;
-
-    // charactertransparency material inputs:
-    // normal RG = tangent-space normal, B = opacity;
-    // index R = colorset pair, G = even/odd blend;
-    // the color table is generated from the mtrl colorset.
-    private const uint NormalMapSamplerCrc = 0x0C5EC1F1;
+    private const uint InstanceConstantCrc = 0x20A30B34;
+    private const ushort InstanceConstantRegisters = 11;
+    private const uint NormalSamplerCrc = 0x0C5EC1F1;
     private const ushort MaterialSamplerClass = ShaderPackage.SamplerSlotMaterial;
-    private const uint IndexMapSamplerCrc = 0x565F8FD8;
-    private const uint ColorTableSamplerCrc = 0x2005679F;
-    private const ushort ColorTableSamplerClass = 1;
+    private const uint IndexSamplerCrc = 0x565F8FD8;
+    private const uint TableSamplerCrc = 0x2005679F;
+    private const ushort TableSamplerClass = 1;
 
     // The archived native submission verified 0x01000000 as the main-view
     // request gate in OnRenderMaterialParams2+0x38.
@@ -68,9 +63,10 @@ internal sealed unsafe class MaterialHelper
     }
 
     internal MaterialBindingIds ValidateResources(
-        ConstantBuffer* instanceParameters,
+        ConstantBuffer* instanceConstant,
         ConstantBuffer* modelConstant,
-        ConstantBuffer* materialConstant
+        ConstantBuffer* materialConstant,
+        Texture* whiteTexture
     )
     {
         var shaderPackage = material.ShaderPackage;
@@ -83,25 +79,27 @@ internal sealed unsafe class MaterialHelper
         if (modelConstant == null || modelConstant->ByteSize != modelConstantEntry.Size * 16)
             throw new InvalidOperationException("The owned model constant does not match the fixed shader package.");
 
-        var instanceParameterEntry = FindConstant(shaderPackage, InstanceParameterCrc);
-        if (instanceParameterEntry.Size != InstanceParameterRegisters)
-            throw new InvalidOperationException("The fixed shader package has an unexpected instance-parameter size.");
-        if (instanceParameters == null || instanceParameters->ByteSize != instanceParameterEntry.Size * 16)
-            throw new InvalidOperationException("The owned instance parameters do not match the fixed shader package.");
+        var instanceConstantEntry = FindConstant(shaderPackage, InstanceConstantCrc);
+        if (instanceConstantEntry.Size != InstanceConstantRegisters)
+            throw new InvalidOperationException("The fixed shader package has an unexpected instance constant size.");
+        if (instanceConstant == null || instanceConstant->ByteSize != instanceConstantEntry.Size * 16)
+            throw new InvalidOperationException("The owned instance constant does not match the fixed shader package.");
         if (materialConstant == null || materialConstant->ByteSize != shaderPackage->MaterialConstantBufferSize)
             throw new InvalidOperationException("The owned material constant does not match the fixed shader package.");
+        if (whiteTexture == null)
+            throw new InvalidOperationException("The fixed white texture is not ready.");
 
-        var normalMapSampler = FindSampler(shaderPackage, NormalMapSamplerCrc, MaterialSamplerClass);
-        var indexMapSampler = FindSampler(shaderPackage, IndexMapSamplerCrc, MaterialSamplerClass);
-        var colorTableSampler = FindSampler(shaderPackage, ColorTableSamplerCrc, ColorTableSamplerClass);
+        var normalSampler = FindSampler(shaderPackage, NormalSamplerCrc, MaterialSamplerClass);
+        var indexSampler = FindSampler(shaderPackage, IndexSamplerCrc, MaterialSamplerClass);
+        var tableSampler = FindSampler(shaderPackage, TableSamplerCrc, TableSamplerClass);
 
         return new MaterialBindingIds(
             MaterialConstantId,
-            instanceParameterEntry.Id,
+            instanceConstantEntry.Id,
             modelConstantEntry.Id,
-            normalMapSampler.Id,
-            indexMapSampler.Id,
-            colorTableSampler.Id
+            normalSampler.Id,
+            indexSampler.Id,
+            tableSampler.Id
         );
     }
 
@@ -111,7 +109,7 @@ internal sealed unsafe class MaterialHelper
         ModelRenderer.OnRenderModelParams* modelParameters,
         ModelRenderer.OnRenderMaterialParams2* materialParameters,
         ShaderSelection* selection,
-        ConstantBuffer* instanceParameters
+        ConstantBuffer* instanceConstant
     )
     {
         var shaderPackage = material.ShaderPackage;
@@ -131,8 +129,8 @@ internal sealed unsafe class MaterialHelper
 
             modelParameters->Model = model;
             // Runtime mapping and the archived native builder path identify
-            // OnRenderModelParams+0x10 as the 176-byte instance-parameter input.
-            *(ConstantBuffer**)((byte*)modelParameters + 0x10) = instanceParameters;
+            // OnRenderModelParams+0x10 as the 176-byte instance input.
+            *(ConstantBuffer**)((byte*)modelParameters + 0x10) = instanceConstant;
             materialParameters->Inner = modelParameters;
             *(ShaderSelection**)((byte*)materialParameters + 0x30) = selection;
             *(uint*)((byte*)materialParameters + 0x38) = MainViewRequestMask;
@@ -338,11 +336,11 @@ internal sealed unsafe class MaterialHelper
 
 internal readonly record struct MaterialBindingIds(
     uint MaterialConstantId,
-    uint InstanceParameterId,
+    uint InstanceConstantId,
     uint ModelConstantId,
-    uint NormalMapSamplerId,
-    uint IndexMapSamplerId,
-    uint ColorTableSamplerId
+    uint NormalSamplerId,
+    uint IndexSamplerId,
+    uint TableSamplerId
 );
 
 internal readonly record struct MaterialHelperResult(nint OnRenderMaterial, uint Output, nint ShaderDescriptor);
