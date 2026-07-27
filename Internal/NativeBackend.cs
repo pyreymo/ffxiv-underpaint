@@ -214,7 +214,8 @@ internal sealed unsafe class NativeBackend : IDisposable
                         var primitive = primitives[index];
                         var mesh = resources.GetMesh(primitive.Mesh);
                         var currentWorldView = primitive.CurrentTransform * view;
-                        var previousWorldView = primitive.PreviousTransform * (hasPreviousView ? previousView : view);
+                        var previousWorldView =
+                            primitive.PreviousTransform * (primitive.HasPrevious && hasPreviousView ? previousView : view);
                         var primitiveResources = resources.WritePrimitive(
                             primitive.Mesh,
                             primitive.DrawableId,
@@ -324,13 +325,16 @@ internal sealed unsafe class NativeBackend : IDisposable
             for (var index = 0; index < pendingPrimitiveCount; index++)
             {
                 var primitive = pendingPrimitives[index];
-                var previousTransform = consumedTransforms.GetValueOrDefault(primitive.DrawableId, primitive.CurrentTransform);
+                var hasPrevious = consumedTransforms.TryGetValue(primitive.DrawableId, out var previousTransform);
+                if (!hasPrevious)
+                    previousTransform = primitive.CurrentTransform;
                 consumedTransforms[primitive.DrawableId] = primitive.CurrentTransform;
                 renderingPrimitives[index] = new RenderCommand(
                     primitive.DrawableId,
                     primitive.Mesh,
                     primitive.CurrentTransform,
                     previousTransform,
+                    hasPrevious,
                     primitive.Color,
                     primitive.Alpha
                 );
@@ -363,6 +367,7 @@ internal sealed unsafe class NativeBackend : IDisposable
         MeshKind Mesh,
         Matrix4x4 CurrentTransform,
         Matrix4x4 PreviousTransform,
+        bool HasPrevious,
         Vector3 Color,
         float Alpha
     );
