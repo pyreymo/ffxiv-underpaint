@@ -56,25 +56,6 @@ internal sealed unsafe class NativeResources : IDisposable
     // Lumina.Misc.Crc32.Get(WhiteTexturePath).
     private const uint WhiteTexturePathHash = 0x84815A1A;
 
-    private const float IcosahedronShort = 0.26286556f;
-    private const float IcosahedronLong = 0.4253254f;
-
-    private static readonly Vector3[] IcosahedronPositions =
-    [
-        new(-IcosahedronShort, IcosahedronLong, 0),
-        new(IcosahedronShort, IcosahedronLong, 0),
-        new(-IcosahedronShort, -IcosahedronLong, 0),
-        new(IcosahedronShort, -IcosahedronLong, 0),
-        new(0, -IcosahedronShort, IcosahedronLong),
-        new(0, IcosahedronShort, IcosahedronLong),
-        new(0, -IcosahedronShort, -IcosahedronLong),
-        new(0, IcosahedronShort, -IcosahedronLong),
-        new(IcosahedronLong, 0, -IcosahedronShort),
-        new(IcosahedronLong, 0, IcosahedronShort),
-        new(-IcosahedronLong, 0, -IcosahedronShort),
-        new(-IcosahedronLong, 0, IcosahedronShort),
-    ];
-
     // Captured byte-for-byte from the same native two-stream charactertransparency draw.
     // Each record is the binary element accepted by the game's vertex-declaration creator.
     // Format and attribute are game identifiers; their general enum names are not yet known.
@@ -91,10 +72,8 @@ internal sealed unsafe class NativeResources : IDisposable
 
     private readonly delegate* unmanaged<Device*, int, uint, byte, nint> createVertexBuffer;
     private readonly delegate* unmanaged<nint, void*, byte> initializeVertexBuffer;
+    private readonly Dictionary<MeshKind, NativeMesh> meshes = [];
     private readonly Dictionary<ulong, NativePrimitiveResources> primitives = [];
-    private NativeMesh triangleMesh;
-    private NativeMesh quadMesh;
-    private NativeMesh icosahedronMesh;
     private nint vertexDeclaration;
     private nint instanceConstant;
     private nint modelConstant;
@@ -141,93 +120,11 @@ internal sealed unsafe class NativeResources : IDisposable
         if (device == null)
             throw new InvalidOperationException("The native graphics device is not available.");
 
-        ReadOnlySpan<Stream0Vertex> triangleVertices =
-        [
-            new(new Vector3(-0.5f, 0, 0)),
-            new(new Vector3(0.5f, 0, 0)),
-            new(new Vector3(0, 1, 0)),
-        ];
-        ReadOnlySpan<ushort> triangleIndices = [0, 1, 2];
-        ReadOnlySpan<Stream0Vertex> quadVertices =
-        [
-            new(new Vector3(-0.5f, 0, 0)),
-            new(new Vector3(0.5f, 0, 0)),
-            new(new Vector3(0.5f, 1, 0)),
-            new(new Vector3(-0.5f, 1, 0)),
-        ];
-        ReadOnlySpan<ushort> quadIndices = [0, 1, 2, 0, 2, 3];
-        Span<Stream0Vertex> icosahedronVertices = stackalloc Stream0Vertex[IcosahedronPositions.Length];
-        for (var index = 0; index < IcosahedronPositions.Length; index++)
-            icosahedronVertices[index] = new Stream0Vertex(IcosahedronPositions[index]);
-        ReadOnlySpan<ushort> icosahedronIndices =
-        [
-            0,
-            11,
-            5,
-            0,
-            5,
-            1,
-            0,
-            1,
-            7,
-            0,
-            7,
-            10,
-            0,
-            10,
-            11,
-            1,
-            5,
-            9,
-            5,
-            11,
-            4,
-            11,
-            10,
-            2,
-            10,
-            7,
-            6,
-            7,
-            1,
-            8,
-            3,
-            9,
-            4,
-            3,
-            4,
-            2,
-            3,
-            2,
-            6,
-            3,
-            6,
-            8,
-            3,
-            8,
-            9,
-            4,
-            9,
-            5,
-            2,
-            4,
-            11,
-            6,
-            2,
-            10,
-            8,
-            6,
-            7,
-            9,
-            8,
-            1,
-        ];
-
         try
         {
-            triangleMesh = CreateMesh(device, triangleVertices, triangleIndices, createIndexBuffer, initializeIndexBuffer);
-            quadMesh = CreateMesh(device, quadVertices, quadIndices, createIndexBuffer, initializeIndexBuffer);
-            icosahedronMesh = CreateMesh(device, icosahedronVertices, icosahedronIndices, createIndexBuffer, initializeIndexBuffer);
+            foreach (var definition in MeshDefinition.All)
+                meshes.Add(definition.Kind, CreateMesh(device, definition, createIndexBuffer, initializeIndexBuffer));
+
             fixed (VertexElement* elements = VertexElements)
             {
                 vertexDeclaration = createVertexDeclaration(device, (byte*)elements, (uint)VertexElements.Length);
@@ -265,31 +162,24 @@ internal sealed unsafe class NativeResources : IDisposable
         Release(ref modelConstant);
         Release(ref instanceConstant);
         Release(ref vertexDeclaration);
-        ReleaseMesh(ref icosahedronMesh);
-        ReleaseMesh(ref quadMesh);
-        ReleaseMesh(ref triangleMesh);
+        foreach (var mesh in meshes.Values)
+            ReleaseMesh(mesh);
+        meshes.Clear();
     }
 
-    internal NativeMesh GetMesh(PrimitiveType type) =>
-        type switch
-        {
-            PrimitiveType.Triangle => triangleMesh,
-            PrimitiveType.Quad => quadMesh,
-            PrimitiveType.Icosahedron => icosahedronMesh,
-            _ => throw new ArgumentOutOfRangeException(nameof(type)),
-        };
+    internal NativeMesh GetMesh(MeshKind kind) => meshes[kind];
 
     internal NativePrimitiveResources WritePrimitive(
-        PrimitiveType type,
+        MeshKind meshKind,
         ulong id,
         Matrix4x4 currentWorldView,
         Matrix4x4 previousWorldView,
         Vector3 color,
-        float alpha,
-        float ditherFade
+        float alpha
     )
     {
-        if (primitives.TryGetValue(id, out var primitive) && primitive.Type != type)
+        var mesh = GetMesh(meshKind);
+        if (primitives.TryGetValue(id, out var primitive) && primitive.Mesh != meshKind)
         {
             ReleasePrimitive(ref primitive);
             primitives.Remove(id);
@@ -298,21 +188,28 @@ internal sealed unsafe class NativeResources : IDisposable
         var packedAlpha = PackNormalizedByte(alpha);
         if (!primitives.TryGetValue(id, out primitive))
         {
-            primitive = CreatePrimitiveResources(type, GetMesh(type).VertexCount, packedAlpha);
+            primitive = CreatePrimitiveResources(mesh, packedAlpha);
             primitives.Add(id, primitive);
         }
         else if (primitive.Alpha != packedAlpha)
         {
             var previousStream1 = primitive.Stream1Buffer;
-            var stream1 = CreateStream1Buffer(type, GetMesh(type).VertexCount, packedAlpha);
+            var stream1 = CreateStream1Buffer(mesh, packedAlpha);
             primitive = primitive with { Stream1Buffer = stream1, Alpha = packedAlpha };
             primitives[id] = primitive;
             Release(ref previousStream1);
         }
 
         WriteWorldConstant((ConstantBuffer*)primitive.WorldConstant, currentWorldView, previousWorldView);
-        WriteInstanceConstant((ConstantBuffer*)primitive.InstanceConstant, new Vector4(color.X, color.Y, color.Z, ditherFade));
+        WriteInstanceConstant((ConstantBuffer*)primitive.InstanceConstant, new Vector4(color, 1f));
         return primitive;
+    }
+
+    internal void ReleasePrimitive(ulong drawableId)
+    {
+        if (!primitives.Remove(drawableId, out var primitive))
+            return;
+        ReleasePrimitive(ref primitive);
     }
 
     internal void LoadWhiteTexture()
@@ -382,7 +279,7 @@ internal sealed unsafe class NativeResources : IDisposable
         *(Matrix4x4*)((byte*)data + sizeof(Matrix4x4)) = Matrix4x4.Transpose(previousWorldView);
     }
 
-    private NativePrimitiveResources CreatePrimitiveResources(PrimitiveType type, int vertexCount, byte alpha)
+    private NativePrimitiveResources CreatePrimitiveResources(NativeMesh mesh, byte alpha)
     {
         var device = Device.Instance();
         if (device == null)
@@ -393,10 +290,10 @@ internal sealed unsafe class NativeResources : IDisposable
         nint instance = 0;
         try
         {
-            stream1 = CreateStream1Buffer(type, vertexCount, alpha);
-            world = CreateAndClearConstantBuffer(device, WorldConstantBytes, $"{type} world");
-            instance = CreateAndClearConstantBuffer(device, InstanceConstantBytes, $"{type} instance");
-            return new NativePrimitiveResources(type, stream1, world, instance, alpha);
+            stream1 = CreateStream1Buffer(mesh, alpha);
+            world = CreateAndClearConstantBuffer(device, WorldConstantBytes, $"{mesh.Definition.Kind} world");
+            instance = CreateAndClearConstantBuffer(device, InstanceConstantBytes, $"{mesh.Definition.Kind} instance");
+            return new NativePrimitiveResources(mesh.Definition.Kind, stream1, world, instance, alpha);
         }
         catch
         {
@@ -407,17 +304,23 @@ internal sealed unsafe class NativeResources : IDisposable
         }
     }
 
-    private nint CreateStream1Buffer(PrimitiveType type, int vertexCount, byte alpha)
+    private nint CreateStream1Buffer(NativeMesh mesh, byte alpha)
     {
         var device = Device.Instance();
         if (device == null)
             throw new InvalidOperationException("The native graphics device is not available.");
 
-        var vertices = stackalloc Stream1Vertex[vertexCount];
-        WriteStream1(type, new Span<Stream1Vertex>(vertices, vertexCount), alpha / 255f);
+        var definition = mesh.Definition;
+        var vertices = stackalloc Stream1Vertex[definition.Vertices.Length];
+        for (var index = 0; index < definition.Vertices.Length; index++)
+        {
+            var vertex = definition.Vertices[index];
+            vertices[index] = new Stream1Vertex(vertex.Normal, vertex.TextureCoordinate, alpha / 255f);
+        }
+
         var stream1 = createVertexBuffer(
             device,
-            vertexCount * sizeof(Stream1Vertex),
+            definition.Vertices.Length * sizeof(Stream1Vertex),
             StaticBufferCreationFlags,
             VertexBufferFourthArgument
         );
@@ -425,17 +328,21 @@ internal sealed unsafe class NativeResources : IDisposable
             return stream1;
 
         Release(ref stream1);
-        throw new InvalidOperationException($"The game rejected the {type} attribute buffer.");
+        throw new InvalidOperationException($"The game rejected the {definition.Kind} attribute buffer.");
     }
 
     private NativeMesh CreateMesh(
         Device* device,
-        ReadOnlySpan<Stream0Vertex> vertices,
-        ReadOnlySpan<ushort> indices,
+        MeshDefinition definition,
         delegate* unmanaged<Device*, int, int, uint, byte, nint> createIndexBuffer,
         delegate* unmanaged<nint, void*, byte> initializeIndexBuffer
     )
     {
+        var vertices = new Stream0Vertex[definition.Vertices.Length];
+        for (var index = 0; index < vertices.Length; index++)
+            vertices[index] = new Stream0Vertex(definition.Vertices[index].Position);
+
+        var indices = definition.Indices;
         nint stream0 = 0;
         nint indexBuffer = 0;
         try
@@ -466,48 +373,13 @@ internal sealed unsafe class NativeResources : IDisposable
                     throw new InvalidOperationException("The game rejected fixed primitive geometry.");
             }
 
-            return new NativeMesh(stream0, indexBuffer, vertices.Length, indices.Length);
+            return new NativeMesh(definition, stream0, indexBuffer);
         }
         catch
         {
             Release(ref indexBuffer);
             Release(ref stream0);
             throw;
-        }
-    }
-
-    private static int GetVertexCount(PrimitiveType type) =>
-        type switch
-        {
-            PrimitiveType.Triangle => 3,
-            PrimitiveType.Quad => 4,
-            PrimitiveType.Icosahedron => IcosahedronPositions.Length,
-            _ => throw new ArgumentOutOfRangeException(nameof(type)),
-        };
-
-    private static void WriteStream1(PrimitiveType type, Span<Stream1Vertex> vertices, float alpha)
-    {
-        // UV-isolation probe: collapse triangle and quad sampling to one material location.
-        var probeUv = new Vector2(0.5f, 0.5f);
-        switch (type)
-        {
-            case PrimitiveType.Triangle:
-                vertices[0] = new Stream1Vertex(probeUv, alpha);
-                vertices[1] = new Stream1Vertex(probeUv, alpha);
-                vertices[2] = new Stream1Vertex(probeUv, alpha);
-                break;
-            case PrimitiveType.Quad:
-                vertices[0] = new Stream1Vertex(probeUv, alpha);
-                vertices[1] = new Stream1Vertex(probeUv, alpha);
-                vertices[2] = new Stream1Vertex(probeUv, alpha);
-                vertices[3] = new Stream1Vertex(probeUv, alpha);
-                break;
-            case PrimitiveType.Icosahedron:
-                for (var index = 0; index < IcosahedronPositions.Length; index++)
-                    vertices[index] = new Stream1Vertex(Vector3.Normalize(IcosahedronPositions[index]), probeUv, alpha);
-                break;
-            default:
-                throw new ArgumentOutOfRangeException(nameof(type));
         }
     }
 
@@ -594,11 +466,10 @@ internal sealed unsafe class NativeResources : IDisposable
         release(value);
     }
 
-    private static void ReleaseMesh(ref NativeMesh mesh)
+    private static void ReleaseMesh(NativeMesh mesh)
     {
         var indexBuffer = mesh.IndexBuffer;
         var stream0 = mesh.Stream0Buffer;
-        mesh = default;
         Release(ref indexBuffer);
         Release(ref stream0);
     }
@@ -674,10 +545,14 @@ internal sealed unsafe class NativeResources : IDisposable
     }
 }
 
-internal readonly record struct NativeMesh(nint Stream0Buffer, nint IndexBuffer, int VertexCount, int IndexCount);
+internal readonly record struct NativeMesh(MeshDefinition Definition, nint Stream0Buffer, nint IndexBuffer)
+{
+    internal int VertexCount => Definition.Vertices.Length;
+    internal int IndexCount => Definition.Indices.Length;
+}
 
 internal readonly record struct NativePrimitiveResources(
-    PrimitiveType Type,
+    MeshKind Mesh,
     nint Stream1Buffer,
     nint WorldConstant,
     nint InstanceConstant,

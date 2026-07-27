@@ -26,10 +26,12 @@ internal sealed unsafe class NativeBackend : IDisposable
     private int lastSubmittedFrame = -1;
     private int submissionDisabled;
     private int hasPendingFrame;
-    private Primitive[] pendingPrimitives = [];
+    private FrameCommand[] pendingPrimitives = [];
     private int pendingPrimitiveCount;
-    private PendingPrimitiveHistory[] pendingHistory = [];
-    private Primitive[] renderingPrimitives = [];
+    private RenderCommand[] renderingPrimitives = [];
+    private readonly Dictionary<ulong, Matrix4x4> consumedTransforms = [];
+    private HashSet<ulong> lastPublishedDrawableIds = [];
+    private readonly HashSet<ulong> retiredDrawableIds = [];
     private Matrix4x4 previousView;
     private bool hasPreviousView;
 
@@ -51,39 +53,48 @@ internal sealed unsafe class NativeBackend : IDisposable
 
     public void Dispose() => buildPassesHook.Dispose();
 
-    internal void SubmitFrame(ReadOnlySpan<Primitive> primitives)
+    internal void SubmitFrame(ReadOnlySpan<FrameCommand> primitives)
     {
         lock (submissionLock)
         {
-            var previousPendingCount = Volatile.Read(ref hasPendingFrame) == 0 ? 0 : pendingPrimitiveCount;
-            if (pendingHistory.Length < previousPendingCount)
-                pendingHistory = new PendingPrimitiveHistory[previousPendingCount];
+            var publishedDrawableIds = new HashSet<ulong>();
+            foreach (var primitive in primitives)
+                publishedDrawableIds.Add(primitive.DrawableId);
 
-            for (var index = 0; index < previousPendingCount; index++)
+            foreach (var drawableId in lastPublishedDrawableIds)
             {
-                var primitive = pendingPrimitives[index];
-                pendingHistory[index] = new PendingPrimitiveHistory(primitive.Type, primitive.Id, primitive.PreviousTransform);
+                if (!publishedDrawableIds.Contains(drawableId))
+                    consumedTransforms.Remove(drawableId);
             }
+            lastPublishedDrawableIds = publishedDrawableIds;
 
             if (pendingPrimitives.Length < primitives.Length)
-                pendingPrimitives = new Primitive[primitives.Length];
+                pendingPrimitives = new FrameCommand[primitives.Length];
 
             primitives.CopyTo(pendingPrimitives);
-            for (var index = 0; index < primitives.Length; index++)
-            {
-                for (var historyIndex = 0; historyIndex < previousPendingCount; historyIndex++)
-                {
-                    var history = pendingHistory[historyIndex];
-                    if (history.Type != pendingPrimitives[index].Type || history.Id != pendingPrimitives[index].Id)
-                        continue;
-
-                    pendingPrimitives[index] = pendingPrimitives[index] with { PreviousTransform = history.PreviousTransform };
-                    break;
-                }
-            }
-
             pendingPrimitiveCount = primitives.Length;
             Volatile.Write(ref hasPendingFrame, primitives.Length == 0 ? 0 : 1);
+        }
+    }
+
+    internal void RetireDrawable(ulong drawableId)
+    {
+        lock (submissionLock)
+        {
+            consumedTransforms.Remove(drawableId);
+            lastPublishedDrawableIds.Remove(drawableId);
+            retiredDrawableIds.Add(drawableId);
+
+            var writeIndex = 0;
+            for (var readIndex = 0; readIndex < pendingPrimitiveCount; readIndex++)
+            {
+                var primitive = pendingPrimitives[readIndex];
+                if (primitive.DrawableId != drawableId)
+                    pendingPrimitives[writeIndex++] = primitive;
+            }
+
+            pendingPrimitiveCount = writeIndex;
+            Volatile.Write(ref hasPendingFrame, writeIndex == 0 ? 0 : 1);
         }
     }
 
@@ -169,7 +180,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                 ulong commandUsedBefore;
                 nint commandBaseAfter;
                 ulong commandUsedAfter;
-                Primitive[] primitives;
+                RenderCommand[] primitives;
                 int primitiveCount;
                 try
                 {
@@ -191,6 +202,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                         return result;
                     if (Interlocked.Exchange(ref lastSubmittedFrame, frame) == frame)
                         return result;
+                    ReleaseRetiredDrawableResources();
                     if (!TryTakeFrame(out primitives, out primitiveCount))
                         return result;
 
@@ -200,17 +212,16 @@ internal sealed unsafe class NativeBackend : IDisposable
                     for (var index = 0; index < primitiveCount; index++)
                     {
                         var primitive = primitives[index];
-                        var mesh = resources.GetMesh(primitive.Type);
+                        var mesh = resources.GetMesh(primitive.Mesh);
                         var currentWorldView = primitive.CurrentTransform * view;
                         var previousWorldView = primitive.PreviousTransform * (hasPreviousView ? previousView : view);
                         var primitiveResources = resources.WritePrimitive(
-                            primitive.Type,
-                            primitive.Id,
+                            primitive.Mesh,
+                            primitive.DrawableId,
                             currentWorldView,
                             previousWorldView,
                             primitive.Color,
-                            primitive.Alpha,
-                            primitive.DitherFade
+                            primitive.Alpha
                         );
                         contextState.Install(resources, mesh, primitiveResources);
 
@@ -222,7 +233,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                             && context->CommandAllocationUsedSize <= drawCommandUsedBefore
                         )
                             throw new InvalidOperationException(
-                                $"The native pass builder produced no command data for {primitive.Type} {primitive.Id}."
+                                $"The native pass builder produced no command data for {primitive.Mesh} drawable {primitive.DrawableId}."
                             );
                     }
                     commandBaseAfter = (nint)context->CommandAllocationBase;
@@ -281,7 +292,22 @@ internal sealed unsafe class NativeBackend : IDisposable
         return result;
     }
 
-    private bool TryTakeFrame(out Primitive[] primitives, out int primitiveCount)
+    private void ReleaseRetiredDrawableResources()
+    {
+        ulong[] retired;
+        lock (submissionLock)
+        {
+            if (retiredDrawableIds.Count == 0)
+                return;
+            retired = [.. retiredDrawableIds];
+            retiredDrawableIds.Clear();
+        }
+
+        foreach (var drawableId in retired)
+            resources.ReleasePrimitive(drawableId);
+    }
+
+    private bool TryTakeFrame(out RenderCommand[] primitives, out int primitiveCount)
     {
         lock (submissionLock)
         {
@@ -292,7 +318,24 @@ internal sealed unsafe class NativeBackend : IDisposable
                 return false;
             }
 
-            (renderingPrimitives, pendingPrimitives) = (pendingPrimitives, renderingPrimitives);
+            if (renderingPrimitives.Length < pendingPrimitiveCount)
+                renderingPrimitives = new RenderCommand[pendingPrimitiveCount];
+
+            for (var index = 0; index < pendingPrimitiveCount; index++)
+            {
+                var primitive = pendingPrimitives[index];
+                var previousTransform = consumedTransforms.GetValueOrDefault(primitive.DrawableId, primitive.CurrentTransform);
+                consumedTransforms[primitive.DrawableId] = primitive.CurrentTransform;
+                renderingPrimitives[index] = new RenderCommand(
+                    primitive.DrawableId,
+                    primitive.Mesh,
+                    primitive.CurrentTransform,
+                    previousTransform,
+                    primitive.Color,
+                    primitive.Alpha
+                );
+            }
+
             primitives = renderingPrimitives;
             primitiveCount = pendingPrimitiveCount;
             pendingPrimitiveCount = 0;
@@ -315,5 +358,14 @@ internal sealed unsafe class NativeBackend : IDisposable
 
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
 
-    private readonly record struct PendingPrimitiveHistory(PrimitiveType Type, ulong Id, Matrix4x4 PreviousTransform);
+    private readonly record struct RenderCommand(
+        ulong DrawableId,
+        MeshKind Mesh,
+        Matrix4x4 CurrentTransform,
+        Matrix4x4 PreviousTransform,
+        Vector3 Color,
+        float Alpha
+    );
 }
+
+internal readonly record struct FrameCommand(ulong DrawableId, MeshKind Mesh, Matrix4x4 CurrentTransform, Vector3 Color, float Alpha);

@@ -1,77 +1,97 @@
 # Retained high-level primitive API 设计
 
-状态：正式设计，尚未实施。
+状态：phase 1 已定稿，进入实施。
 
-本文定义 Underpaint 下一阶段对 Event Horizon 暴露的 primitive API 边界。运行时证据和当前实现状态仍分别记录在
-`RESEARCH.md` 与 `STATUS.md`；本文只描述目标接口、所有权和可验收的迁移步骤。
+本文定义 Underpaint 对 Event Horizon 暴露的 retained primitive API。运行时证据和当前实现状态仍分别记录在
+`RESEARCH.md` 与 `STATUS.md`；本文只描述正式接口、所有权和验收边界。
 
-## 已决定的边界
+## Phase 1 范围
 
-Event Horizon 面对的是语义 drawable，而不是渲染资源：
+首阶段只提供两个高层 drawable：
 
-- regular polygon 由边数定义；
-- polyhedron 由 Underpaint 支持的形状类型定义；
-- drawable 对象本身表达跨帧逻辑身份；
-- 每帧只提交 current transform、color 和 alpha。
+- triangle；
+- rectangle。
 
-Event Horizon 不会：
+不在首阶段加入 regular/general polygon、polyhedron 扩展或 bar/strip。现有 icosahedron 实验不要求迁入新公开
+API。
 
-- 注册 mesh；
-- 持有 mesh handle、VB、IB 或 GPU resource ID；
-- 提交 vertices 或 indices；
-- 选择 shader、texture 或 material；
-- 计算或提交 previous transform。
+Event Horizon 不注册 mesh，不持有 mesh handle、VB、IB 或 GPU resource ID，也不提交 vertices、indices、
+previous transform、dither options、texture、shader 或 material。外部自定义 mesh 输入明确不提供，也不是本设计
+的后续路线图。
 
-Underpaint 私有承担：
+## Geometry contract
 
-- 统一 mesh representation 下的 topology 构造与共享缓存；
-- native VB、IB、vertex stream、constant 和 delayed release 的完整生命周期；
-- 无纹理 primitive 固定使用 `TexCoord0 = (0.5, 0.5)` 的 UV 策略；
-- native pass submission；
-- drawable 的 current/previous transform 和 pending frame temporal history。
+### Triangle
 
-首个实现范围只迁移现有 triangle、quad 和 icosahedron。bar/strip 的几何语义尚未决定，不进入第一阶段接口。
+triangle 是单位边长的等边三角形：
+
+- 三个顶点位于 local XY 平面；
+- 几何中心位于 local origin；
+- front normal 为 `+Z`；
+- winding 从 front 观察为逆时针；
+- 尺寸变化由 caller 的 current transform 表达。
+
+若边长为 1、高为 `sqrt(3) / 2`，建议 local 顶点为：
+
+```text
+(-1/2, -sqrt(3)/6, 0)
+( 1/2, -sqrt(3)/6, 0)
+(   0,  sqrt(3)/3, 0)
+```
+
+### Rectangle
+
+rectangle 由 retained drawable 的 width 和 height 定义：
+
+- 底层共享一个 `1 × 1` unit rectangle mesh；
+- unit mesh 位于 local XY 平面，范围为 `[-0.5, 0.5] × [-0.5, 0.5]`；
+- 几何中心位于 local origin；
+- front normal 为 `+Z`；
+- winding 从 front 观察为逆时针；
+- width 和 height 必须为有限正数；
+- width 等于 height 时就是正方形。
+
+Underpaint 在记录 Draw 时把 width/height 安全地组合到实例 current transform。Event Horizon 只操作高层尺寸，不接触
+mesh 或 vertex 数据。rectangle 尺寸改变属于 transform history 的一部分。
+
+所有 phase-1 无纹理 vertex 固定使用 `TexCoord0 = (0.5, 0.5)`。
 
 ## 建议的公开 API
 
-以下代码是接口草图，不要求文档阶段立即确定所有命名细节：
-
 ```csharp
-public enum PolyhedronKind
-{
-    Icosahedron,
-}
-
 public sealed class Renderer : IDisposable
 {
-    public RegularPolygonDrawable CreateRegularPolygon(int sideCount);
+    public TriangleDrawable CreateTriangle();
 
-    public PolyhedronDrawable CreatePolyhedron(PolyhedronKind kind);
+    public RectangleDrawable CreateRectangle(float width, float height);
 
     public PrimitiveFrame BeginFrame();
 }
 
-public sealed class RegularPolygonDrawable : IDisposable
+public sealed class TriangleDrawable : IDisposable
 {
-    public int SideCount { get; }
 }
 
-public sealed class PolyhedronDrawable : IDisposable
+public sealed class RectangleDrawable : IDisposable
 {
-    public PolyhedronKind Kind { get; }
+    public float Width { get; }
+
+    public float Height { get; }
+
+    public void Resize(float width, float height);
 }
 
 public sealed class PrimitiveFrame : IDisposable
 {
-    public void DrawPolygon(
-        RegularPolygonDrawable drawable,
+    public void DrawTriangle(
+        TriangleDrawable drawable,
         Matrix4x4 transform,
         Vector3 color,
         float alpha = 1f
     );
 
-    public void DrawPolyhedron(
-        PolyhedronDrawable drawable,
+    public void DrawRectangle(
+        RectangleDrawable drawable,
         Matrix4x4 transform,
         Vector3 color,
         float alpha = 1f
@@ -84,221 +104,129 @@ public sealed class PrimitiveFrame : IDisposable
 典型调用：
 
 ```csharp
-private readonly RegularPolygonDrawable triangle = renderer.CreateRegularPolygon(3);
-private readonly RegularPolygonDrawable quad = renderer.CreateRegularPolygon(4);
-private readonly PolyhedronDrawable icosahedron =
-    renderer.CreatePolyhedron(PolyhedronKind.Icosahedron);
+private readonly TriangleDrawable triangle = renderer.CreateTriangle();
+private readonly RectangleDrawable rectangle = renderer.CreateRectangle(2f, 1f);
 
 public void SubmitScene()
 {
     using var frame = renderer.BeginFrame();
-    frame.DrawPolygon(triangle, triangleWorld, triangleColor, triangleAlpha);
-    frame.DrawPolygon(quad, quadWorld, quadColor, quadAlpha);
-    frame.DrawPolyhedron(icosahedron, icosahedronWorld, icosahedronColor, 0.75f);
+    frame.DrawTriangle(triangle, triangleWorld, triangleColor, triangleAlpha);
+    frame.DrawRectangle(rectangle, rectangleWorld, rectangleColor, rectangleAlpha);
     frame.Publish();
 }
 ```
 
-`RegularPolygonDrawable` 和 `PolyhedronDrawable` 是高层逻辑对象。它们不是 mesh handle，也不能用于查询、导出或替换
-任何 GPU 资源。多个 drawable 可以共享同一份私有 topology cache，但仍各自拥有独立的 temporal identity。
-
-第一阶段 `CreateRegularPolygon` 只接受 `sideCount` 3 和 4。接口保留 regular polygon 的语义，后续只有在 topology
-生成、边数上限和实机行为通过单独验收后才扩大边数范围。`CreatePolyhedron` 第一阶段只支持 `Icosahedron`。
+drawable 对象本身表达稳定逻辑身份。公开 API 不出现 caller 分配的整数 ID。Underpaint 可以私有分配内部 identity，但
+该值不是 mesh key 或 GPU resource ID，也不能跨出程序集边界。
 
 ## Drawable 生命周期
 
-drawable 是 retained 对象，不应每帧创建：
-
 1. caller 通过所属 `Renderer` 创建 drawable；
-2. caller 在多个已发布帧中重复提交同一个对象；
-3. drawable 的形状描述在其生命周期内不可变；
-4. caller 不再需要该逻辑图元时 dispose drawable；
-5. dispose 后的 drawable 不能再加入 frame；
-6. dispose `Renderer` 会使其创建的全部 drawable 和未发布 frame 失效，并释放其私有 native 状态。
+2. caller 在多个已发布 frame 中重复 Draw 同一个对象；
+3. caller 不再需要实例时 dispose drawable；
+4. disposed drawable 不能再次 Draw；
+5. dispose `Renderer` 会使其创建的全部 drawable 和未发布 frame 失效；
+6. frame 拒绝其他 renderer 创建的 drawable，也拒绝同一个 drawable 在一帧内 Draw 两次。
 
-公开对象身份只在创建它的 `Renderer` 内有效。frame 必须拒绝其他 renderer 创建的 drawable，也必须拒绝同一个
-drawable 在一个 frame 中被 Draw 两次。这样 identity 不需要公开整数 ID，也不会与 mesh cache key 混为一谈。
+triangle 的 geometry 不可变。rectangle 的 width/height 可通过 `Resize` 修改，但仍共享同一个 unit rectangle mesh；
+resize 不创建新的公开 identity。
 
-dispose drawable 表示逻辑图元生命周期结束。Underpaint 随后按安全的 delayed-release 规则回收该 drawable 的
-私有 native 资源；共享 topology 只在没有其他使用者且缓存策略允许时回收。
+drawable dispose 后，Underpaint 在 native submission 所属线程安全回收其 instance resources。共享 mesh 资源由
+Underpaint 独立管理，不随单个 drawable dispose。
 
-## Frame publish 规则
+## Frame publish 与 consumption
 
 `PrimitiveFrame` 收集一份完整的 scene snapshot：
 
-- `BeginFrame` 创建尚未发布的可变 builder；
-- `DrawPolygon` 和 `DrawPolyhedron` 只记录语义 drawable、current transform 和外观；
+- `BeginFrame` 创建尚未发布的 builder；
+- Draw 只记录 drawable、current transform、color 和 alpha；
 - `Publish` 冻结 snapshot，并原子替换尚未被 native renderer 消费的 pending frame；
-- 一个 frame 只能成功发布一次；
-- dispose 未发布的 frame 只丢弃它，不改变当前 pending 或 rendering frame；
-- 发布空 frame 表示清空所有 drawable；
-- 已发布 frame 不再借用 caller 持有的可变数据。
+- 一个 frame 只能发布一次；
+- dispose 未发布 frame 只丢弃 builder，不改变 pending frame；
+- 发布空 frame 取消当前 scene；
+- 已发布 frame 不借用 caller 的可变数据。
 
-显式 `Publish` 比“dispose 即提交”更容易区分成功提交与异常路径中的半成品。Underpaint 仍保持 latest-wins：producer
-可以在 native renderer 消费前发布多次，但 pending frame 的替换不能破坏 temporal predecessor。
+retained 指 drawable identity，而不是自动持续重绘的 scene。Event Horizon 仍在每个 framework update 发布当前完整
+drawable 集合。native renderer 每个 game frame 最多消费一个最新 pending snapshot。
 
 ## Temporal history
 
-caller 不提供 previous transform。Underpaint 以 retained drawable 对象为 identity，私有维护：
+caller 不计算或提交 previous transform。Underpaint 私有维护：
 
-- 最近一次实际进入 native rendering 的 transform；
-- 尚未被消费的 pending transform；
-- 主 view 的 current/previous 状态；
+- 每个 retained drawable 最近一次实际消费的 current transform；
+- rectangle width/height 合成后的完整实例 transform；
+- main view 的 current/previous 状态；
 - current/previous world-view constant。
 
-正常连续绘制时，第 N 帧的 previous transform 来自同一 drawable 在前一个实际渲染帧中的 current transform。
+消费 snapshot 时：
 
-若多个 producer frame 在 native renderer 消费前互相替换，Underpaint 必须保留最早 pending frame 的 predecessor，
-并将它与最后发布的 current transform 配对。中间未消费 frame 不得错误地变成 previous。现有 pending-history
-修复表达的正是这个时序不变量；其视觉效果仍未确认，不能仅凭接口迁移宣称 motion artifact 已解决。
+- 首次出现使用 `previous = current`；
+- 连续出现使用该 drawable 上一次实际消费的 current；
+- producer 在 native consumption 前连续发布 B/C/D 时，中间 snapshot 不进入 history；若上次实际消费为 A，则最新
+  snapshot 使用 A 作为 previous；
+- drawable 缺席任何一份已发布的完整 frame 后，continuity 立即重置；之后重现使用 `previous = current`；
+- dispose drawable 或 renderer 会删除其 history；
+- color/alpha 改变不重置 transform history；
+- rectangle resize 会改变实例 transform，因此参与正常 history，而不是强制 reset。
 
-以下情况重置 drawable history，并令下一次 Draw 使用 `previous = current`：
+motion-history 状态机可做确定性测试，但其拖影视觉改善仍必须单独实机确认。
 
-- drawable 第一次出现；
-- drawable 未出现在一份已发布的完整 frame 中，之后再次出现；
-- drawable 被 dispose；
-- 所属 `Renderer` 重建或 dispose。
+## Underpaint 内部统一 mesh 机制
 
-第一阶段 drawable 的 shape 不可变，因此 shape change 应通过 dispose 旧对象并创建新对象表达。只改变 color 或 alpha
-不会重置 transform history。未调用 `Publish` 的 frame 对 history 没有影响。
+Underpaint 内部应复用统一的私有 mesh definition/cache：
 
-## 内外责任分界
+- unit equilateral triangle 和 unit rectangle 是两份 immutable mesh data；
+- mesh definition 同时拥有 position、normal、fixed UV 和 indices；
+- 两种 shape 经过同一条 native VB/IB 创建、缓存、lifetime 与 submission 路径；
+- drawable identity 与 mesh cache identity 分离；
+- 多个同形 drawable 共享 mesh，同时拥有独立 transform、appearance、history 和 instance resources。
 
-### Event Horizon
+当前 `NativeMesh`、`CreateMesh`、`ReleaseMesh` 和 `GetMesh` 是优先演进对象。实现应移除 triangle/rectangle 各自的
+vertex-count/attribute 分支，让 stream 0、stream 1 模板和 IB 都由统一 mesh definition 驱动。
 
-- 按业务语义长期持有 drawable；
-- 选择当前 transform、color 和 alpha；
-- 每个更新周期发布完整 drawable 集合；
-- 在逻辑对象消失时 dispose drawable；
-- 保证同一个 drawable 在一帧内只 Draw 一次。
+运行时可变 topology、dynamic VB 和外部 mesh registration 不在本设计范围内。
 
-### Underpaint
+## Event Horizon 3D Playground
 
-- 校验 shape 参数、transform、color 和 alpha；
-- 把 semantic Draw 降低为内部 render command；
-- 通过统一的内部 mesh representation 生成并缓存单位 topology，计算 winding、indices 和 normals；
-- 对所有无纹理 vertex 写入固定中心 UV；
-- 将 shape 尺寸和 current transform 组合为私有 world 输入；
-- 管理每 drawable 的 temporal state 和 native instance 状态；
-- 管理共享 mesh、native buffer、constant、material donor、hook 和 delayed release；
-- 在 native pass 中提交并在异常、替换和 unload 路径恢复或释放状态。
+窗口只保留本次流程需要的交互：
 
-任何内部 mesh cache key、native pointer 或资源槽位都不能穿过公开 API。
+1. 初始没有 drawable；
+2. 首次点击 `Generate triangle` 时，以本地玩家当前位置为 anchor 创建 triangle；
+3. 首次点击 `Generate rectangle` 时，以本地玩家当前位置为 anchor 创建 rectangle；
+4. 创建后显示对应 position 控件；
+5. rectangle 额外显示 width 和 height 控件；
+6. 每次 framework update 将已创建实例的 current transform、固定 color/alpha 加入完整 frame 并 Publish；
+7. window/plugin dispose 时先 dispose drawable，再 dispose renderer。
 
-## 内部统一 mesh 机制
+triangle/rectangle 的 local front 为 `+Z`。Playground 若要把它们平放在玩家脚下，应在 current transform 中加入从
+local XY 到 world XZ 的固定旋转；这属于高层放置 transform，不改变 geometry contract。
 
-“Event Horizon 不接触通用 mesh”不等于“Underpaint 内部不应有通用 mesh 系统”。相反，Underpaint 应优先复用或建立
-统一的私有 mesh representation/cache，让 semantic shape 只负责产生 mesh 数据：
+不恢复旧 group-motion debug slider，不暴露 dither，不要求保留旧 triangle/quad/icosahedron 的实验控件。
 
-- triangle、quad 和 icosahedron 是三份不同的 topology/attribute 数据；
-- 它们经过同一条 mesh 创建、缓存、native lifetime 和 submission 路径；
-- retained drawable identity 与 mesh cache identity 分离；
-- 多个同形 drawable 共享 mesh，同时保留独立的 transform、appearance 和 temporal history；
-- Event Horizon 看不到内部 mesh definition、cache key、native buffer 或 release protocol。
-
-当前仓库已经有可优先演进的基础：
-
-- `NativeMesh` 统一保存 stream 0、IB 和 vertex/index count；
-- `CreateMesh` 与 `ReleaseMesh` 已经是三种固定形状共用的创建和释放函数；
-- `NativeBackend` 在提交前通过 `GetMesh` 取得 mesh。
-
-当前结构还不是完整的统一 cache：triangle、quad、icosahedron 分别占用字段，`GetMesh`、`GetVertexCount` 和
-`WriteStream1` 仍按 `PrimitiveType` 分支。实施前应先评估如何把这些现有部件收敛为 descriptor-keyed 的内部
-mesh definition/cache，而不是绕开它们再建立一套系统。最低目标是让 position、index、normal 和固定 UV 都来自
-统一 mesh 数据，并让三种形状走相同的 native resource owner 与 submission path。
-
-这套机制仍是固定、不可变 topology 的内部系统。运行时可变 topology 和 dynamic VB 不在本设计范围内。
-
-## Bar/strip 的开放问题
-
-bar 暂不提供接口。至少需要用户先选择以下几何语义：
-
-- 使用 `length + width + transform`，还是 local/world 的 `start + end + width`；
-- 沿局部轴居中，还是从 local origin 向前延伸；
-- 固定平面 rectangle，还是始终面向相机的 ribbon；
-- 端点是平头、方头还是圆头；
-- 后续是否需要折线 join，或第一版只允许单段。
-
-这些选择会改变 transform、history 和 topology 的含义。在决定前预留 `DrawBar`、通用 strip descriptor 或 cap/join
-options 都属于猜测，因此明确推迟。
-
-## 非目标
-
-本设计明确不向 Event Horizon 提供：
-
-- 任意 vertices/indices 或 general mesh 输入；
-- mesh registration、mesh handle 或 resource ID protocol；
-- dynamic vertex buffer 更新；
-- texture、sampler、shader 或 material 选择；
-- outline、wireframe、concave polygon、带孔 polygon 或任意 triangulation；
-- 为未来可能性预留的万能 options 包。
-
-外部自定义 mesh 不是延后项目或路线图候选，而是当前明确不提供的能力。这里的限制不否定上一节要求的 Underpaint
-内部统一 mesh representation/cache；本设计的范围只有该内部机制和 Event Horizon 的高层 semantic drawable API。
-
-## 分阶段实施
-
-### 阶段 1：迁移现有形状
-
-- 先评估并复用现有 `NativeMesh`、`CreateMesh`、`ReleaseMesh` 和 `GetMesh` 基础；
-- 将三个 shape-specific mesh 字段和分支收敛到统一的内部 mesh definition/cache 与 resource owner；
-- 引入 retained drawable 和 explicit frame publish；
-- triangle 映射为 `CreateRegularPolygon(3)`；
-- quad 映射为 `CreateRegularPolygon(4)`；
-- icosahedron 映射为 `CreatePolyhedron(Icosahedron)`；
-- 从 Event Horizon 调用点删除 raw `PrimitiveType`、整数 ID 和 previous transform；
-- raw command、mesh lookup 和 native resource identity 全部降为 Underpaint internal。
-
-阶段 1 不增加新的可见形状，也不实现 bar。
-
-### 阶段 2：扩大 regular polygon
-
-只有阶段 1 验收完成后，再决定：
-
-- local origin、front axis 和首顶点方向；
-- 支持的最小/最大边数；
-- unit radius 的定义；
-- topology cache 的容量与回收规则。
-
-随后按一个明确边数范围实现并验证 regular polygon topology。
-
-### 阶段 3：单独设计 bar
-
-用户先选择 bar/strip 几何语义，再形成独立的小范围接口和验收标准。不得把 arbitrary mesh 或 dynamic vertex system
-作为 bar 的前置条件。
-
-## 可验证验收
-
-### API 与所有权
-
-- Event Horizon 的普通调用不出现 `Primitive`、`PrimitiveType`、previous transform、整数资源 ID、vertices 或 indices；
-- 同一 drawable 可跨多个已发布 frame 使用；
-- 不同 drawable 即使形状相同也具有独立 history；
-- topology cache 以 shape descriptor 共享，而不是以 drawable identity 重复创建；
-- triangle、quad 和 icosahedron 只提供不同 mesh 数据，走同一条内部创建、缓存、lifetime 和 submission 路径；
-- cross-renderer、disposed drawable 和同帧重复 Draw 被明确拒绝；
-- dispose drawable/renderer 后 native 资源按既有安全顺序释放。
+## Phase 1 验收
 
 ### Geometry
 
-- triangle、quad 和 icosahedron 的 vertex/index count、winding 和 normal 符合约定；
-- 所有无纹理 vertex 的 UV 都严格为 `(0.5, 0.5)`；
-- 三个现有 playground 图元可通过新 API 重现 transform、color 和 alpha 行为；
-- 没有每帧重建共享 mesh。
+- triangle 三边相等、centroid 为原点、3 vertices/3 indices、winding 和 normal 指向 `+Z`；
+- rectangle 为中心原点的 unit square、4 vertices/6 indices、winding 和 normal 指向 `+Z`；
+- 所有 UV 严格为 `(0.5, 0.5)`；
+- width/height 只改变 rectangle 实例 transform，不创建新 mesh；
+- 两种 shape 走同一个内部 mesh cache/resource owner/submission path。
 
-### Frame 与 history
+### API 与 history
 
-- 未发布 frame 不改变可见 snapshot 或 history；
-- 空发布清空 scene；
-- 第一帧使用 `previous = current`；
-- 连续消费帧使用上一实际渲染 transform；
-- 多次 pending replacement 保留最早 predecessor 和最新 current；
-- drawable 从完整发布帧缺席后重现时 history 已重置；
-- color/alpha 改变不重置 transform history。
+- Event Horizon 不出现 raw primitive type、整数 ID、vertices/indices、previous transform 或 dither；
+- cross-renderer、disposed drawable 和同帧重复 Draw 被拒绝；
+- 未 Publish frame 无影响，空 Publish 取消 scene；
+- first、continuous、pending overwrite、absence/reappearance 和 dispose history 行为有确定性验证；
+- drawable native resources 只在安全 native 路径创建和回收。
 
 ### Runtime
 
-- Event Horizon 3D Playground 冷启动、登录、角色选择、显示、隐藏和 unload 保持稳定；
-- triangle、quad 和 icosahedron 保持原生深度遮挡、背面裁剪、颜色和 alpha 行为；
-- 固定中心 UV 不重新出现局部脏纹理；
-- motion-history 视觉结果单独记录为 confirmed、failed 或 inconclusive，不以“构建通过”替代实机判定。
+- 两个按钮首次点击时在本地玩家脚下生成对应实例；
+- position 控件能独立移动两个实例；
+- rectangle width/height 控件能独立改变尺寸；
+- triangle/rectangle 保持 native depth、back-face culling、color 和 alpha 行为；
+- 固定中心 UV 不重新出现 primitive-local 脏纹；
+- 冷启动、登录、角色选择、reload 和 unload 稳定；
+- motion-history 视觉结果记录为 confirmed、failed 或 inconclusive，不能以 build 或状态机测试代替。
