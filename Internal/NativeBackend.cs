@@ -1,6 +1,7 @@
 using System.Numerics;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.Interop;
@@ -35,6 +36,18 @@ internal sealed unsafe class NativeBackend : IDisposable
     private Matrix4x4 previousView;
     private bool hasPreviousView;
 
+#if DEBUG
+    private const int SortKeyCaptureFrameLimit = 2;
+    private const int SortKeyCaptureCommandLimit = 64;
+
+    private readonly Hook<PushBackCommandDelegate> pushBackCommandHook;
+    private SortKeyCaptureSession? sortKeyCapture;
+    private string? sortKeyCaptureStatus;
+    private nint sortKeyCaptureContext;
+    private int sortKeyCapturePushSequence;
+    private int sortKeyCaptureActive;
+#endif
+
     internal NativeBackend(
         IGameInteropProvider gameInteropProvider,
         ISigScanner sigScanner,
@@ -48,10 +61,37 @@ internal sealed unsafe class NativeBackend : IDisposable
         this.resources = resources;
         materialHelper = new MaterialHelper(sigScanner, material);
         buildPassesHook = gameInteropProvider.HookFromSignature<BuildPassesDelegate>(BuildPassesSignature, BuildPassesDetour);
+#if DEBUG
+        pushBackCommandHook = gameInteropProvider.HookFromAddress<PushBackCommandDelegate>(
+            (nint)Context.MemberFunctionPointers.PushBackCommand,
+            PushBackCommandDetour
+        );
+#endif
         buildPassesHook.Enable();
     }
 
-    public void Dispose() => buildPassesHook.Dispose();
+    public void Dispose()
+    {
+        buildPassesHook.Dispose();
+#if DEBUG
+        pushBackCommandHook.Dispose();
+#endif
+    }
+
+#if DEBUG
+    internal string? SortKeyCaptureStatus => Volatile.Read(ref sortKeyCaptureStatus);
+
+    internal void ArmSortKeyCapture()
+    {
+        if (Volatile.Read(ref sortKeyCaptureActive) != 0)
+            return;
+
+        sortKeyCapture = new SortKeyCaptureSession();
+        Volatile.Write(ref sortKeyCaptureStatus, $"Armed for {SortKeyCaptureFrameLimit} Underpaint frames.");
+        pushBackCommandHook.Enable();
+        Volatile.Write(ref sortKeyCaptureActive, 1);
+    }
+#endif
 
     internal void SubmitFrame(ReadOnlySpan<FrameCommand> primitives)
     {
@@ -229,7 +269,30 @@ internal sealed unsafe class NativeBackend : IDisposable
 
                         var drawCommandBaseBefore = (nint)context->CommandAllocationBase;
                         var drawCommandUsedBefore = context->CommandAllocationUsedSize;
+#if DEBUG
+                        if (Volatile.Read(ref sortKeyCaptureActive) != 0)
+                        {
+                            BeginSortKeyPrimitive(context, frame, index, primitive);
+                            try
+                            {
+                                buildPassesHook.Original(
+                                    modelRenderer,
+                                    (nint)ownedMaterialParameters,
+                                    mesh.VertexCount,
+                                    0,
+                                    mesh.IndexCount
+                                );
+                            }
+                            finally
+                            {
+                                EndSortKeyPrimitive(context);
+                            }
+                        }
+                        else
+                            buildPassesHook.Original(modelRenderer, (nint)ownedMaterialParameters, mesh.VertexCount, 0, mesh.IndexCount);
+#else
                         buildPassesHook.Original(modelRenderer, (nint)ownedMaterialParameters, mesh.VertexCount, 0, mesh.IndexCount);
+#endif
                         if (
                             (nint)context->CommandAllocationBase == drawCommandBaseBefore
                             && context->CommandAllocationUsedSize <= drawCommandUsedBefore
@@ -238,6 +301,10 @@ internal sealed unsafe class NativeBackend : IDisposable
                                 $"The native pass builder produced no command data for {primitive.Mesh} drawable {primitive.DrawableId}."
                             );
                     }
+#if DEBUG
+                    if (Volatile.Read(ref sortKeyCaptureActive) != 0)
+                        FinishSortKeyCaptureFrame();
+#endif
                     commandBaseAfter = (nint)context->CommandAllocationBase;
                     commandUsedAfter = context->CommandAllocationUsedSize;
 
@@ -287,6 +354,9 @@ internal sealed unsafe class NativeBackend : IDisposable
         }
         catch (Exception exception)
         {
+#if DEBUG
+            AbortSortKeyCapture(exception.Message);
+#endif
             Volatile.Write(ref submissionDisabled, 1);
             log.Error(exception, "[Underpaint] Native submission failed; later frames are disabled.");
         }
@@ -362,7 +432,125 @@ internal sealed unsafe class NativeBackend : IDisposable
         return true;
     }
 
+#if DEBUG
+    private void BeginSortKeyPrimitive(Context* context, int frame, int sequence, RenderCommand primitive)
+    {
+        if (
+            Volatile.Read(ref sortKeyCaptureActive) == 0
+            || sortKeyCapture == null
+            || sortKeyCapture.CommandCount >= SortKeyCaptureCommandLimit
+        )
+            return;
+
+        var position = primitive.CurrentTransform.Translation;
+        sortKeyCapture.PrimitiveCount++;
+        sortKeyCapture.EntryKeys.Add(context->SortKey);
+        sortKeyCapture.Details.AppendLine(
+            $"Primitive Frame={frame} Sequence={sequence} Drawable={primitive.DrawableId} "
+                + $"Position=({position.X:F3},{position.Y:F3},{position.Z:F3}) Entry=0x{context->SortKey:X8}"
+        );
+        sortKeyCaptureContext = (nint)context;
+        sortKeyCapturePushSequence = 0;
+    }
+
+    private void EndSortKeyPrimitive(Context* context)
+    {
+        if (sortKeyCapture == null || sortKeyCaptureContext != (nint)context)
+            return;
+
+        sortKeyCapture.Details.AppendLine($"  Exit=0x{context->SortKey:X8} Commands={sortKeyCapturePushSequence}");
+        sortKeyCaptureContext = 0;
+    }
+
+    private void PushBackCommandDetour(Context* context, void* command)
+    {
+        var capture = sortKeyCapture;
+        var shouldCapture =
+            Volatile.Read(ref sortKeyCaptureActive) == 0
+                ? false
+                : capture != null && sortKeyCaptureContext == (nint)context && capture.CommandCount < SortKeyCaptureCommandLimit;
+        if (!shouldCapture)
+        {
+            pushBackCommandHook.Original(context, command);
+            return;
+        }
+
+        var type = command == null ? -1 : *(int*)command;
+        var view = context->ViewIndex;
+        var subView = context->CurrentSubViewIndex;
+        var sortKey = context->SortKey;
+        pushBackCommandHook.Original(context, command);
+
+        capture!.CommandCount++;
+        capture.CommandKeys.Add(sortKey);
+        capture.Details.AppendLine($"  Push={sortKeyCapturePushSequence++} Type={type} View={view}.{subView} SortKey=0x{sortKey:X8}");
+    }
+
+    private void FinishSortKeyCaptureFrame()
+    {
+        var capture = sortKeyCapture;
+        if (Volatile.Read(ref sortKeyCaptureActive) == 0 || capture == null)
+            return;
+
+        capture.FrameCount++;
+        if (capture.FrameCount < SortKeyCaptureFrameLimit && capture.CommandCount < SortKeyCaptureCommandLimit)
+            return;
+
+        CompleteSortKeyCapture(capture);
+    }
+
+    private void CompleteSortKeyCapture(SortKeyCaptureSession capture)
+    {
+        Volatile.Write(ref sortKeyCaptureActive, 0);
+        sortKeyCaptureContext = 0;
+        sortKeyCapture = null;
+        pushBackCommandHook.Disable();
+
+        var status =
+            $"Complete: {capture.FrameCount} frames, {capture.PrimitiveCount} primitives, "
+            + $"{capture.CommandCount} commands, {capture.EntryKeys.Count} entry keys, {capture.CommandKeys.Count} command keys. "
+            + "See the Dalamud log for details.";
+        Volatile.Write(ref sortKeyCaptureStatus, status);
+        log.Information(
+            "[Underpaint] SortKey capture complete. Frames={Frames} Primitives={Primitives} Commands={Commands} "
+                + "EntryKeys={EntryKeys} CommandKeys={CommandKeys}\n{Details}",
+            capture.FrameCount,
+            capture.PrimitiveCount,
+            capture.CommandCount,
+            capture.EntryKeys.Count,
+            capture.CommandKeys.Count,
+            capture.Details.ToString()
+        );
+    }
+
+    private void AbortSortKeyCapture(string reason)
+    {
+        if (Volatile.Read(ref sortKeyCaptureActive) == 0)
+            return;
+
+        Volatile.Write(ref sortKeyCaptureActive, 0);
+        sortKeyCaptureContext = 0;
+        sortKeyCapture = null;
+        pushBackCommandHook.Disable();
+        Volatile.Write(ref sortKeyCaptureStatus, $"Capture stopped: {reason}");
+    }
+#endif
+
     private delegate nint BuildPassesDelegate(nint modelRenderer, nint materialParameters, int vertexCount, int startIndex, int indexCount);
+
+#if DEBUG
+    private delegate void PushBackCommandDelegate(Context* context, void* command);
+
+    private sealed class SortKeyCaptureSession
+    {
+        internal readonly HashSet<uint> EntryKeys = [];
+        internal readonly HashSet<uint> CommandKeys = [];
+        internal readonly System.Text.StringBuilder Details = new();
+        internal int FrameCount;
+        internal int PrimitiveCount;
+        internal int CommandCount;
+    }
+#endif
 
     private readonly record struct RenderCommand(
         ulong DrawableId,

@@ -54,6 +54,19 @@ public sealed class Renderer : IDisposable
         }
     }
 
+#if DEBUG
+    public void ArmSortKeyCapture()
+    {
+        lock (drawableLock)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            backend.ArmSortKeyCapture();
+        }
+    }
+
+    public string? SortKeyCaptureStatus => backend.SortKeyCaptureStatus;
+#endif
+
     public void Dispose()
     {
         lock (drawableLock)
