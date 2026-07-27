@@ -25,12 +25,10 @@ internal sealed unsafe class MaterialHelper
     // charactertransparency material inputs:
     // normal RG = tangent-space normal, B = opacity;
     // index R = colorset pair, G = even/odd blend;
-    // mask RGB = specular strength, roughness, ambient occlusion;
     // the color table is generated from the mtrl colorset.
     private const uint NormalMapSamplerCrc = 0x0C5EC1F1;
     private const ushort MaterialSamplerClass = ShaderPackage.SamplerSlotMaterial;
     private const uint IndexMapSamplerCrc = 0x565F8FD8;
-    private const uint MaskMapSamplerCrc = 0x8A4E82B6;
     private const uint ColorTableSamplerCrc = 0x2005679F;
     private const ushort ColorTableSamplerClass = 1;
 
@@ -95,7 +93,6 @@ internal sealed unsafe class MaterialHelper
 
         var normalMapSampler = FindSampler(shaderPackage, NormalMapSamplerCrc, MaterialSamplerClass);
         var indexMapSampler = FindSampler(shaderPackage, IndexMapSamplerCrc, MaterialSamplerClass);
-        var maskMapSampler = FindSampler(shaderPackage, MaskMapSamplerCrc, MaterialSamplerClass);
         var colorTableSampler = FindSampler(shaderPackage, ColorTableSamplerCrc, ColorTableSamplerClass);
 
         return new MaterialBindingIds(
@@ -104,7 +101,6 @@ internal sealed unsafe class MaterialHelper
             modelConstantEntry.Id,
             normalMapSampler.Id,
             indexMapSampler.Id,
-            maskMapSampler.Id,
             colorTableSampler.Id
         );
     }
@@ -346,7 +342,6 @@ internal readonly record struct MaterialBindingIds(
     uint ModelConstantId,
     uint NormalMapSamplerId,
     uint IndexMapSamplerId,
-    uint MaskMapSamplerId,
     uint ColorTableSamplerId
 );
 

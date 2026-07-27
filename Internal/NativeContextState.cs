@@ -24,7 +24,6 @@ internal unsafe ref struct NativeContextState
     private readonly uint modelConstantId;
     private readonly uint normalMapSamplerId;
     private readonly uint indexMapSamplerId;
-    private readonly uint maskMapSamplerId;
     private readonly uint colorTableSamplerId;
     private readonly nint indexBuffer;
     private readonly nint vertexDeclaration;
@@ -41,7 +40,6 @@ internal unsafe ref struct NativeContextState
     private readonly nint modelConstant;
     private readonly SamplerState normalMapSampler;
     private readonly SamplerState indexMapSampler;
-    private readonly SamplerState maskMapSampler;
     private readonly SamplerState colorTableSampler;
 
     internal NativeContextState(byte* context, uint worldConstantId, MaterialBindingIds material)
@@ -53,7 +51,6 @@ internal unsafe ref struct NativeContextState
         modelConstantId = material.ModelConstantId;
         normalMapSamplerId = material.NormalMapSamplerId;
         indexMapSamplerId = material.IndexMapSamplerId;
-        maskMapSamplerId = material.MaskMapSamplerId;
         colorTableSamplerId = material.ColorTableSamplerId;
 
         indexBuffer = *(nint*)(context + IndexBufferOffset);
@@ -71,7 +68,6 @@ internal unsafe ref struct NativeContextState
         modelConstant = GetConstant(modelConstantId);
         normalMapSampler = GetSampler(normalMapSamplerId);
         indexMapSampler = GetSampler(indexMapSamplerId);
-        maskMapSampler = GetSampler(maskMapSamplerId);
         colorTableSampler = GetSampler(colorTableSamplerId);
     }
 
@@ -114,7 +110,6 @@ internal unsafe ref struct NativeContextState
         SetConstant(modelConstantId, modelConstant);
         SetSampler(normalMapSamplerId, normalMapSampler);
         SetSampler(indexMapSamplerId, indexMapSampler);
-        SetSampler(maskMapSamplerId, maskMapSampler);
         SetSampler(colorTableSamplerId, colorTableSampler);
     }
 
