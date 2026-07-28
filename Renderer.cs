@@ -11,6 +11,9 @@ public sealed class Renderer : IDisposable
     private readonly NativeResources resources;
     private readonly MaterialLoader material;
     private readonly NativeBackend backend;
+#if DEBUG
+    private readonly AvfxSortProbe? avfxSortProbe;
+#endif
     private ulong nextDrawableId;
     private bool disposed;
 
@@ -23,6 +26,16 @@ public sealed class Renderer : IDisposable
             try
             {
                 backend = new NativeBackend(gameInteropProvider, sigScanner, material, resources, log);
+#if DEBUG
+                try
+                {
+                    avfxSortProbe = new AvfxSortProbe(gameInteropProvider, sigScanner, log);
+                }
+                catch (Exception exception)
+                {
+                    log.Warning(exception, "[Underpaint] AVFX sorting probe is unavailable.");
+                }
+#endif
             }
             catch
             {
@@ -65,6 +78,48 @@ public sealed class Renderer : IDisposable
     }
 
     public string? SortKeyCaptureStatus => backend.SortKeyCaptureStatus;
+
+    public void ArmAvfxSortProbe(string resourcePath, IReadOnlyList<System.Numerics.Vector3> positions, int expectedDrawLayerType)
+    {
+        lock (drawableLock)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            avfxSortProbe?.Arm(resourcePath, positions, expectedDrawLayerType);
+        }
+    }
+
+    public void UpdateAvfxSortProbe()
+    {
+        lock (drawableLock)
+        {
+            if (!disposed)
+                avfxSortProbe?.Update();
+        }
+    }
+
+    public void StopAvfxSortProbe()
+    {
+        lock (drawableLock)
+        {
+            if (!disposed)
+                avfxSortProbe?.Stop();
+        }
+    }
+
+    public string AvfxSortProbeStatus
+    {
+        get
+        {
+            lock (drawableLock)
+                return avfxSortProbe?.Status ?? "Unavailable.";
+        }
+    }
+
+    public string? TakeAvfxSortProbeReport()
+    {
+        lock (drawableLock)
+            return avfxSortProbe?.TakeReport();
+    }
 #endif
 
     public void Dispose()
@@ -80,6 +135,9 @@ public sealed class Renderer : IDisposable
             drawables.Clear();
         }
 
+#if DEBUG
+        avfxSortProbe?.Dispose();
+#endif
         backend.Dispose();
         material.Dispose();
         resources.Dispose();
