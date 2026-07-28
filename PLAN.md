@@ -338,6 +338,9 @@ Static decision:
   disposal.
 - Both Debug and Release Underpaint builds pass with zero warnings. This is compile-time validation only; no game
   runtime result is claimed yet.
+- The EH `3d-playground` working tree now points its Underpaint gitlink and checkout at `a19a19f`, contains the minimal
+  Debug control UI and report forwarding, and builds successfully in Debug and Release. These EH changes are not yet
+  committed or pushed.
 - The non-instanced `CharacterBase -> Render::Model -> ModelRenderer` path remains a second-priority research candidate,
   not the next implementation target.
 - No `BgObject` host implementation has been started.
@@ -472,6 +475,28 @@ Reject or demote the AVFX route if any of these are true:
 - Geometry substitution and transparent-order validation must be separate later steps.
 
 ## Session Log
+
+### 2026-07-29: EH control harness wired to pushed Underpaint revision
+
+- Committed the root Underpaint implementation as `a19a19f` (`Add bounded AVFX sorting probe`) and pushed
+  `probe/avfx-native-sort` to GitHub. SSH was unavailable because the local GitHub host key was not configured, so the
+  push used the existing GitHub CLI credential through a one-command HTTPS credential helper without changing git or
+  SSH configuration.
+- Updated the EH submodule checkout and parent gitlink from `2d0720d` to exact Underpaint revision `a19a19f`; no source
+  under `event-horizon/libraries/Underpaint` was independently edited.
+- Added `no-binder-priority.avfx` as the category-12 control. Binary comparison confirms exactly one changed byte:
+  file offset `0x10C`, `0x02 -> 0x0C`; both Debug and Release outputs contain the copied asset.
+- Extended the existing static VFX redirector with a distinct category-12 game path while retaining the existing
+  category-2 path and asset.
+- Added Debug-only Rendering Research controls for instance count, first offset, per-instance step, category-2 arm,
+  category-12 arm, stop, status, and one-shot forwarding of the completed report to `DebugFileLog` source
+  `Underpaint.AvfxSortProbe`.
+- The EH framework update owns probe start/stop consumption. Territory changes, window disposal, Renderer disposal,
+  re-arm, and explicit Stop all converge on the Underpaint cleanup path.
+- Built `EventHorizon.sln` in Debug and Release against submodule revision `a19a19f`: zero warnings and zero errors in
+  both configurations.
+- The EH parent changes remain uncommitted because only the Underpaint experiment branch was explicitly requested for
+  remote push. Runtime ordering and lifecycle results remain pending user execution.
 
 ### 2026-07-29: Bounded AVFX runtime probe implemented in root Underpaint
 
