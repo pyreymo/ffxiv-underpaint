@@ -338,9 +338,8 @@ Static decision:
   disposal.
 - Both Debug and Release Underpaint builds pass with zero warnings. This is compile-time validation only; no game
   runtime result is claimed yet.
-- The EH `3d-playground` working tree now points its Underpaint gitlink and checkout at `a19a19f`, contains the minimal
-  Debug control UI and report forwarding, and builds successfully in Debug and Release. These EH changes are not yet
-  committed or pushed.
+- EH commit `a21a46e` on `3d-playground` points its Underpaint gitlink at published revision `dddd70d`, contains the
+  minimal Debug control UI and report forwarding, builds successfully in Debug and Release, and is pushed to GitHub.
 - The non-instanced `CharacterBase -> Render::Model -> ModelRenderer` path remains a second-priority research candidate,
   not the next implementation target.
 - No `BgObject` host implementation has been started.
@@ -361,6 +360,8 @@ Do not implement or runtime-probe a `BgObject` host for transparency sorting.
    EH Debug UI/control integration. Do not copy or independently patch Underpaint source under EH.
 6. Build EH against that exact Underpaint revision and report both the Underpaint commit and EH submodule revision in
    the runtime handoff.
+7. Commit and push the EH parent integration branch as part of the same delivery. A local EH working tree or successful
+   build is not a completed cross-repository handoff. Verify both remote branch hashes after pushing.
 
 ### Fixed AVFX Control Resources
 
@@ -476,13 +477,24 @@ Reject or demote the AVFX route if any of these are true:
 
 ## Session Log
 
+### 2026-07-29: Cross-repository delivery completed and protocol corrected
+
+- The user completed publication of Underpaint branch `probe/avfx-native-sort`; its published revision is `dddd70d`.
+- Updated EH to consume exact Underpaint revision `dddd70d`, then committed the parent integration as `a21a46e`
+  (`Add AVFX sorting probe controls`) on `3d-playground`.
+- Pushed EH `3d-playground` and verified remote branch hash
+  `a21a46e65e0c393a5a763bc0d98a834843c58f14` with `ls-remote`.
+- Rebuilt `EventHorizon.sln` in Debug and Release against `dddd70d`: zero warnings and zero errors in both
+  configurations.
+- Corrected the delivery protocol: when a planned experiment spans Underpaint and EH, completion requires commits and
+  remote pushes in both repositories, not only an Underpaint commit plus an uncommitted EH working tree.
+- Existing unrelated CRLF-only and user worktree changes in both repositories remain unstaged and uncommitted.
+
 ### 2026-07-29: EH control harness wired to pushed Underpaint revision
 
-- Committed the root Underpaint implementation as `a19a19f` (`Add bounded AVFX sorting probe`) and pushed
-  `probe/avfx-native-sort` to GitHub. SSH was unavailable because the local GitHub host key was not configured, so the
-  push used the existing GitHub CLI credential through a one-command HTTPS credential helper without changing git or
-  SSH configuration.
-- Updated the EH submodule checkout and parent gitlink from `2d0720d` to exact Underpaint revision `a19a19f`; no source
+- Committed the root Underpaint implementation as `a19a19f` (`Add bounded AVFX sorting probe`); the published branch
+  later advanced to documentation revision `dddd70d`.
+- Updated the EH submodule checkout and parent gitlink from `2d0720d` to exact Underpaint revision `dddd70d`; no source
   under `event-horizon/libraries/Underpaint` was independently edited.
 - Added `no-binder-priority.avfx` as the category-12 control. Binary comparison confirms exactly one changed byte:
   file offset `0x10C`, `0x02 -> 0x0C`; both Debug and Release outputs contain the copied asset.
@@ -493,10 +505,10 @@ Reject or demote the AVFX route if any of these are true:
   `Underpaint.AvfxSortProbe`.
 - The EH framework update owns probe start/stop consumption. Territory changes, window disposal, Renderer disposal,
   re-arm, and explicit Stop all converge on the Underpaint cleanup path.
-- Built `EventHorizon.sln` in Debug and Release against submodule revision `a19a19f`: zero warnings and zero errors in
+- Built `EventHorizon.sln` in Debug and Release against submodule revision `dddd70d`: zero warnings and zero errors in
   both configurations.
-- The EH parent changes remain uncommitted because only the Underpaint experiment branch was explicitly requested for
-  remote push. Runtime ordering and lifecycle results remain pending user execution.
+- The EH parent integration is committed and pushed as `a21a46e`. Runtime ordering and lifecycle results remain pending
+  user execution.
 
 ### 2026-07-29: Bounded AVFX runtime probe implemented in root Underpaint
 
