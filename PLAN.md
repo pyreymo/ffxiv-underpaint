@@ -232,16 +232,16 @@ confirmation in a closed test area.
   transform. The current low-level backend preserves it without changing geometry placement; an AVFX backend will use
   it only for `VfxObject.Position`.
 - A separate Debug-only shell performance probe measures the lower-bound one-host-per-primitive cost without the
-  geometry probe's model-builder lock or per-host owned buffers. It supports 0/8/32/128/512 normal shell hosts and
-  records bounded warm-up, steady-state frame/process-CPU tails, synchronous create/remove cost, and process-memory
-  deltas. Exact GPU residency and native allocation provenance are not claimed by this probe.
+  geometry probe's model-builder lock or per-host owned buffers. It supports baseline plus 1K/4K/16K/64K/256K normal
+  shell hosts and records bounded warm-up, steady-state frame/process-CPU tails, synchronous create/remove cost, and
+  process-memory deltas. Exact GPU residency and native allocation provenance are not claimed by this probe.
 
 ## Next Action: Measure Shell Host Scale Cost
 
 The immutable shell, dynamic owned geometry, two-host isolation, smooth alpha, visible category-2 ordering, and explicit
 sorting-center publication gates have passed. Before implementing retained lifecycle, run the shell-only lower-bound
-performance probe at baseline, 8, 32, 128, and 512 hosts in the same controlled scene. If this lower bound is already
-unacceptable, demote or reject one-host-per-primitive before spending work on backend engineering.
+performance probe at baseline, 1K, 4K, 16K, 64K, and 256K hosts in the same controlled scene. If this lower bound is
+already unacceptable, demote or reject one-host-per-primitive before spending work on backend engineering.
 
 ### Required Shell Properties
 
@@ -332,8 +332,8 @@ These gates run only after the minimal shell carries the already-accepted owned 
 
 ### Cost
 
-Measure 8, 32, 128, and 512 simultaneous one-host-per-primitive instances only after visual, semantic, and lifecycle
-gates pass. Record:
+Measure baseline plus 1K, 4K, 16K, 64K, and 256K simultaneous one-host-per-primitive instances before backend
+engineering. Record:
 
 - CPU time and p95/p99/max frame cost.
 - Native allocation count and resource residency.

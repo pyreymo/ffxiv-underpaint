@@ -28,6 +28,7 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
     private readonly Hook<StaticVfxRemoveDelegate> removeHook;
     private readonly double[] frameSamples = new double[SampleFrames];
     private readonly double[] cpuSamples = new double[SampleFrames];
+    private Dictionary<nint, int> hostIndices = [];
     private nint[] hosts = [];
     private ProbePhase phase;
     private int warmupFrameCount;
@@ -65,8 +66,8 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
     internal void Start(string resourcePath, Vector3 sortingCenter, int hostCount, float spacing)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(resourcePath);
-        if (hostCount is not (0 or 8 or 32 or 128 or 512))
-            throw new ArgumentOutOfRangeException(nameof(hostCount), "Host count must be 0, 8, 32, 128, or 512.");
+        if (hostCount is not (0 or 1024 or 4096 or 16384 or 65536 or 262144))
+            throw new ArgumentOutOfRangeException(nameof(hostCount), "Host count must be 0, 1K, 4K, 16K, 64K, or 256K.");
         if (!IsFinite(sortingCenter) || !float.IsFinite(spacing) || spacing < 0)
             throw new ArgumentOutOfRangeException(nameof(sortingCenter), "Sorting center and spacing must be finite.");
 
@@ -82,6 +83,7 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
             benchmarkHostCount = hostCount;
             SnapshotMemory(out privateBytesBefore, out workingSetBefore);
             hosts = new nint[hostCount];
+            hostIndices = new Dictionary<nint, int>(hostCount);
             removeHook.Enable();
         }
 
@@ -97,7 +99,10 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
                     throw new InvalidOperationException($"VfxObject.Create returned null for host {index}.");
 
                 lock (sync)
+                {
                     hosts[index] = (nint)vfx;
+                    hostIndices.Add((nint)vfx, index);
+                }
                 run(vfx, 0f, uint.MaxValue);
                 var row = index / side;
                 var column = index % side;
@@ -195,6 +200,7 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
 
             activeHosts = hosts;
             hosts = [];
+            hostIndices = [];
             phase = ProbePhase.Idle;
         }
 
@@ -243,6 +249,7 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
                 return;
             activeHosts = hosts;
             hosts = [];
+            hostIndices = [];
             phase = ProbePhase.Cooldown;
         }
 
@@ -284,13 +291,8 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
     {
         lock (sync)
         {
-            for (var index = 0; index < hosts.Length; index++)
-            {
-                if (hosts[index] != (nint)vfx)
-                    continue;
+            if (hostIndices.Remove((nint)vfx, out var index))
                 hosts[index] = 0;
-                break;
-            }
         }
         return removeHook.Original(vfx);
     }
