@@ -89,21 +89,35 @@ internal sealed unsafe class AvfxBackend : IDisposable
                 visibleIds.Add(command.DrawableId);
                 if (!hosts.TryGetValue(command.DrawableId, out var host))
                 {
-                    host = CreateHost(command.DrawableId, command.Mesh);
+                    host = CreateHost(command.DrawableId, command.Mesh, command.VfxPath);
                     hosts.Add(command.DrawableId, host);
                     hostsByVfx.Add(host.VfxAddress, host);
                 }
-                if (host.Mesh != command.Mesh)
-                    throw new InvalidOperationException("A drawable changed mesh type.");
+                if (host.Mesh != command.Mesh || host.VfxPath != command.VfxPath)
+                    throw new InvalidOperationException("A drawable changed native render type.");
 
-                SetHostState((VfxObject*)host.VfxAddress, command.SortingCenter, command.Color, command.Alpha);
-                Volatile.Write(ref host.Payload, new Payload(models[command.Mesh], command.CurrentTransform));
+                var vfx = (VfxObject*)host.VfxAddress;
+                if (command.Mesh is { } mesh)
+                {
+                    SetHostState(vfx, command.SortingCenter, command.Color, command.Alpha);
+                    Volatile.Write(ref host.Payload, new Payload(models[mesh], command.CurrentTransform));
+                }
+                else
+                {
+                    SetNativeHostState(vfx, command.CurrentTransform, command.Color, command.Alpha);
+                    vfx->IsVisible = true;
+                }
             }
 
             foreach (var host in hosts.Values)
             {
                 if (!visibleIds.Contains(host.DrawableId))
-                    Volatile.Write(ref host.Payload, null);
+                {
+                    if (host.Mesh.HasValue)
+                        Volatile.Write(ref host.Payload, null);
+                    else
+                        ((VfxObject*)host.VfxAddress)->IsVisible = false;
+                }
             }
 
             AttachDocuments();
@@ -157,13 +171,14 @@ internal sealed unsafe class AvfxBackend : IDisposable
         models.Clear();
     }
 
-    private Host CreateHost(ulong drawableId, MeshKind mesh)
+    private Host CreateHost(ulong drawableId, MeshKind? mesh, string? vfxPath)
     {
-        var vfx = VfxObject.Create(ShellPath, PoolName);
+        var path = mesh.HasValue ? ShellPath : vfxPath ?? throw new InvalidOperationException("Native VFX path is missing.");
+        var vfx = VfxObject.Create(path, PoolName);
         if (vfx == null)
             throw new InvalidOperationException("VfxObject.Create returned null for an Underpaint drawable.");
         run(vfx, 0f, uint.MaxValue);
-        return new Host(drawableId, mesh, (nint)vfx);
+        return new Host(drawableId, mesh, vfxPath, (nint)vfx);
     }
 
     private void AttachDocuments()
@@ -178,7 +193,7 @@ internal sealed unsafe class AvfxBackend : IDisposable
         var changed = false;
         foreach (var host in hosts.Values)
         {
-            if (host.DocumentAddress != 0)
+            if (!host.Mesh.HasValue || host.DocumentAddress != 0)
                 continue;
             var vfx = (VfxObject*)host.VfxAddress;
             var resourceInstance = vfx->VfxResourceInstance;
@@ -322,6 +337,24 @@ internal sealed unsafe class AvfxBackend : IDisposable
         vfx->UpdateTransforms(true);
     }
 
+    private static void SetNativeHostState(VfxObject* vfx, Matrix4x4 transform, Vector3 color, float alpha)
+    {
+        if (!Matrix4x4.Decompose(transform, out var scale, out var rotation, out var position))
+            throw new ArgumentException("Native AVFX transforms must decompose into scale, rotation, and translation.", nameof(transform));
+
+        vfx->Position = new FfxivVector3 { X = position.X, Y = position.Y, Z = position.Z };
+        vfx->Rotation = new FfxivQuaternion
+        {
+            X = rotation.X,
+            Y = rotation.Y,
+            Z = rotation.Z,
+            W = rotation.W,
+        };
+        vfx->Scale = new FfxivVector3 { X = scale.X, Y = scale.Y, Z = scale.Z };
+        vfx->Color = new FfxivVector4 { X = color.X, Y = color.Y, Z = color.Z, W = alpha };
+        vfx->UpdateTransforms(true);
+    }
+
     private static void WriteTransform(Matrix4x4 value, float* output)
     {
         output[0] = value.M11;
@@ -374,10 +407,11 @@ internal sealed unsafe class AvfxBackend : IDisposable
     private delegate nint CreateBufferWrapperDelegate(nint allocatorState, uint byteSize, byte dynamic);
     private delegate byte InitializeBufferDelegate(nint resource, void* data);
 
-    private sealed class Host(ulong drawableId, MeshKind mesh, nint vfxAddress)
+    private sealed class Host(ulong drawableId, MeshKind? mesh, string? vfxPath, nint vfxAddress)
     {
         internal ulong DrawableId { get; } = drawableId;
-        internal MeshKind Mesh { get; } = mesh;
+        internal MeshKind? Mesh { get; } = mesh;
+        internal string? VfxPath { get; } = vfxPath;
         internal nint VfxAddress { get; } = vfxAddress;
         internal nint DocumentAddress;
         internal Payload? Payload;
@@ -435,7 +469,8 @@ internal sealed unsafe class AvfxBackend : IDisposable
 
 internal readonly record struct FrameCommand(
     ulong DrawableId,
-    MeshKind Mesh,
+    MeshKind? Mesh,
+    string? VfxPath,
     Matrix4x4 CurrentTransform,
     Vector3 SortingCenter,
     Vector3 Color,

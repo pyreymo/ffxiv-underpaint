@@ -9,12 +9,15 @@ public sealed class Renderer : IDisposable
     private readonly object drawableLock = new();
     private readonly HashSet<DrawableState> drawables = [];
     private readonly AvfxBackend backend;
+    private readonly VfxEditorBridge vfxEditor;
     private ulong nextDrawableId;
+    private string? decalRingPath;
     private bool disposed;
 
     public Renderer(IGameInteropProvider gameInteropProvider, ISigScanner sigScanner, IPluginLog log)
     {
         backend = new AvfxBackend(gameInteropProvider, sigScanner, log);
+        vfxEditor = new VfxEditorBridge(log);
     }
 
     public TriangleDrawable CreateTriangle() => new(CreateDrawable(MeshKind.Triangle));
@@ -29,6 +32,16 @@ public sealed class Renderer : IDisposable
     {
         SphereDrawable.ValidateRadius(radius);
         return new SphereDrawable(CreateDrawable(MeshKind.Sphere), radius);
+    }
+
+    public DecalRingDrawable CreateAnimatedDecalRing()
+    {
+        lock (drawableLock)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            decalRingPath ??= vfxEditor.CreateAnimatedDecalRing();
+            return new DecalRingDrawable(CreateDrawable(decalRingPath));
+        }
     }
 
     public PrimitiveFrame BeginFrame()
@@ -52,6 +65,7 @@ public sealed class Renderer : IDisposable
             drawables.Clear();
         }
         backend.Dispose();
+        vfxEditor.Dispose();
     }
 
     internal void Publish(List<FrameCommand> commands)
@@ -83,16 +97,38 @@ public sealed class Renderer : IDisposable
             return drawable;
         }
     }
+
+    private DrawableState CreateDrawable(string vfxPath)
+    {
+        var drawable = new DrawableState(this, ++nextDrawableId, vfxPath);
+        drawables.Add(drawable);
+        return drawable;
+    }
 }
 
-internal sealed class DrawableState(Renderer owner, ulong id, MeshKind mesh)
+internal sealed class DrawableState
 {
     private int disposed;
 
-    internal Renderer Owner { get; } = owner;
-    internal ulong Id { get; } = id;
-    internal MeshKind Mesh { get; } = mesh;
+    internal Renderer Owner { get; }
+    internal ulong Id { get; }
+    internal MeshKind? Mesh { get; }
+    internal string? VfxPath { get; }
     internal bool IsDisposed => Volatile.Read(ref disposed) != 0;
+
+    internal DrawableState(Renderer owner, ulong id, MeshKind mesh)
+    {
+        Owner = owner;
+        Id = id;
+        Mesh = mesh;
+    }
+
+    internal DrawableState(Renderer owner, ulong id, string vfxPath)
+    {
+        Owner = owner;
+        Id = id;
+        VfxPath = vfxPath;
+    }
 
     internal void Dispose()
     {

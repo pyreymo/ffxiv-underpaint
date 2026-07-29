@@ -1,0 +1,3 @@
+[submodule "vendor/VFXEditor-CN"]
+	path = vendor/VFXEditor-CN
+	url = https://github.com/AtmoOmen/VFXEditor-CN.git

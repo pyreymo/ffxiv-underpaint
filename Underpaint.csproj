@@ -15,4 +15,7 @@
     <Use_DalamudPackager>false</Use_DalamudPackager>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="vendor/**/*.cs" />
+  </ItemGroup>
 </Project>

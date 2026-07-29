@@ -59,6 +59,12 @@ public sealed class PrimitiveFrame : IDisposable
         );
     }
 
+    public void DrawAnimatedDecalRing(DecalRingDrawable drawable, Matrix4x4 transform, Vector3 color, float alpha = 1f)
+    {
+        ArgumentNullException.ThrowIfNull(drawable);
+        Add(drawable.State, transform, new Vector3(transform.M41, transform.M42, transform.M43), color, alpha);
+    }
+
     public void Publish()
     {
         ThrowIfClosed();
@@ -83,6 +89,7 @@ public sealed class PrimitiveFrame : IDisposable
             new FrameCommand(
                 drawable.Id,
                 drawable.Mesh,
+                drawable.VfxPath,
                 transform,
                 sortingCenter,
                 color,
