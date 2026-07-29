@@ -350,11 +350,12 @@ Static decision:
   `ffxiv_dx11.exe+0x3B83E2`. Static analysis of the exact crash binary and register state proves that the pre-category
   global slot pass observed slot 8 with flags `0x05` but a null `DocumentInstance*`, then dereferenced
   `document+0x228`. This did not execute in the category-12 sorted consumer and does not invalidate the control asset.
-- The immediate cause is probe scheduling: `Update` synchronously removed the old VFX after the game's lifecycle task
-  had already run, but before the later global slot prepass. The old index remained in the active list for that frame
-  after its document was cleared. Re-arm/Stop now retires old VFX before the hooked native lifecycle task; the original
-  task consumes state-3 retirements and swap-removes them from the active list before the later prepass. New requests
-  start from the following framework update. Debug and Release builds pass; runtime confirmation is pending.
+- The immediate crash cause is probe scheduling: `Update` synchronously removed the old VFX after the game's lifecycle
+  task had already run, but before the later global slot prepass. The old index remained in the active list for that
+  frame after its document was cleared. Re-arm/Stop now retires old VFX before the hooked native lifecycle task; the
+  original task consumes state-3 retirements and swap-removes them from the active list before the later prepass. The
+  task hook remains enabled after the first Arm so later transitions cannot lose their control channel when bounded
+  capture hooks are disabled. New requests start from the following framework update. Runtime confirmation is pending.
 - The non-instanced `CharacterBase -> Render::Model -> ModelRenderer` path remains a second-priority research candidate,
   not the next implementation target.
 - No `BgObject` host implementation has been started.
@@ -491,6 +492,19 @@ Reject or demote the AVFX route if any of these are true:
 - Geometry substitution and transparent-order validation must be separate later steps.
 
 ## Session Log
+
+### 2026-07-29: Transition control hook separated from bounded capture hooks
+
+- User runtime evidence on `93fefea` showed that the first category-2 Arm created two VFX and completed its report, but
+  later category-12 Arm and Stop had no effect. The latest EH file log contains only the category-2 report at 12:07:59;
+  there is no category-12 report or managed exception.
+- The shared hook lifecycle was wrong: capture completion called `DisableObservationHooks`, which also disabled the
+  graphics-scene task hook responsible for consuming future `pendingRequest` and `stopRequested` transitions.
+- Kept the graphics-scene task hook enabled after the first Arm. Bounded completion still disables document, depth,
+  sorted-consumer, command-push, and command-process observation hooks, while the low-cost transition control hook stays
+  available for re-arm and Stop. It is disposed normally with the probe.
+- Built Underpaint Debug and Release with zero warnings and zero errors. Runtime category-2 -> category-12 -> Stop
+  validation remains pending.
 
 ### 2026-07-29: Re-arm crash traced to slot retirement timing
 

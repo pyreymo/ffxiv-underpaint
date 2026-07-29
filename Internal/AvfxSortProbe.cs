@@ -47,7 +47,6 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
     private string? report;
     private nint apricotCore;
     private bool stopRequested;
-    private bool disableTaskHookRequested;
     private bool disposed;
 
     [ThreadStatic]
@@ -137,19 +136,14 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
     internal void Update()
     {
         ProbeRequest? request;
-        bool shouldDisableTaskHook;
         lock (sync)
         {
             if (disposed)
                 return;
             request = readyRequest;
             readyRequest = null;
-            shouldDisableTaskHook = disableTaskHookRequested;
-            disableTaskHookRequested = false;
         }
 
-        if (shouldDisableTaskHook)
-            taskUpdateGraphicsSceneHook.Disable();
         if (request != null)
             Start(request);
 
@@ -207,7 +201,6 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
             pendingRequest = null;
             readyRequest = null;
             stopRequested = false;
-            disableTaskHookRequested = false;
         }
 
         StopActiveVfx();
@@ -258,9 +251,9 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
         }
     }
 
-    private void StopActiveVfx(bool preserveTaskUpdateHook = false)
+    private void StopActiveVfx()
     {
-        DisableObservationHooks(preserveTaskUpdateHook);
+        DisableObservationHooks();
         removeHook.Disable();
 
         ProbeInstance[] vfxObjects;
@@ -307,15 +300,13 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
         processCommandsHook.Enable();
     }
 
-    private void DisableObservationHooks(bool preserveTaskUpdateHook = false)
+    private void DisableObservationHooks()
     {
         documentRenderHook?.Disable();
         processCommandsHook.Disable();
         pushBackCommandHook.Disable();
         sortedConsumerHook.Disable();
         depthProducerHook.Disable();
-        if (!preserveTaskUpdateHook)
-            taskUpdateGraphicsSceneHook.Disable();
     }
 
     private void RefreshIdentities()
@@ -414,7 +405,7 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
 
         // Retire old slots before the game's lifecycle task consumes its pending-retirement list.
         if (shouldTransition)
-            StopActiveVfx(preserveTaskUpdateHook: true);
+            StopActiveVfx();
         taskUpdateGraphicsSceneHook.Original();
 
         if (!shouldTransition)
@@ -427,10 +418,6 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
             {
                 readyRequest = request;
                 status = $"Ready to start {request.Positions.Length} instances after native cleanup.";
-            }
-            else
-            {
-                disableTaskHookRequested = true;
             }
         }
     }
