@@ -38,6 +38,13 @@ source exposes `Plugin.AvfxManager`, manager/document collections, document crea
 cross-plugin AssemblyLoadContext visibility and unload safety are not yet runtime-verified. A small full VFXEditor fork
 with an IPC bridge and a filesystem handoff remain fallback options, not the current decision.
 
+2026-07-30 implementation: `AtmoOmen/VFXEditor-CN` is pinned as `vendor/VFXEditor-CN` at
+`7d355b90364278054b6d7e4f6d93edd2c29cc564` (`VFXEditorCN 1.9.6.0`). An exact-version reflection bridge now creates an
+editable document using VFXEditorCN's own default particle/emitter/timeline fragments, converts the particle to
+`DecalRing`, and writes a repeating `Color.Bri` curve `(0,1) -> (10,4) -> (20,1)`. The generated virtual path is consumed
+by a normal retained `VfxObject`; native decal rings bypass custom model substitution. Underpaint and the Event Horizon
+demo solution build with zero warnings and errors. No runtime visual or unload result has been recorded yet.
+
 ## Implemented Model
 
 - One persistent shell host and real document per retained drawable.
@@ -102,7 +109,13 @@ unmodified VFXEditor:
 3. Disable or unload VFXEditor and confirm the probe releases all references, detects loss, and does not prevent its
    AssemblyLoadContext from unloading.
 
-Only if those lifecycle gates pass, validate one narrow runtime editing round trip:
+The compile-time reflection and document-construction path is now implemented. The remaining next action is the runtime
+gate: use Event Horizon's `Add animated decal ring` demo action, confirm the VFXEditorCN document opens, verify visible
+ring geometry and repeating brightness, then edit the curve and invoke VFXEditorCN's normal update action. Finally test
+drawable disposal, renderer disposal, VFXEditorCN unload, and Event Horizon reload separately.
+
+The implementation has moved ahead of those lifecycle gates; they remain mandatory before this path can be treated as
+production-safe. Validate one narrow runtime editing round trip:
 
 1. Underpaint requests an editable runtime document containing a minimal scheduler, timeline, emitter, and
    `DecalRing` particle.

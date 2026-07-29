@@ -16,6 +16,7 @@ public sealed class Renderer : IDisposable
     public TriangleDrawable CreateTriangle();
     public RectangleDrawable CreateRectangle(float width, float height);
     public SphereDrawable CreateSphere(float radius);
+    public DecalRingDrawable CreateAnimatedDecalRing();
     public PrimitiveFrame BeginFrame();
 }
 
@@ -45,9 +46,21 @@ public sealed class PrimitiveFrame : IDisposable
         float alpha = 1f
     );
 
+    public void DrawAnimatedDecalRing(
+        DecalRingDrawable drawable,
+        Matrix4x4 transform,
+        Vector3 color,
+        float alpha = 1f
+    );
+
     public void Publish();
 }
 ```
+
+`DecalRingDrawable` is backed by the native AVFX `DecalRing` particle rather than a custom mesh. Creation requires the
+enabled `VFXEditorCN` assembly version pinned by the repository submodule. Underpaint creates one editable VFXEditorCN
+document with a repeating `Color.Bri` curve over frames 0, 10, and 20; instances share that definition and retain
+independent native `VfxObject` identities. Its transform must decompose into scale, rotation, and translation.
 
 `sortingCenter` is not composed with `transform`. It selects the point used by AVFX document ordering; `transform`
 alone controls actual geometry placement, rotation, scale, and shear. For centered built-in primitives, callers normally
