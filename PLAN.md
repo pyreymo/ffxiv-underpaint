@@ -338,7 +338,7 @@ Static decision:
   disposal.
 - Both Debug and Release Underpaint builds pass with zero warnings. This is compile-time validation only; no game
   runtime result is claimed yet.
-- EH commit `a21a46e` on `3d-playground` points its Underpaint gitlink at published revision `dddd70d`, contains the
+- EH commit `5f94b29` on `3d-playground` points its Underpaint gitlink at fix revision `191db55`, contains the
   minimal Debug control UI and report forwarding, builds successfully in Debug and Release, and is pushed to GitHub.
 - The 2026-07-29 CN client update exposed one probe initialization bug: Dalamud `ScanText` already resolves a signature
   whose first opcode is CALL/JMP to the callee, but the probe attempted a second rel32 resolution. The duplicate
@@ -494,7 +494,10 @@ Reject or demote the AVFX route if any of these are true:
   `0x14045B670`, remove `0x140459500`, graphics-scene task `0x1400D3820`, depth producer `0x1403B7FC0`, and sorted
   consumer `0x1403B8280`.
 - Built Underpaint Debug and Release with zero warnings and zero errors. Runtime initialization on the updated CN client
-  remains pending user confirmation after EH consumes the fix revision.
+  remains pending user confirmation.
+- Committed and pushed the Underpaint fix as `191db55` (`Fix static VFX run address resolution`).
+- Updated EH to consume `191db55`, rebuilt Debug and Release with zero warnings and zero errors, and committed/pushed
+  the gitlink update as `5f94b29` (`Update Underpaint AVFX probe fix`).
 
 ### 2026-07-29: Cross-repository delivery completed and protocol corrected
 
