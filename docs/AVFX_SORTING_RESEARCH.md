@@ -318,6 +318,26 @@ donor-host test remains the direct visual evidence for geometry replacement.
 This result does not establish smooth alpha, dynamic tint, two-document visible ordering, exact one-call-per-frame
 cardinality, repeated recreation, transition cleanup, or cost. Those remain separate gates.
 
+### Dynamic Shell Payload Probe
+
+Evidence: current local FFCS, static IDA analysis of the current CN binary, and current Debug implementation. No runtime
+result is recorded yet.
+
+- `VfxObject.Color` is the natural host color field at `+0x260`. The first mode writes only that `Vector4` once per
+  framework update, cycling RGB and alpha while retaining the same VFX host and owned model.
+- The CN AVFX vertex-wrapper constructor at `0x140386600` uses static kernel-buffer flags `0x804` when its dynamic
+  argument is false and flags `0x1` when true. The dynamic path creates three backing buffers under the same wrapper.
+- CN kernel-buffer source access at `0x14021DD40` returns the currently mapped source pointer for flags `0x1` resources.
+  The corresponding secondary-resource map/unmap functions are `0x14021E110` and `0x14021E1A0`. Multiple natural
+  callers obtain that pointer, write their current data, and retain the resource identity.
+- The second mode therefore creates one dynamic vertex wrapper at Start and calls the current FFCS
+  `LoadSourcePointer(0, byteSize, 2)` only from the scoped model-builder render callback. It rewrites the same three
+  36-byte AVFX vertex records over time; index data and all owner identities remain unchanged.
+- If the dynamic source pointer is unavailable, the probe increments `VertexMisses` and leaves descriptor element 0 on
+  the shell placeholder for that call. It never submits an uninitialized owned dynamic buffer.
+- Probe status exposes VFX, document, model-record, and vertex-wrapper addresses plus color-update, successful-write,
+  missed-write, and model-owner counters. The two modes can be run separately to keep each runtime test single-variable.
+
 The previous controlled-transform A/B is no longer the active path. The probe now always replaces descriptor model
 element 0 with Underpaint-owned geometry and otherwise consumes the neutral shell descriptor. If the shell still leaks
 authored behavior, the AVFX route is rejected rather than adding more donor-field suppression.

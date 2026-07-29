@@ -188,6 +188,10 @@ confirmation in a closed test area.
   with stable opaque-scene depth handling, no animation, and no unrelated visible effect. This passes the shell's parser,
   visual-neutrality, and geometry-stability gate. It does not yet prove transparent alpha, two-host ordering, exact
   model-builder call cardinality, or transition lifecycle.
+- A bounded Debug probe now has two independently selectable animation modes. Color mode updates only
+  `VfxObject.Color` over time. Vertex mode creates one native dynamic AVFX vertex wrapper per Start and writes changing
+  positions through its render-scope source pointer without recreating the host, document, model record, or wrapper.
+  Neither animation mode has runtime confirmation yet.
 
 ## Next Action: Bounded Retained-Backend Experiment
 
@@ -209,10 +213,14 @@ Keep one shell host and owned triangle, then vary one native input at a time:
 
 1. Set only `VfxObject.Color.xyz` and confirm RGB reaches the owned model draw.
 2. Set only `VfxObject.Color.w` and confirm smooth transparency rather than dither or disappearance.
-3. Replace only the copied 3x4 transform with one `FrameCommand.CurrentTransform`; keep `VfxObject.Position` equal to
+3. With color animation disabled, enable dynamic vertices and confirm the top vertex changes position continuously while
+   status retains one stable VFX/document/model/wrapper identity and `VertexMisses` remains zero.
+4. Stop each mode and confirm model-owner accounting returns to equality; no repeated creation/release may occur while
+   either animation is running.
+5. Replace only the copied 3x4 transform with one `FrameCommand.CurrentTransform`; keep `VfxObject.Position` equal to
    the primitive's world-space sorting center and confirm geometry and sorting identity coincide without double
    translation.
-4. Add the owned rectangle record using the same wrapper protocol and confirm dimensions remain transform-driven.
+6. Add the owned rectangle record using the same wrapper protocol and confirm dimensions remain transform-driven.
 
 If host color does not propagate, statically map the remaining descriptor semantic inputs before another bounded A/B.
 Do not turn unknown descriptor fields into a trial-and-error payload pipeline.

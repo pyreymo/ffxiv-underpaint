@@ -1,12 +1,15 @@
 #if DEBUG
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FfxivQuaternion = FFXIVClientStructs.FFXIV.Common.Math.Quaternion;
 using FfxivVector3 = FFXIVClientStructs.FFXIV.Common.Math.Vector3;
+using FfxivVector4 = FFXIVClientStructs.FFXIV.Common.Math.Vector4;
 
 namespace Underpaint.Internal;
 
@@ -46,8 +49,14 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private int modelBuildCount;
     private int ownedModelCreateCount;
     private int ownedModelReleaseCount;
+    private int colorUpdateCount;
+    private int vertexWriteCount;
+    private int vertexWriteMissCount;
     private string status = "Ready.";
     private OwnedModelRecord* ownedModel;
+    private long animationStartTimestamp;
+    private bool animateColorAndAlpha;
+    private bool animateVertices;
     private bool hasOriginalTranslation;
     private bool releaseOwnedModelPending;
     private bool disposed;
@@ -102,13 +111,14 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             lock (sync)
             {
                 var details =
-                    $"{status} ModelCalls={modelBuildCount} OwnedModels={Volatile.Read(ref ownedModelCreateCount)}/{Volatile.Read(ref ownedModelReleaseCount)}.";
+                    $"{status} ModelCalls={modelBuildCount} OwnedModels={Volatile.Read(ref ownedModelCreateCount)}/{Volatile.Read(ref ownedModelReleaseCount)} "
+                    + $"ColorUpdates={colorUpdateCount} VertexWrites={vertexWriteCount} VertexMisses={vertexWriteMissCount}.";
                 return hasOriginalTranslation ? $"{details} OriginalTranslation={originalTranslation}." : details;
             }
         }
     }
 
-    internal void Start(string resourcePath, Vector3 position, Vector3 offset)
+    internal void Start(string resourcePath, Vector3 position, Vector3 offset, bool animateColor, bool animateVertexPositions)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(resourcePath);
         if (!IsFinite(position) || !IsFinite(offset))
@@ -122,15 +132,21 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             if (vfxAddress != 0 || ownedModel != null)
                 throw new InvalidOperationException("Stop the active AVFX geometry probe before starting another one.");
             transformOffset = offset;
+            animateColorAndAlpha = animateColor;
+            animateVertices = animateVertexPositions;
+            animationStartTimestamp = Stopwatch.GetTimestamp();
             originalTranslation = default;
             modelBuildCount = 0;
+            colorUpdateCount = 0;
+            vertexWriteCount = 0;
+            vertexWriteMissCount = 0;
             hasOriginalTranslation = false;
             documentAddress = 0;
             releaseOwnedModelPending = false;
             status = "Starting a normal AVFX host.";
         }
 
-        var model = CreateOwnedModel();
+        var model = CreateOwnedModel(animateVertexPositions);
         lock (sync)
             ownedModel = model;
 
@@ -148,6 +164,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
                 vfxAddress = (nint)vfx;
             run(vfx, 0f, uint.MaxValue);
             SetPosition(vfx, position);
+            UpdateColor(vfx, 0f);
         }
         catch
         {
@@ -169,7 +186,13 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
 
         lock (sync)
         {
-            if (disposed || vfxAddress == 0 || documentAddress != 0 || apricotCore == 0)
+            if (disposed || vfxAddress == 0)
+                return;
+
+            var elapsed = (float)Stopwatch.GetElapsedTime(animationStartTimestamp).TotalSeconds;
+            if (animateColorAndAlpha)
+                UpdateColor((VfxObject*)vfxAddress, elapsed);
+            if (documentAddress != 0 || apricotCore == 0)
                 return;
 
             var resourceInstance = ((VfxObject*)vfxAddress)->VfxResourceInstance;
@@ -212,7 +235,10 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             documentRenderHook ??= gameInteropProvider.HookFromAddress<DocumentRenderDelegate>(renderTarget, DocumentRenderDetour);
             documentRenderHook.Enable();
             documentAddress = document;
-            status = $"Active: document=0x{document:X}, offset={transformOffset}.";
+            var mode = animateColorAndAlpha ? (animateVertices ? "color+vertices" : "color") : (animateVertices ? "vertices" : "static");
+            status =
+                $"Active: mode={mode}, vfx=0x{vfxAddress:X}, document=0x{document:X}, model=0x{(nint)ownedModel:X}, "
+                + $"vertexWrapper=0x{ownedModel->VertexWrapper:X}, offset={transformOffset}.";
         }
     }
 
@@ -329,7 +355,8 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             transform[9] += transformOffset.X;
             transform[10] += transformOffset.Y;
             transform[11] += transformOffset.Z;
-            if (ownedModel != null)
+            var ownedModelReady = ownedModel != null && (!animateVertices || TryWriteAnimatedVertices(elapsedSeconds: GetElapsedSeconds()));
+            if (ownedModelReady)
                 descriptor[0] = (nint)ownedModel;
             descriptor[2] = (nint)transform;
             return modelBuilderHook.Original(rendererState, useProjection, (nint)descriptor);
@@ -365,7 +392,62 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
 
     private static bool IsFinite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
 
-    private OwnedModelRecord* CreateOwnedModel()
+    private void UpdateColor(VfxObject* vfx, float elapsedSeconds)
+    {
+        if (!animateColorAndAlpha)
+        {
+            vfx->Color = new FfxivVector4
+            {
+                X = 1f,
+                Y = 1f,
+                Z = 1f,
+                W = 1f,
+            };
+            return;
+        }
+
+        vfx->Color = new FfxivVector4
+        {
+            X = Wave(elapsedSeconds),
+            Y = Wave(elapsedSeconds + 2f * MathF.PI / 3f),
+            Z = Wave(elapsedSeconds + 4f * MathF.PI / 3f),
+            W = 0.15f + 0.75f * Wave(elapsedSeconds * 0.7f),
+        };
+        colorUpdateCount++;
+    }
+
+    private bool TryWriteAnimatedVertices(float elapsedSeconds)
+    {
+        var wrapper = ownedModel->VertexWrapper;
+        var resource = wrapper == 0 ? 0 : *(nint*)(wrapper + 0x10);
+        if (resource == 0)
+        {
+            vertexWriteMissCount++;
+            return false;
+        }
+
+        // AVFX dynamic vertex buffers use the same kernel source-pointer protocol as ConstantBuffer.
+        var vertices = (AvfxVertex*)((ConstantBuffer*)resource)->LoadSourcePointer(0, 3 * sizeof(AvfxVertex), 2);
+        if (vertices == null)
+        {
+            vertexWriteMissCount++;
+            return false;
+        }
+
+        var horizontal = 0.2f * MathF.Sin(elapsedSeconds * 1.3f);
+        var height = 0.5f + 0.25f * MathF.Sin(elapsedSeconds * 1.7f);
+        vertices[0] = new AvfxVertex(-0.5f, -0.5f, 0f);
+        vertices[1] = new AvfxVertex(0.5f, -0.5f, 0f);
+        vertices[2] = new AvfxVertex(horizontal, height, 0f);
+        vertexWriteCount++;
+        return true;
+    }
+
+    private float GetElapsedSeconds() => (float)Stopwatch.GetElapsedTime(animationStartTimestamp).TotalSeconds;
+
+    private static float Wave(float radians) => 0.5f + 0.5f * MathF.Sin(radians);
+
+    private OwnedModelRecord* CreateOwnedModel(bool dynamicVertices)
     {
         var model = (OwnedModelRecord*)NativeMemory.AllocZeroed((nuint)sizeof(OwnedModelRecord));
         Interlocked.Increment(ref ownedModelCreateCount);
@@ -374,8 +456,11 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             var vertices = stackalloc AvfxVertex[3] { new(-0.5f, -0.5f, 0f), new(0.5f, -0.5f, 0f), new(0f, 0.5f, 0f) };
             var indices = stackalloc ushort[3] { 0, 1, 2 };
 
-            model->VertexWrapper = createVertexWrapper(0, (uint)(3 * sizeof(AvfxVertex)), 0);
-            if (model->VertexWrapper == 0 || !InitializeWrapper(model->VertexWrapper, vertices, initializeVertexBuffer))
+            model->VertexWrapper = createVertexWrapper(0, (uint)(3 * sizeof(AvfxVertex)), dynamicVertices ? (byte)1 : (byte)0);
+            if (
+                model->VertexWrapper == 0
+                || (!dynamicVertices && !InitializeWrapper(model->VertexWrapper, vertices, initializeVertexBuffer))
+            )
                 throw new InvalidOperationException("The game rejected the owned AVFX vertex wrapper.");
 
             model->IndexWrapper = createIndexWrapper(0, 3 * sizeof(ushort), 0);

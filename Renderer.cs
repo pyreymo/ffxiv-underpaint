@@ -79,12 +79,18 @@ public sealed class Renderer : IDisposable
 
     public string? SortKeyCaptureStatus => backend.SortKeyCaptureStatus;
 
-    public void StartAvfxGeometryProbe(string resourcePath, System.Numerics.Vector3 position, System.Numerics.Vector3 transformOffset)
+    public void StartAvfxGeometryProbe(
+        string resourcePath,
+        System.Numerics.Vector3 position,
+        System.Numerics.Vector3 transformOffset,
+        bool animateColorAndAlpha,
+        bool animateVertices
+    )
     {
         lock (drawableLock)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            avfxGeometryProbe?.Start(resourcePath, position, transformOffset);
+            avfxGeometryProbe?.Start(resourcePath, position, transformOffset, animateColorAndAlpha, animateVertices);
         }
     }
 
