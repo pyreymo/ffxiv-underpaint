@@ -58,7 +58,7 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
     {
         this.gameInteropProvider = gameInteropProvider;
         this.log = log;
-        var runAddress = ResolveRelativeCall(sigScanner.ScanText(RunCallSignature));
+        var runAddress = sigScanner.ScanText(RunCallSignature);
         run = Marshal.GetDelegateForFunctionPointer<StaticVfxRunDelegate>(runAddress);
         Hook<StaticVfxRemoveDelegate>? remove = null;
         Hook<TaskUpdateGraphicsSceneDelegate>? taskUpdate = null;
@@ -667,13 +667,6 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
         vfx->Position = new FfxivVector3 { X = position.X, Y = position.Y, Z = position.Z };
         vfx->Rotation = FfxivQuaternion.Identity;
         vfx->UpdateTransforms(true);
-    }
-
-    private static nint ResolveRelativeCall(nint callAddress)
-    {
-        if (*(byte*)callAddress != 0xE8)
-            throw new InvalidOperationException("The static VFX run signature did not resolve to a call instruction.");
-        return callAddress + 5 + *(int*)(callAddress + 1);
     }
 
     private delegate nint StaticVfxRunDelegate(VfxObject* vfx, float a1, uint a2);

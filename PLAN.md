@@ -340,6 +340,9 @@ Static decision:
   runtime result is claimed yet.
 - EH commit `a21a46e` on `3d-playground` points its Underpaint gitlink at published revision `dddd70d`, contains the
   minimal Debug control UI and report forwarding, builds successfully in Debug and Release, and is pushed to GitHub.
+- The 2026-07-29 CN client update exposed one probe initialization bug: Dalamud `ScanText` already resolves a signature
+  whose first opcode is CALL/JMP to the callee, but the probe attempted a second rel32 resolution. The duplicate
+  resolution has been removed; all five probe signatures remain unique in the updated executable.
 - The non-instanced `CharacterBase -> Render::Model -> ModelRenderer` path remains a second-priority research candidate,
   not the next implementation target.
 - No `BgObject` host implementation has been started.
@@ -477,6 +480,22 @@ Reject or demote the AVFX route if any of these are true:
 
 ## Session Log
 
+### 2026-07-29: Updated CN client run-address resolution fixed
+
+- Reproduced the runtime initialization failure from the logged exception before any probe hook was enabled.
+- Confirmed from the current local Dalamud XML that `ScanText` calls `ReadJmpCallSig` for an IDA signature beginning at
+  CALL/JMP and returns the real target address, not the call instruction address.
+- Removed Underpaint's duplicate `ResolveRelativeCall` step. The static VFX run delegate now uses the `ScanText` result
+  directly, matching EH's existing `[Signature]` path and other current consumers.
+- Recorded the updated CN executable identity: size `51,774,720`, SHA-256
+  `6f64fd34ca45ed6ef0616f0aaf4d25a42c19104d550a34b26ae5ffc1e980d87d`, MD5
+  `04f0e75c4e67aca6086e0dfa637f3bcc`.
+- Offline-scanned the updated executable. All probe anchors remain unique: run call `0x1408C980D` -> callee
+  `0x14045B670`, remove `0x140459500`, graphics-scene task `0x1400D3820`, depth producer `0x1403B7FC0`, and sorted
+  consumer `0x1403B8280`.
+- Built Underpaint Debug and Release with zero warnings and zero errors. Runtime initialization on the updated CN client
+  remains pending user confirmation after EH consumes the fix revision.
+
 ### 2026-07-29: Cross-repository delivery completed and protocol corrected
 
 - The user completed publication of Underpaint branch `probe/avfx-native-sort`; its published revision is `dddd70d`.
@@ -515,7 +534,7 @@ Reject or demote the AVFX route if any of these are true:
 - Independently matched the depth producer, sorted consumer, and graphics-scene task anchors in both verified binaries.
   Global addresses are `0x1403B9390`, `0x1403B9650`, and `0x1400D41E0`; CN addresses are `0x1403B85D0`,
   `0x1403B8890`, and `0x1400D4120` respectively.
-- Recorded the current CN binary identity: SHA-256
+- Recorded the then-current CN binary identity: SHA-256
   `c3f209032fd9bb97a379c85adb7269f33e87e070b9094b71e3467f8be3b00cb9`, MD5
   `776dcff0e9b5b5474d71693e3fa7e616`.
 - Added `Internal/AvfxSortProbe.cs` as a Debug-only owner for normal VFX create/run/update/remove, identity validation,
