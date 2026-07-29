@@ -4,7 +4,6 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
-using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FfxivQuaternion = FFXIVClientStructs.FFXIV.Common.Math.Quaternion;
@@ -28,6 +27,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private const string InitializeVertexBufferSignature =
         "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 ?? 44 8B 49";
     private const string InitializeIndexBufferSignature = "40 53 48 83 EC 20 F7 41 40 00 08 00 00 48 8B D9";
+    private const string LoadVertexBufferSourceSignature = "48 89 5C 24 ?? 57 48 83 EC 20 48 8B D9 8B 49 38 41 8B F8";
     private const int ExpectedDrawLayer = 2;
 
     private readonly object sync = new();
@@ -40,6 +40,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private readonly CreateBufferWrapperDelegate createIndexWrapper;
     private readonly InitializeBufferDelegate initializeVertexBuffer;
     private readonly InitializeBufferDelegate initializeIndexBuffer;
+    private readonly LoadBufferSourceDelegate loadVertexBufferSource;
     private Hook<DocumentRenderDelegate>? documentRenderHook;
     private nint apricotCore;
     private nint vfxAddress;
@@ -80,6 +81,9 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
         );
         initializeIndexBuffer = Marshal.GetDelegateForFunctionPointer<InitializeBufferDelegate>(
             sigScanner.ScanText(InitializeIndexBufferSignature)
+        );
+        loadVertexBufferSource = Marshal.GetDelegateForFunctionPointer<LoadBufferSourceDelegate>(
+            sigScanner.ScanText(LoadVertexBufferSourceSignature)
         );
 
         Hook<StaticVfxRemoveDelegate>? remove = null;
@@ -426,8 +430,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             return false;
         }
 
-        // AVFX dynamic vertex buffers use the same kernel source-pointer protocol as ConstantBuffer.
-        var vertices = (AvfxVertex*)((ConstantBuffer*)resource)->LoadSourcePointer(0, 3 * sizeof(AvfxVertex), 2);
+        var vertices = (AvfxVertex*)loadVertexBufferSource(resource, 0, (uint)(3 * sizeof(AvfxVertex)), 2);
         if (vertices == null)
         {
             vertexWriteMissCount++;
@@ -545,6 +548,8 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private delegate nint CreateBufferWrapperDelegate(nint allocatorState, uint byteSize, byte dynamic);
 
     private delegate byte InitializeBufferDelegate(nint resource, void* data);
+
+    private delegate nint LoadBufferSourceDelegate(nint resource, int byteOffset, uint byteSize, byte flags);
 
     [StructLayout(LayoutKind.Explicit, Size = 0x28)]
     private struct OwnedModelRecord

@@ -330,13 +330,31 @@ result is recorded yet.
 - CN kernel-buffer source access at `0x14021DD40` returns the currently mapped source pointer for flags `0x1` resources.
   The corresponding secondary-resource map/unmap functions are `0x14021E110` and `0x14021E1A0`. Multiple natural
   callers obtain that pointer, write their current data, and retain the resource identity.
-- The second mode therefore creates one dynamic vertex wrapper at Start and calls the current FFCS
-  `LoadSourcePointer(0, byteSize, 2)` only from the scoped model-builder render callback. It rewrites the same three
-  36-byte AVFX vertex records over time; index data and all owner identities remain unchanged.
+- The second mode creates one dynamic vertex wrapper at Start and requests its current source pointer only from the
+  scoped model-builder render callback. It rewrites the same three 36-byte AVFX vertex records over time; index data and
+  all owner identities remain unchanged.
 - If the dynamic source pointer is unavailable, the probe increments `VertexMisses` and leaves descriptor element 0 on
   the shell placeholder for that call. It never submits an uninitialized owned dynamic buffer.
 - Probe status exposes VFX, document, model-record, and vertex-wrapper addresses plus color-update, successful-write,
   missed-write, and model-owner counters. The two modes can be run separately to keep each runtime test single-variable.
+
+User runtime confirmation established that `VfxObject.Color` dynamically controls both RGB and smooth alpha without
+recreating the host. The first dynamic-vertex implementation then caused an immediate CN crash:
+
+- crash report `dalamud_appcrash_20260729_185840_911_27980.log` records CPU access violation `C0000005` at
+  `ffxiv_dx11.exe+0x226914` on the main Framework thread;
+- that instruction is the kernel resource-list traversal's `mov rax,[rbx]`; the corrupted node value was
+  `0x700000006C`;
+- the implementation had cast the vertex resource to FFCS `ConstantBuffer*`. `ConstantBuffer.LoadSourcePointer` uses
+  constant-buffer fields at `+0x20/+0x24/+0x28`, while the verified vertex-buffer source accessor uses vertex fields at
+  `+0x38/+0x3C/+0x60`;
+- on the vertex object, constant-buffer `+0x28` overlaps the registered resource-list node. The returned pointer was not
+  vertex storage, so writing three AVFX records corrupted that list and directly explains the next Framework traversal
+  crash.
+
+The targeted repair removes the invalid type reuse and resolves the CN-verified vertex source accessor
+`0x14021DD40` through its version signature. No color, shell, owned-model, dynamic-wrapper, or animation code was rolled
+back. Runtime validation of the corrected accessor is pending.
 
 The previous controlled-transform A/B is no longer the active path. The probe now always replaces descriptor model
 element 0 with Underpaint-owned geometry and otherwise consumes the neutral shell descriptor. If the shell still leaks

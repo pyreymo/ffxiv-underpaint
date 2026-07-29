@@ -191,7 +191,10 @@ confirmation in a closed test area.
 - A bounded Debug probe now has two independently selectable animation modes. Color mode updates only
   `VfxObject.Color` over time. Vertex mode creates one native dynamic AVFX vertex wrapper per Start and writes changing
   positions through its render-scope source pointer without recreating the host, document, model record, or wrapper.
-  Neither animation mode has runtime confirmation yet.
+  Color/alpha animation passed runtime confirmation without host recreation. The first dynamic-vertex run crashed
+  because the implementation incorrectly called the layout-specific `ConstantBuffer.LoadSourcePointer` on a vertex
+  buffer and corrupted the kernel resource list. The targeted fix now calls the verified vertex-buffer source accessor;
+  its runtime result remains pending.
 
 ## Next Action: Bounded Retained-Backend Experiment
 
