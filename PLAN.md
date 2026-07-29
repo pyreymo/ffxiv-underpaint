@@ -45,6 +45,11 @@ editable document using VFXEditorCN's own default particle/emitter/timeline frag
 by a normal retained `VfxObject`; native decal rings bypass custom model substitution. Underpaint and the Event Horizon
 demo solution build with zero warnings and errors. No runtime visual or unload result has been recorded yet.
 
+First runtime creation reached VFXEditorCN document construction but failed before serialization: `AvfxBool.Value` is
+`bool?`, and the reflection adapter passed that nullable property type directly to `Convert.ChangeType`. The adapter now
+converts through the underlying `bool` type before assigning the property. This fix is build-verified; DecalRing creation
+and visual output still require a new runtime attempt.
+
 ## Implemented Model
 
 - One persistent shell host and real document per retained drawable.

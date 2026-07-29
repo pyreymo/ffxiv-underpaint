@@ -248,9 +248,8 @@ internal sealed class VfxEditorBridge(IPluginLog log) : IDisposable
         var literal = Get(target, name);
         var property = literal.GetType().GetProperty("Value")
             ?? throw new MissingMemberException(literal.GetType().FullName, "Value");
-        var converted = property.PropertyType.IsEnum
-            ? Enum.ToObject(property.PropertyType, value)
-            : Convert.ChangeType(value, property.PropertyType);
+        var valueType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+        var converted = valueType.IsEnum ? Enum.ToObject(valueType, value) : Convert.ChangeType(value, valueType);
         property.SetValue(literal, converted);
     }
 
