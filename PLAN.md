@@ -330,10 +330,10 @@ Static decision:
 - The category-2 two-instance A/B has passed runtime validation. Swapping only the two positions reversed the Apricot
   rank and final command execution order together. Across 50 comparable frames and 1,024 captured commands there were
   zero order failures and zero missing executions; both `Start=0/1, Stride=16` worker subsequences were observed.
-- Visible overlap order and the 8-32 instance scale case remain unproven. The normal category-2 AVFX route has passed the
-  two-instance producer-to-final-execution part of the Phase 1 runtime gate.
-- A Debug-only bounded probe is now implemented in the root Underpaint checkout. It creates and removes normal
-  `VfxObject` instances, validates their packed handle against the real Apricot slot record, dynamically scopes the
+- Visible overlap order and the larger scale cost case remain unproven. The normal category-2 AVFX route has passed the
+  producer-to-final-execution part of the Phase 1 runtime gate, including observed cross-worker subsequences.
+- A Debug-only bounded probe is now implemented in the root Underpaint checkout. It creates normal `VfxObject`
+  instances, validates their packed handle against the real Apricot slot record, dynamically scopes the
   tracked document render virtual call, correlates synchronous `Context.PushBackCommand` calls with
   `ImmediateContext.ProcessCommands`, and reports OS thread IDs plus worker start/stride.
 - The probe is default-off and bounded to 120 frames, 1,024 producer/consumer events, 512 commands, and 2-32 instances.
@@ -341,8 +341,9 @@ Static decision:
   disposal.
 - Both Debug and Release Underpaint builds pass with zero warnings. Runtime validation is recorded separately from
   compile-time validation.
-- EH commit `5f94b29` on `3d-playground` points its Underpaint gitlink at fix revision `191db55`, contains the
-  minimal Debug control UI and report forwarding, builds successfully in Debug and Release, and is pushed to GitHub.
+- Underpaint revision `4c1ce9e` retains the completed Debug probe as research history. EH no longer consumes it: the EH
+  submodule has returned to pre-probe revision `2d0720d`, and its probe UI, priority asset, and extra VFX redirect were
+  removed rather than promoted into production.
 - The 2026-07-29 CN client update exposed one probe initialization bug: Dalamud `ScanText` already resolves a signature
   whose first opcode is CALL/JMP to the callee, but the probe attempted a second rel32 resolution. The duplicate
   resolution has been removed; all five probe signatures remain unique in the updated executable.
@@ -350,12 +351,16 @@ Static decision:
   `ffxiv_dx11.exe+0x3B83E2`. Static analysis of the exact crash binary and register state proves that the pre-category
   global slot pass observed slot 8 with flags `0x05` but a null `DocumentInstance*`, then dereferenced
   `document+0x228`. This did not execute in the category-12 sorted consumer and does not invalidate the control asset.
-- The immediate crash cause is probe scheduling: `Update` synchronously removed the old VFX after the game's lifecycle
-  task had already run, but before the later global slot prepass. The old index remained in the active list for that
-  frame after its document was cleared. Re-arm/Stop now retires old VFX before the hooked native lifecycle task; the
-  original task consumes state-3 retirements and swap-removes them from the active list before the later prepass. The
-  task hook remains enabled after the first Arm so later transitions cannot lose their control channel when bounded
-  capture hooks are disabled. New requests start from the following framework update. Runtime confirmation is pending.
+- Moving probe cleanup before the hooked graphics-scene task did not fix re-arm. A second user runtime crash at
+  `ffxiv_dx11.exe+0x3B4D5C` showed that the original task worker immediately consumed an active slot whose document had
+  just been cleared by the probe. Category 12 had not started, so neither crash is evidence against the control asset.
+- The scanned function is FFCS `VfxObject.CleanupRender`, but EH's existing controller copied from VFXEditor has long
+  used the same entry successfully as the scheduler-managed static-VFX stop path. The probe failures therefore do not
+  justify adding `Dtor(1)` or reopening EH's established lifecycle implementation. They show that the probe's batch
+  re-arm and graphics-task transition scheme is not a valid lifecycle seam.
+- Category 12 is no longer required for the AVFX route decision. Static analysis already establishes the category-12
+  priority-key path, while category 2 has directly proven camera-depth rank propagation through final command execution.
+  Do not spend further work fixing re-arm or Stop solely to complete that negative control.
 - The non-instanced `CharacterBase -> Render::Model -> ModelRenderer` path remains a second-priority research candidate,
   not the next implementation target.
 - No `BgObject` host implementation has been started.
@@ -364,14 +369,17 @@ Static decision:
 
 Do not implement or runtime-probe a `BgObject` host for transparency sorting.
 
+Proceed to a minimal external AVFX rectangle/model-particle capability experiment. Do not execute more category-12
+re-arm tests and do not turn the temporary sorting probe into a production VFX lifecycle component.
+
 ### Repository And Delivery Workflow
 
-1. Implement and validate the probe only in the root `ffxiv-underpaint` repository on
-   `probe/avfx-native-sort`.
+1. Keep AVFX research and any later Underpaint implementation in the root `ffxiv-underpaint` repository. Do not repair
+   the temporary probe unless a narrowly required observation cannot be obtained another way.
 2. Do not edit files inside `event-horizon/libraries/Underpaint`. That checkout is only an EH consumer submodule.
-3. Keep the AVFX probe Debug-only, default-off, bounded, and separate from the production primitive backend.
-4. Build Underpaint, commit only the intended Underpaint files, and push the completed branch to
-   `origin/probe/avfx-native-sort`.
+3. Keep the existing AVFX probe Debug-only, default-off, bounded, and separate from the production primitive backend.
+   Do not use category-2-to-category-12 re-arm or rely on its Stop path for further evidence.
+4. Build Underpaint, commit only intended files, and push a completed research step before updating a consumer.
 5. In the EH repository, fetch the pushed Underpaint revision and update only the submodule revision plus the minimal
    EH Debug UI/control integration. Do not copy or independently patch Underpaint source under EH.
 6. Build EH against that exact Underpaint revision and report both the Underpaint commit and EH submodule revision in
@@ -379,69 +387,59 @@ Do not implement or runtime-probe a `BgObject` host for transparency sorting.
 7. Commit and push the EH parent integration branch as part of the same delivery. A local EH working tree or successful
    build is not a completed cross-repository handoff. Verify both remote branch hashes after pushing.
 
-### Fixed AVFX Control Resources
+### Existing AVFX Evidence Resources
 
 - The depth-sorted sample is the existing EH asset `EventHorizon/Assets/no-binder.avfx`, exposed through its existing
   resource redirect. Its top-level fields have been parsed directly from the file:
   `DrawLayerType = 2`, `DrawOrderType = 0`, and `SoftKeyOffset = 0`.
 - Category 2 is one of the established camera-depth categories 0-11, so the user does not need to select another AVFX
   before implementation starts.
-- The category-12 control must be byte-identical to the depth sample except for the top-level `DrawLayerType` value at
-  file offset `0x10C`, changed from 2 to 12. Geometry, material, particles, `DrawOrderType`, and `SoftKeyOffset` remain
-  unchanged.
-- The two resources must use distinct game paths so ResourceManager caching cannot collapse the category-2 and
-  category-12 samples into one resource identity.
-- This copied control asset belongs to the EH test harness, not the Underpaint library. Underpaint receives semantic
-  resource paths and owns the normal `VfxObject` lifecycle; it does not own file redirection or embedded AVFX data.
+- The category-12 copy remains a valid byte-identical control except for `DrawLayerType` at file offset `0x10C`, but its
+  runtime negative-control value is now lower than the cost and risk of repairing temporary probe re-arm. Do not use it
+  as the next experiment.
+- Existing resource redirection belongs to the EH test harness, not the Underpaint library. Do not add an
+  Underpaint-owned redirector before the external minimal-model experiment passes.
 
 ### Phase 1: Prove The Normal AVFX-To-Apricot Path
 
-The static bridge is complete and valid. Add one bounded, default-off control probe using normal `VfxObject.Create`, an
-existing AVFX path, and no custom geometry:
+The static bridge and the required runtime producer-to-final-execution evidence are complete for category 2.
 
-Implementation status: category 2 has passed the two-instance rank-to-final-execution A/B. The next runtime check is the
-same category-2-to-category-12 re-arm that previously crashed, now with native-lifecycle-aligned retirement.
+Completed evidence:
 
-1. Log the created `VfxObject*`, `VfxResourceInstance*`, packed generation/slot handle, `DocumentInstance*`, parsed
-   `DrawLayerType`, `DrawOrderType`, and `SoftKeyOffset`; reject the sample if these identities do not stay consistent.
-2. Create two instances with identical resource, draw layer, draw order, parameters, creation order, and update order.
-   Change only camera-space depth and capture the input depth pair, sorted rank, worker/context, every command appended
-   synchronously by that document, command SortKey, final execution order, and visible overlap order.
-3. Repeat with 8-32 identical instances so marked instances are observed in different worker subsequences. Do not assume
-   instance count proves cross-worker coverage; record actual consumer worker index, stride, and context.
-4. Use an existing resource whose `DrawLayerType` is 0-11 for the depth sample. Use a separately verified
-   `DrawLayerType = 12` resource as the priority control. Do not change `DrawOrderType` and call that a category A/B.
-5. Capture the OS thread IDs for `TaskUpdateGraphicsScene`, depth-pair generation, sorted consumption,
-   `Context.PushBackCommand`, and final execution to close the remaining thread boundary.
-6. Remove or keep disabled all instrumentation after the bounded capture; do not retain continuous per-frame logging.
-
-Implementation ownership for this probe:
-
-- Underpaint owns VFX create/run/update/remove, tracked instance identities, native hooks, bounded capture state,
-  cleanup, and the final structured report.
-- EH supplies the two redirected resource paths, test placement/count controls, an arm/stop UI, and persistence of the
-  completed report through its existing Debug file logger.
-- The Debug API exposed by Underpaint may contain semantic probe requests, status, and report text. It must not expose
-  Apricot pointers, slot indices, native command pointers, frame containers, or mutable native resources to EH.
-- The first runtime groups are: two category-2 instances, 8-32 category-2 instances with observed cross-worker
-  coverage, and two category-12 control instances. Instance creation/update order remains fixed while only
-  camera-space depth changes within each A/B.
+1. Normal `VfxObject.Create` instances reached stable real `VfxResourceInstance`, packed slot, and
+   `DocumentInstance` identities with parsed `DrawLayerType = 2`.
+2. Swapping only camera-space positions reversed both Apricot depth rank and final command execution order.
+3. Across 50 comparable frames and 1,024 captured commands, there were zero rank/execution order failures and zero
+   missing executions.
+4. The capture observed both `Start=0/1, Stride=16` worker subsequences and recorded the relevant task, producer,
+   consumer, command-push, and execution threads.
+5. Category 12 remains statically understood as a priority-key path, but its runtime negative control is not required to
+   proceed to the model-primitive experiment.
+6. No additional runtime group is required from this temporary probe. Its re-arm and Stop behavior are not production
+   lifecycle evidence, and all instrumentation must remain disabled outside bounded research use.
 
 ### Phase 2: Validate A Minimal AVFX Model Primitive
 
-Proceed only if Phase 1 proves that producer depth order survives final command consumption across workers.
+Phase 1 has proved that category-2 producer depth order survives final command consumption across observed worker
+subsequences. The next experiment must test useful drawable capability rather than another producer control.
 
-1. Build a minimal external AVFX experiment with one persistent model particle, `DrawLayerType` explicitly set to a
-   verified depth-sorted category 0-11, ordinary alpha blending, depth test enabled, and depth write disabled. Control
-   `DrawOrderType` independently; do not assume its `Depth` label selects document-level depth sorting.
-2. Embed only a minimal triangle or rectangle mesh. Use existing VFXEditor/Penumbra or equivalent resource replacement
-   for this experiment; do not add an Underpaint resource redirector yet.
-3. Validate one real AVFX instance per drawable with fixed creation/update order while changing only depth.
-4. Validate transform, color, alpha, hide/show, resource reload, destroy, zone change, logout, and plugin reload
-   independently from sorting.
-5. Determine whether per-instance parameters can express current Underpaint triangle and rectangle semantics. Reject a
+1. Build a minimal external AVFX experiment with one persistent rectangle model particle and `DrawLayerType` explicitly
+   set to a verified depth-sorted category 0-11. Use ordinary alpha blending, enable depth test, and disable depth write.
+   Control `DrawOrderType` independently; do not assume its `Depth` label selects document-level depth sorting.
+2. Embed only a minimal rectangle mesh. Use VFXEditor/Penumbra or equivalent established resource replacement and
+   lifecycle code for this experiment; do not add an Underpaint resource redirector yet.
+3. Give overlapping instances distinguishable per-instance tints while keeping one resource, fixed creation/update
+   order, and one real AVFX instance per drawable. Change only camera-space depth in the ordering A/B.
+4. Validate back-to-front overlap, order reversal when the camera crosses the depth relation, and depth testing against
+   opaque scene geometry as separate visual results.
+5. After visual sorting succeeds, validate transform, color, alpha, hide/show, resource reload, destroy, zone change,
+   logout, and plugin reload independently, using the established scheduler-managed lifecycle rather than the probe's
+   transition hooks.
+6. Determine whether per-instance parameters can express current Underpaint rectangle semantics. Investigate arbitrary
+   three-point triangles separately because ordinary TRS may not provide the required affine/shear freedom. Reject a
    design that requires per-frame mutation of a shared AVFX resource or one generated resource per changing drawable.
-6. Measure CPU time, p95/p99/max frame cost, native allocations, resource residency, worker count, and command count at
+7. Only after the visual and semantic checks pass, measure CPU time, p95/p99/max frame cost, native allocations,
+   resource residency, worker count, and command count at
    8, 32, 128, and 512 instances before considering integration.
 
 ### Phase 3: CharacterBase Fallback
@@ -492,6 +490,31 @@ Reject or demote the AVFX route if any of these are true:
 - Geometry substitution and transparent-order validation must be separate later steps.
 
 ## Session Log
+
+### 2026-07-29: EH AVFX sorting probe integration removed
+
+- Removed the Debug AVFX sorting controls and report forwarding from the EH playground.
+- Removed `no-binder-priority.avfx`, its project content item, and the category-12 branch from EH's static VFX resource
+  redirector. The existing hidden-player marker path and `no-binder.avfx` behavior remain unchanged.
+- Returned EH's Underpaint submodule from probe revision `4c1ce9e` to pre-probe revision `2d0720d`, so Debug startup no
+  longer constructs the temporary `AvfxSortProbe` or installs its native hooks.
+- Verified that the cleaned EH files and gitlink match the state before `a21a46e` semantically, and built EH Debug and
+  Release with zero warnings and zero errors. No AVFX experiment was executed.
+
+### 2026-07-29: Category-12 probe repair dropped; minimal rectangle promoted
+
+- Re-centered the investigation on the product question: whether a normal AVFX host gives Underpaint useful native
+  transparent ordering, not whether a temporary probe supports repeatable category switching.
+- Category 2 already proved camera-depth rank propagation through final command execution across both observed worker
+  subsequences. Static analysis independently establishes that category 12 uses a priority key, so the failed runtime
+  negative control has little remaining decision value.
+- Recorded the second re-arm crash at `ffxiv_dx11.exe+0x3B4D5C`: the probe cleared a document immediately before the
+  original graphics task consumed its still-active slot. Category 12 had not started.
+- Corrected the lifecycle interpretation. FFCS identifies the scanned function as `VfxObject.CleanupRender`, while EH's
+  VFXEditor-derived static-VFX controller has used the same stop entry successfully. No Dtor addition or EH lifecycle
+  audit is justified by the probe crash.
+- Cancelled further category-12 re-arm/Stop repair and promoted the external minimal AVFX rectangle/model-particle
+  experiment as the next action. This planning update changes no runtime code and does not execute that experiment.
 
 ### 2026-07-29: Transition control hook separated from bounded capture hooks
 
