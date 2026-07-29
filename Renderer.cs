@@ -85,6 +85,7 @@ public sealed class Renderer : IDisposable
         System.Numerics.Vector3 transformOffset,
         bool animateColorAndAlpha,
         bool animateVertices,
+        bool testAlphaOrdering,
         int instanceCount,
         System.Numerics.Vector3 instanceSpacing
     )
@@ -98,6 +99,7 @@ public sealed class Renderer : IDisposable
                 transformOffset,
                 animateColorAndAlpha,
                 animateVertices,
+                testAlphaOrdering,
                 instanceCount,
                 instanceSpacing
             );
@@ -110,6 +112,15 @@ public sealed class Renderer : IDisposable
         {
             if (!disposed)
                 avfxGeometryProbe?.Update();
+        }
+    }
+
+    public void SwapAvfxGeometryProbePositions()
+    {
+        lock (drawableLock)
+        {
+            if (!disposed)
+                avfxGeometryProbe?.SwapPositions();
         }
     }
 

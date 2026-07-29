@@ -371,7 +371,17 @@ and one persistent dynamic wrapper for the observed run. It does not yet prove m
 The next bounded implementation supports exactly one or two instances. Each instance receives its own normal VFX host,
 game-owned document, model record, dynamic vertex wrapper, and phase-shifted vertex animation. A configurable world-space
 spacing separates the visuals. Probe status reports each identity and write/miss count independently; shared shell
-resource and global hooks are the only intentionally shared parts. Runtime validation of this two-host gate is pending.
+resource and global hooks are the only intentionally shared parts.
+
+User runtime confirmation: two instances appeared and their top vertices moved independently without observed
+instability. This passes separate host/document/model/wrapper ownership and dynamic-write isolation for that run. It
+does not yet establish transparent ordering.
+
+The next mode fixes host 0 to red and host 1 to blue with alpha `0.5`, uses static owned triangles, and disables color and
+vertex animation. A queued runtime action swaps only their stored world positions and calls `UpdateTransforms` on the
+same two VFX objects. Document, model, wrapper, color, alpha, creation order, and hook scope do not change. With projected
+overlap at different camera depths, a correct back-to-front blend should change from blue-weighted purple to red-weighted
+purple, or vice versa, after the swap. Runtime evidence is pending.
 
 The previous controlled-transform A/B is no longer the active path. The probe now always replaces descriptor model
 element 0 with Underpaint-owned geometry and otherwise consumes the neutral shell descriptor. If the shell still leaks

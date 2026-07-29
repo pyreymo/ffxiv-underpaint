@@ -198,8 +198,12 @@ confirmation in a closed test area.
   includes the target's vertex-specific `+0x60` source load. User runtime confirmation: the corrected single instance
   remained stable and its top vertex moved continuously. Dynamic vertex writes therefore pass the first runtime gate.
 - The bounded probe can now create one or two shell hosts. Each host owns a separate `VfxObject`, real document, model
-  record, vertex/index wrappers, transform offset, animation phase, and counters. Two-host runtime behavior remains
-  pending and is the next gate before visible alpha ordering.
+  record, vertex/index wrappers, transform offset, animation phase, and counters. User runtime confirmation: two hosts
+  appeared separately and their owned vertices moved independently without instability. This passes the multi-host
+  identity and dynamic-payload isolation gate for the observed run.
+- A fixed alpha-ordering mode now assigns persistent host 0 red and host 1 blue at alpha `0.5`, disables both animation
+  modes, and can swap only their world positions during the run. Creation order, document identity, model record,
+  wrappers, colors, and alpha remain unchanged. Its visible ordering result is pending.
 
 ## Next Action: Bounded Retained-Backend Experiment
 
@@ -240,6 +244,11 @@ different colors. Give each a real independent category-2 `DocumentInstance`, pl
 so they overlap in screen space at different camera depths, then swap only their positions. Pass requires visible blend
 order to reverse with camera depth while opaque-scene depth behavior remains correct. Capture document rank and final
 execution order for the same frames so the visual result remains correlated with the already-established producer path.
+
+The current bounded gate uses red host 0 and blue host 1, both at alpha `0.5`. Runtime position swap is queued to the
+normal probe update and calls only each existing `VfxObject.UpdateTransforms`; it does not recreate or exchange host
+identity or payload ownership. First record the visual overlap before and after one swap. Add rank/execution capture only
+if the visible result is absent or ambiguous; do not combine instrumentation with the first visual A/B.
 
 ### Experimental Backend Seam
 

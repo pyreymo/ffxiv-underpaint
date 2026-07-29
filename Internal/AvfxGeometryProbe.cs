@@ -49,6 +49,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private readonly nint[] vfxAddresses = new nint[MaxHostCount];
     private readonly nint[] documentAddresses = new nint[MaxHostCount];
     private readonly nint[] ownedModels = new nint[MaxHostCount];
+    private readonly Vector3[] hostPositions = new Vector3[MaxHostCount];
     private readonly Vector3[] transformOffsets = new Vector3[MaxHostCount];
     private readonly Vector3[] originalTranslations = new Vector3[MaxHostCount];
     private readonly int[] modelBuildCounts = new int[MaxHostCount];
@@ -66,6 +67,9 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private long animationStartTimestamp;
     private bool animateColorAndAlpha;
     private bool animateVertices;
+    private bool alphaOrderingTest;
+    private bool swapPositionsPending;
+    private int positionSwapCount;
     private bool disposed;
 
     [ThreadStatic]
@@ -129,6 +133,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
                     details.Append(
                         $"\n[{index}] Vfx=0x{vfxAddresses[index]:X} Document=0x{documentAddresses[index]:X} "
                             + $"Model=0x{ownedModels[index]:X} VertexWrapper=0x{(model == null ? 0 : model->VertexWrapper):X} "
+                            + $"Position={hostPositions[index]} "
                             + $"ModelCalls={modelBuildCounts[index]} ColorUpdates={colorUpdateCounts[index]} "
                             + $"VertexWrites={vertexWriteCounts[index]} VertexMisses={vertexWriteMissCounts[index]}."
                     );
@@ -146,6 +151,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
         Vector3 offset,
         bool animateColor,
         bool animateVertexPositions,
+        bool testAlphaOrdering,
         int instanceCount,
         Vector3 instanceSpacing
     )
@@ -155,6 +161,10 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             throw new ArgumentOutOfRangeException(nameof(position), "Probe position, offset, and spacing must be finite.");
         if (instanceCount is < 1 or > MaxHostCount)
             throw new ArgumentOutOfRangeException(nameof(instanceCount), $"Probe instance count must be between 1 and {MaxHostCount}.");
+        if (testAlphaOrdering && instanceCount != 2)
+            throw new ArgumentException("The alpha-ordering test requires exactly two instances.", nameof(instanceCount));
+        if (testAlphaOrdering && (animateColor || animateVertexPositions))
+            throw new ArgumentException("The alpha-ordering test cannot be combined with color or vertex animation.");
 
         ReleasePendingOwnedModels();
 
@@ -166,6 +176,9 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             hostCount = instanceCount;
             animateColorAndAlpha = animateColor;
             animateVertices = animateVertexPositions;
+            alphaOrderingTest = testAlphaOrdering;
+            swapPositionsPending = false;
+            positionSwapCount = 0;
             animationStartTimestamp = Stopwatch.GetTimestamp();
             for (var index = 0; index < hostCount; index++)
             {
@@ -199,7 +212,8 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
                 lock (sync)
                     vfxAddresses[index] = (nint)vfx;
                 run(vfx, 0f, uint.MaxValue);
-                SetPosition(vfx, position + instanceSpacing * index);
+                hostPositions[index] = position + instanceSpacing * index;
+                SetPosition(vfx, hostPositions[index]);
                 UpdateColor(index, vfx, index * HostPhaseStep);
             }
         }
@@ -219,20 +233,41 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             if (disposed || hostCount == 0)
                 return;
 
+            if (swapPositionsPending && hostCount == 2 && vfxAddresses[0] != 0 && vfxAddresses[1] != 0)
+            {
+                (hostPositions[0], hostPositions[1]) = (hostPositions[1], hostPositions[0]);
+                SetPosition((VfxObject*)vfxAddresses[0], hostPositions[0]);
+                SetPosition((VfxObject*)vfxAddresses[1], hostPositions[1]);
+                swapPositionsPending = false;
+                positionSwapCount++;
+            }
+
             var elapsed = (float)Stopwatch.GetElapsedTime(animationStartTimestamp).TotalSeconds;
             for (var index = 0; index < hostCount; index++)
             {
                 var vfx = (VfxObject*)vfxAddresses[index];
                 if (vfx == null)
                     continue;
-                if (animateColorAndAlpha)
+                if (animateColorAndAlpha || alphaOrderingTest)
                     UpdateColor(index, vfx, elapsed + index * HostPhaseStep);
                 if (documentAddresses[index] == 0 && apricotCore != 0)
                     TryAttachDocument(index, vfx);
             }
 
-            var mode = animateColorAndAlpha ? (animateVertices ? "color+vertices" : "color") : (animateVertices ? "vertices" : "static");
-            status = $"Active: mode={mode}, hosts={hostCount}.";
+            var mode =
+                alphaOrderingTest ? "alpha-order"
+                : animateColorAndAlpha ? (animateVertices ? "color+vertices" : "color")
+                : (animateVertices ? "vertices" : "static");
+            status = $"Active: mode={mode}, hosts={hostCount}, positionSwaps={positionSwapCount}.";
+        }
+    }
+
+    internal void SwapPositions()
+    {
+        lock (sync)
+        {
+            if (!disposed && alphaOrderingTest && hostCount == 2)
+                swapPositionsPending = true;
         }
     }
 
@@ -472,6 +507,28 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
 
     private void UpdateColor(int index, VfxObject* vfx, float elapsedSeconds)
     {
+        if (alphaOrderingTest)
+        {
+            vfx->Color =
+                index == 0
+                    ? new FfxivVector4
+                    {
+                        X = 1f,
+                        Y = 0f,
+                        Z = 0f,
+                        W = 0.5f,
+                    }
+                    : new FfxivVector4
+                    {
+                        X = 0f,
+                        Y = 0f,
+                        Z = 1f,
+                        W = 0.5f,
+                    };
+            colorUpdateCounts[index]++;
+            return;
+        }
+
         if (!animateColorAndAlpha)
         {
             vfx->Color = new FfxivVector4
