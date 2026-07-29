@@ -41,11 +41,13 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
     private readonly List<ProbeInstance> activeVfx = [];
     private Hook<DocumentRenderDelegate>? documentRenderHook;
     private ProbeRequest? pendingRequest;
+    private ProbeRequest? readyRequest;
     private CaptureSession? capture;
     private string status = "Ready.";
     private string? report;
     private nint apricotCore;
     private bool stopRequested;
+    private bool disableTaskHookRequested;
     private bool disposed;
 
     [ThreadStatic]
@@ -129,29 +131,27 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
             report = null;
             status = $"Armed: {positions.Count} instances, expected category {expectedDrawLayerType}.";
         }
+        taskUpdateGraphicsSceneHook.Enable();
     }
 
     internal void Update()
     {
         ProbeRequest? request;
-        bool shouldStop;
+        bool shouldDisableTaskHook;
         lock (sync)
         {
             if (disposed)
                 return;
-            shouldStop = stopRequested;
-            stopRequested = false;
-            request = pendingRequest;
-            pendingRequest = null;
+            request = readyRequest;
+            readyRequest = null;
+            shouldDisableTaskHook = disableTaskHookRequested;
+            disableTaskHookRequested = false;
         }
 
-        if (shouldStop)
-            StopActiveVfx();
+        if (shouldDisableTaskHook)
+            taskUpdateGraphicsSceneHook.Disable();
         if (request != null)
-        {
-            StopActiveVfx();
             Start(request);
-        }
 
         var completed = false;
         lock (sync)
@@ -180,9 +180,11 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
             if (disposed)
                 return;
             pendingRequest = null;
+            readyRequest = null;
             stopRequested = true;
             status = "Stop requested.";
         }
+        taskUpdateGraphicsSceneHook.Enable();
     }
 
     internal string? TakeReport()
@@ -203,7 +205,9 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
                 return;
             disposed = true;
             pendingRequest = null;
+            readyRequest = null;
             stopRequested = false;
+            disableTaskHookRequested = false;
         }
 
         StopActiveVfx();
@@ -254,9 +258,9 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
         }
     }
 
-    private void StopActiveVfx()
+    private void StopActiveVfx(bool preserveTaskUpdateHook = false)
     {
-        DisableObservationHooks();
+        DisableObservationHooks(preserveTaskUpdateHook);
         removeHook.Disable();
 
         ProbeInstance[] vfxObjects;
@@ -303,14 +307,15 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
         processCommandsHook.Enable();
     }
 
-    private void DisableObservationHooks()
+    private void DisableObservationHooks(bool preserveTaskUpdateHook = false)
     {
         documentRenderHook?.Disable();
         processCommandsHook.Disable();
         pushBackCommandHook.Disable();
         sortedConsumerHook.Disable();
         depthProducerHook.Disable();
-        taskUpdateGraphicsSceneHook.Disable();
+        if (!preserveTaskUpdateHook)
+            taskUpdateGraphicsSceneHook.Disable();
     }
 
     private void RefreshIdentities()
@@ -397,7 +402,37 @@ internal sealed unsafe class AvfxSortProbe : IDisposable
     private void TaskUpdateGraphicsSceneDetour()
     {
         CaptureThread(static session => session.TaskThreads);
+        ProbeRequest? request;
+        bool shouldTransition;
+        lock (sync)
+        {
+            request = pendingRequest;
+            shouldTransition = stopRequested || request != null;
+            pendingRequest = null;
+            stopRequested = false;
+        }
+
+        // Retire old slots before the game's lifecycle task consumes its pending-retirement list.
+        if (shouldTransition)
+            StopActiveVfx(preserveTaskUpdateHook: true);
         taskUpdateGraphicsSceneHook.Original();
+
+        if (!shouldTransition)
+            return;
+        lock (sync)
+        {
+            if (disposed)
+                return;
+            if (request != null)
+            {
+                readyRequest = request;
+                status = $"Ready to start {request.Positions.Length} instances after native cleanup.";
+            }
+            else
+            {
+                disableTaskHookRequested = true;
+            }
+        }
     }
 
     private nint DepthProducerDetour(nint core, int category, uint workerIndex, uint workerCount, nint producedCount)

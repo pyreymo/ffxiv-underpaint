@@ -327,8 +327,11 @@ Static decision:
   camera-depth path; value 12 reaches the priority path. `SoftKeyOffset` is the established resource depth bias.
 - A stable correlation chain exists through the persistent `VfxResourceInstance` packed generation/slot handle. This
   makes a bounded runtime probe possible without foreign indices or retained frame pointers.
-- Cross-worker final command order and visible overlap order remain unproven. The runtime probe has been implemented but
-  not run yet, so the AVFX route has not passed the Phase 1 runtime decision gate.
+- The category-2 two-instance A/B has passed runtime validation. Swapping only the two positions reversed the Apricot
+  rank and final command execution order together. Across 50 comparable frames and 1,024 captured commands there were
+  zero order failures and zero missing executions; both `Start=0/1, Stride=16` worker subsequences were observed.
+- Visible overlap order and the 8-32 instance scale case remain unproven. The normal category-2 AVFX route has passed the
+  two-instance producer-to-final-execution part of the Phase 1 runtime gate.
 - A Debug-only bounded probe is now implemented in the root Underpaint checkout. It creates and removes normal
   `VfxObject` instances, validates their packed handle against the real Apricot slot record, dynamically scopes the
   tracked document render virtual call, correlates synchronous `Context.PushBackCommand` calls with
@@ -336,13 +339,22 @@ Static decision:
 - The probe is default-off and bounded to 120 frames, 1,024 producer/consumer events, 512 commands, and 2-32 instances.
   Reaching a bound disables observation hooks but leaves the control VFX visible until Stop, re-arm, or Renderer
   disposal.
-- Both Debug and Release Underpaint builds pass with zero warnings. This is compile-time validation only; no game
-  runtime result is claimed yet.
+- Both Debug and Release Underpaint builds pass with zero warnings. Runtime validation is recorded separately from
+  compile-time validation.
 - EH commit `5f94b29` on `3d-playground` points its Underpaint gitlink at fix revision `191db55`, contains the
   minimal Debug control UI and report forwarding, builds successfully in Debug and Release, and is pushed to GitHub.
 - The 2026-07-29 CN client update exposed one probe initialization bug: Dalamud `ScanText` already resolves a signature
   whose first opcode is CALL/JMP to the callee, but the probe attempted a second rel32 resolution. The duplicate
   resolution has been removed; all five probe signatures remain unique in the updated executable.
+- Re-arming from the still-active category-2 capture to category 12 produced a native crash at
+  `ffxiv_dx11.exe+0x3B83E2`. Static analysis of the exact crash binary and register state proves that the pre-category
+  global slot pass observed slot 8 with flags `0x05` but a null `DocumentInstance*`, then dereferenced
+  `document+0x228`. This did not execute in the category-12 sorted consumer and does not invalidate the control asset.
+- The immediate cause is probe scheduling: `Update` synchronously removed the old VFX after the game's lifecycle task
+  had already run, but before the later global slot prepass. The old index remained in the active list for that frame
+  after its document was cleared. Re-arm/Stop now retires old VFX before the hooked native lifecycle task; the original
+  task consumes state-3 retirements and swap-removes them from the active list before the later prepass. New requests
+  start from the following framework update. Debug and Release builds pass; runtime confirmation is pending.
 - The non-instanced `CharacterBase -> Render::Model -> ModelRenderer` path remains a second-priority research candidate,
   not the next implementation target.
 - No `BgObject` host implementation has been started.
@@ -386,8 +398,8 @@ Do not implement or runtime-probe a `BgObject` host for transparency sorting.
 The static bridge is complete and valid. Add one bounded, default-off control probe using normal `VfxObject.Create`, an
 existing AVFX path, and no custom geometry:
 
-Implementation status: the Underpaint half of this probe is complete on `probe/avfx-native-sort`. The remaining Phase 1
-work is the EH control-resource/UI integration and user runtime capture.
+Implementation status: category 2 has passed the two-instance rank-to-final-execution A/B. The next runtime check is the
+same category-2-to-category-12 re-arm that previously crashed, now with native-lifecycle-aligned retirement.
 
 1. Log the created `VfxObject*`, `VfxResourceInstance*`, packed generation/slot handle, `DocumentInstance*`, parsed
    `DrawLayerType`, `DrawOrderType`, and `SoftKeyOffset`; reject the sample if these identities do not stay consistent.
@@ -480,6 +492,26 @@ Reject or demote the AVFX route if any of these are true:
 
 ## Session Log
 
+### 2026-07-29: Re-arm crash traced to slot retirement timing
+
+- Analyzed crash log `dalamud_appcrash_20260729_110114_878_20368.log` and its exact CN executable in IDA. The crash is
+  `C0000005` at `ffxiv_dx11.exe+0x3B83E2`, reading `0x228` through a null `DocumentInstance*` for slot 8.
+- Proved that `0x1403B8300` is a global active-slot prepass, not the category-12 sorted consumer. At the fault the slot
+  flags were `0x05`: active bit 0 was set, skip bit 1 was clear, and the previous prepass result bit 2 was set.
+- Traced normal slot publication through `0x1403B5660`: it writes the document, sets active bit 0, and appends the slot
+  to the `+0x7A030` list whose count is at `+0x7B030`.
+- Traced retirement through `TaskLayoutWorld -> 0x140392470 -> 0x1403B4850`: state-3 slots have their document
+  destroyed, are swap-removed from that same list, and decrement the list count before the later prepass.
+- Identified the probe bug: re-arm removed active category-2 VFX from the later Dalamud framework callback, after the
+  lifecycle task but before the prepass, creating exactly the observed one-frame stale-list/null-document state.
+- Changed Arm/Stop transitions to retire old VFX before the hooked native lifecycle task, let the original task consume
+  retirement, and start a replacement request only from the subsequent framework update. Category 12 remains enabled.
+- Corrected the updated-binary offline addresses: the previous scanner treated PE raw offsets as RVAs. The `.text`
+  mapping is raw `0x400` to RVA `0x1000`, so the affected values require `+0xC00`. The corrected anchors are run call
+  `0x1408CA40D` -> callee `0x14045C270`, remove `0x14045A100`, graphics-scene task `0x1400D4420`, depth producer
+  `0x1403B8BC0`, and sorted consumer `0x1403B8E80`.
+- Built Underpaint Debug and Release with zero warnings and zero errors. Runtime re-arm validation remains pending.
+
 ### 2026-07-29: Updated CN client run-address resolution fixed
 
 - Reproduced the runtime initialization failure from the logged exception before any probe hook was enabled.
@@ -490,9 +522,8 @@ Reject or demote the AVFX route if any of these are true:
 - Recorded the updated CN executable identity: size `51,774,720`, SHA-256
   `6f64fd34ca45ed6ef0616f0aaf4d25a42c19104d550a34b26ae5ffc1e980d87d`, MD5
   `04f0e75c4e67aca6086e0dfa637f3bcc`.
-- Offline-scanned the updated executable. All probe anchors remain unique: run call `0x1408C980D` -> callee
-  `0x14045B670`, remove `0x140459500`, graphics-scene task `0x1400D3820`, depth producer `0x1403B7FC0`, and sorted
-  consumer `0x1403B8280`.
+- Offline-scanned the updated executable. All probe anchors remain unique. The addresses first recorded here were raw
+  file offsets incorrectly presented as RVAs; the corrected values are recorded in the later crash-analysis entry.
 - Built Underpaint Debug and Release with zero warnings and zero errors. Runtime initialization on the updated CN client
   remains pending user confirmation.
 - Committed and pushed the Underpaint fix as `191db55` (`Fix static VFX run address resolution`).
