@@ -23,6 +23,7 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
 
     private readonly object sync = new();
     private readonly Process process = Process.GetCurrentProcess();
+    private readonly IPluginLog log;
     private readonly StaticVfxRunDelegate run;
     private readonly Hook<StaticVfxRemoveDelegate> removeHook;
     private readonly double[] frameSamples = new double[SampleFrames];
@@ -37,6 +38,7 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
     private double previousCpuMilliseconds;
     private double createMilliseconds;
     private double removeMilliseconds;
+    private int benchmarkHostCount;
     private long privateBytesBefore;
     private long privateBytesActive;
     private long workingSetBefore;
@@ -44,8 +46,9 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
     private string status = "Ready.";
     private bool disposed;
 
-    internal AvfxPerformanceProbe(IGameInteropProvider gameInteropProvider, ISigScanner sigScanner)
+    internal AvfxPerformanceProbe(IGameInteropProvider gameInteropProvider, ISigScanner sigScanner, IPluginLog log)
     {
+        this.log = log;
         run = Marshal.GetDelegateForFunctionPointer<StaticVfxRunDelegate>(sigScanner.ScanText(RunCallSignature));
         removeHook = gameInteropProvider.HookFromSignature<StaticVfxRemoveDelegate>(RemoveSignature, RemoveDetour);
     }
@@ -76,6 +79,7 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
                 throw new InvalidOperationException("Stop the completed AVFX performance test before starting another run.");
 
             ResetMeasurements();
+            benchmarkHostCount = hostCount;
             SnapshotMemory(out privateBytesBefore, out workingSetBefore);
             hosts = new nint[hostCount];
             removeHook.Enable();
@@ -111,6 +115,13 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
                 phase = ProbePhase.Warmup;
                 status = $"Warmup: hosts={hostCount}, frame=0/{WarmupFrames}, create={createMilliseconds:F2} ms.";
             }
+            log.Information(
+                "[Underpaint] AVFX performance started. Hosts={HostCount} SortingCenter={SortingCenter} Spacing={Spacing} CreateMs={CreateMs:F2}.",
+                hostCount,
+                sortingCenter,
+                spacing,
+                createMilliseconds
+            );
         }
         catch
         {
@@ -201,6 +212,11 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
             removeMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
             status = $"Stopped: hosts={activeHosts.Length}, remove={removeMilliseconds:F2} ms.";
         }
+        log.Information(
+            "[Underpaint] AVFX performance stopped. Hosts={HostCount} RemoveMs={RemoveMs:F2}.",
+            benchmarkHostCount,
+            removeMilliseconds
+        );
     }
 
     public void Dispose()
@@ -252,7 +268,7 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
         var frame = Summarize(frameSamples);
         var cpu = Summarize(cpuSamples);
         status =
-            $"Complete: create={createMilliseconds:F2} ms, remove={removeMilliseconds:F2} ms, "
+            $"Complete: hosts={benchmarkHostCount}, create={createMilliseconds:F2} ms, remove={removeMilliseconds:F2} ms, "
             + $"loadMax={warmupFrameMax:F2} ms/{warmupCpuMax:F2} CPU-ms.\n"
             + $"Frame ms: avg={frame.Average:F2}, p95={frame.P95:F2}, p99={frame.P99:F2}, max={frame.Max:F2}.\n"
             + $"Process CPU ms/frame: avg={cpu.Average:F2}, p95={cpu.P95:F2}, p99={cpu.P99:F2}, max={cpu.Max:F2}.\n"
@@ -261,6 +277,7 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
             + $"working set: active={FormatBytes(workingSetActive - workingSetBefore)}, "
             + $"after={FormatBytes(workingSetAfter - workingSetBefore)}.";
         phase = ProbePhase.Complete;
+        log.Information("[Underpaint] AVFX performance result. {Result}", status.Replace('\n', ' '));
     }
 
     private nint RemoveDetour(VfxObject* vfx)

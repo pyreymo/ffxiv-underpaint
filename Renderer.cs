@@ -38,7 +38,7 @@ public sealed class Renderer : IDisposable
                 }
                 try
                 {
-                    avfxPerformanceProbe = new AvfxPerformanceProbe(gameInteropProvider, sigScanner);
+                    avfxPerformanceProbe = new AvfxPerformanceProbe(gameInteropProvider, sigScanner, log);
                 }
                 catch (Exception exception)
                 {
