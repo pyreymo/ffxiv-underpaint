@@ -179,16 +179,22 @@ confirmation in a closed test area.
 - No persistent Underpaint AVFX host, resource redirector, or public AVFX API has been implemented.
 - Geometry stability remains unverified because the host particle transform contains strong authored jitter. A/B
   restoration, repeated recreation, territory transition, and unload cleanup also remain unverified.
-- The controlled-transform switch confirmed that the donor transform was one influence, but other authored particle and
-  material inputs remain active. Further field-by-field cleanup of `no-binder.avfx` has no useful decision value and is
-  stopped.
+- The controlled-transform experiment confirmed that the donor transform was one influence, but other authored particle
+  and material inputs remained active. That A/B control has been removed; further field-by-field cleanup of
+  `no-binder.avfx` is stopped.
 - The accepted architecture is now the immutable minimal lifecycle shell described above, not continued parasitism on
   `no-binder.avfx`.
+- A user-authored one-node candidate was parsed as category 2 with exactly one scheduler, timeline, point emitter,
+  `LightModel` particle, and model, plus zero binders. Its rotation came from three UV-scroll sets, not model transform.
+- An offline TLV-preserving trim produced a 7,340-byte shell candidate with zero textures/UV sets, disabled texture and
+  distortion inputs, fixed transform/color/alpha curves, ordinary blend mode, and a three-vertex placeholder model.
+- The probe now always substitutes its Underpaint-owned model record. Donor geometry and controlled-transform A/B
+  switches are no longer exposed.
 
 ## Next Action: Minimal AVFX Lifecycle Shell
 
-Create and inspect one private, immutable AVFX shell. Asset authoring should use VFXEditor so chunk structure and counts
-remain valid; Underpaint must still own all product geometry and runtime semantic inputs.
+The private shell has passed structural parsing and static property checks. Publish it through a dedicated virtual AVFX
+path, then run the first shell gate; Underpaint must still own all product geometry and runtime semantic inputs.
 
 ### Required Shell Properties
 
@@ -201,8 +207,7 @@ remain valid; Underpaint must still own all product geometry and runtime semanti
 
 ### First Shell Gate
 
-Parse the resulting asset before runtime and reject it if the structure violates the properties above. Then replace only
-the probe's resource path and record:
+Use the dedicated shell resource path and record:
 
 1. One shell instance receives a real category-2 `DocumentInstance` and reaches the scoped model builder.
 2. The same Underpaint-owned unit triangle appears without donor jitter or unrelated visible particles.

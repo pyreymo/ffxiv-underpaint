@@ -97,24 +97,6 @@ public sealed class Renderer : IDisposable
         }
     }
 
-    public void SetAvfxGeometryProbeOwnedMesh(bool enabled)
-    {
-        lock (drawableLock)
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            avfxGeometryProbe?.SetOwnedMeshEnabled(enabled);
-        }
-    }
-
-    public void SetAvfxGeometryProbeControlledTransform(bool enabled)
-    {
-        lock (drawableLock)
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            avfxGeometryProbe?.SetControlledTransformEnabled(enabled);
-        }
-    }
-
     public void StopAvfxGeometryProbe()
     {
         lock (drawableLock)

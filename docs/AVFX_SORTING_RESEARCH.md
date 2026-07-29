@@ -275,10 +275,43 @@ prove stable geometry: `no-binder.avfx` applies strong authored jitter to its pa
 could not distinguish stable owned resources from the expected animated descriptor transform. Toggle restoration,
 repeated recreation, territory transition, and unload behavior were not separately reported.
 
-The next bounded implementation retains the same owned triangle and changes only the copied transform. A Debug switch
-can replace all twelve authored transform floats with an identity 3x3 basis and translation equal to
-`host position + offset`; resource creation and the render descriptor seam are otherwise unchanged. This is build-only
-until runtime confirms that the triangle becomes stable at the requested world position.
+One bounded implementation retained the same owned triangle and changed only the copied transform to an identity basis
+at `host position + offset`. Runtime observation showed that removing the authored transform did not neutralize the
+remaining donor behavior. That discriminator is complete and its UI/API switch has been removed; it is not a production
+payload stage.
+
+### Minimal Lifecycle Shell Asset
+
+Evidence: direct recursive AVFX TLV parsing, VFXEditor's current field definitions, and deterministic offline trimming.
+No runtime conclusion is recorded yet.
+
+User source asset `simple_rotation.avfx`:
+
+- size 25,732 bytes; SHA-256 `38809d356d4403bfe9c15d0a40e460b78c44b3650855d7bfed851f987d4b7788`;
+- `DrawLayerType=2`, `DrawOrderType=0`, and `SoftKeyOffset=0`;
+- one scheduler, timeline, point emitter, `LightModel` particle, and model; zero binders;
+- two textures, three particle UV sets, enabled color texture and distortion inputs;
+- the visible rotation was represented by UV-scroll curves in those three UV sets rather than particle/model rotation;
+- the placeholder model contained 390 vertices and 1,536 16-bit indices.
+
+The generated `underpaint-shell.avfx` candidate:
+
+- size 7,340 bytes; SHA-256 `5a4c8910eb2b795cbc640fe102b6e48c55e9e6c69219f4f6bee63df9849487f8`;
+- preserves category 2 and the one scheduler/timeline/emitter/LightModel/model graph;
+- removes both texture nodes and all three UV sets, with root texture and particle UV counts set to zero;
+- disables color texture, normal, reflection, distortion, and palette inputs and clears texture indices;
+- fixes root/emitter/particle scale to one, position/rotation to zero, color/alpha to one, and depth offset to zero;
+- uses ordinary blend mode and extends the one particle owner's lifetime for the bounded host test;
+- replaces the authored model payload with a three-vertex, one-triangle placeholder while retaining model index 0.
+
+The TLV serializer follows VFXEditor's framing rules: reversed four-byte names, 32-bit payload sizes, four-byte padding,
+and recursively recomputed parent sizes. The generated file reparsed to one complete `AVFX` chunk with no trailing or
+truncated data. This is structural evidence only; the game parser, one-call behavior, visual neutrality, and lifecycle
+still require the first shell runtime gate.
+
+The previous controlled-transform A/B is no longer the active path. The probe now always replaces descriptor model
+element 0 with Underpaint-owned geometry and otherwise consumes the neutral shell descriptor. If the shell still leaks
+authored behavior, the AVFX route is rejected rather than adding more donor-field suppression.
 
 ## Binary Identity And IDA Reliability
 
@@ -336,5 +369,7 @@ IDA operating rules retained from the investigation:
   substitution gate.
 - 2026-07-29: CN runtime replaced the model-builder subset with owned triangles and reported balanced `1/1` model-owner
   accounting after Stop; host-authored jitter prevented a geometry-stability conclusion.
+- 2026-07-29: Parsed the user-authored one-LightModel asset, identified UV scroll as its rotation source, and generated
+  the 7,340-byte texture-free minimal shell candidate for the first runtime gate.
 
 The complete pre-consolidation narrative remains available in Git history at revision `ed08abb` and its ancestors.
