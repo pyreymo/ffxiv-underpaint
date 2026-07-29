@@ -31,6 +31,13 @@ publish a session revision to a stable or revisioned virtual AVFX path; and noti
 ready or invalid. IPC payloads should use runtime-safe primitives such as IDs, strings, and byte arrays rather than
 sharing editor object references across plugin load contexts.
 
+2026-07-30 follow-up: adding an upstream VFXEditor IPC provider is not considered a realistic dependency. Underpaint
+must not copy or maintain a private AVFX format subset. The leading unmodified-plugin candidate is therefore an
+exact-version, fail-closed reflection adapter over VFXEditor's existing public manager/document/file surface. Current
+source exposes `Plugin.AvfxManager`, manager/document collections, document creation, import/export, and `ToBytes()`;
+cross-plugin AssemblyLoadContext visibility and unload safety are not yet runtime-verified. A small full VFXEditor fork
+with an IPC bridge and a filesystem handoff remain fallback options, not the current decision.
+
 ## Implemented Model
 
 - One persistent shell host and real document per retained drawable.
@@ -86,7 +93,16 @@ probe controls as compatibility paths.
 
 ## Next Architecture Investigation
 
-Before expanding the current custom-model backend, define and validate one narrow VFXEditor IPC round trip:
+Before expanding the current custom-model backend, first run a read-only reflection probe against an installed,
+unmodified VFXEditor:
+
+1. Locate the VFXEditor assembly without Dalamud internal plugin-manager APIs and verify its exact assembly version.
+2. Resolve `Plugin.AvfxManager`, enumerate managers/documents, and read active document metadata without retaining any
+   VFXEditor object, `Type`, delegate, or event subscription across callbacks.
+3. Disable or unload VFXEditor and confirm the probe releases all references, detects loss, and does not prevent its
+   AssemblyLoadContext from unloading.
+
+Only if those lifecycle gates pass, validate one narrow runtime editing round trip:
 
 1. Underpaint requests an editable runtime document containing a minimal scheduler, timeline, emitter, and
    `DecalRing` particle.
@@ -96,7 +112,7 @@ Before expanding the current custom-model backend, define and validate one narro
 5. A document edit publishes a new revision and causes an explicit, bounded instance recreation rather than mutating
    unknown parsed Apricot structures in place.
 
-Until that producer/consumer contract is available, the in-memory virtual-resource transport remains unresolved. The
+Until that interaction contract is available, the in-memory virtual-resource transport remains unresolved. The
 existing disk-backed reload and static shell redirect paths prove useful mechanisms but are not the final runtime
 composition boundary.
 
