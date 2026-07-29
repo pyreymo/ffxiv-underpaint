@@ -27,9 +27,10 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
         "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 ?? 44 8B 49";
     private const string InitializeIndexBufferSignature = "40 53 48 83 EC 20 F7 41 40 00 08 00 00 48 8B D9";
     private const int ExpectedDrawLayer = 2;
-    private const int MeshColumns = 20;
-    private const int MeshRows = 25;
-    private const int MeshFaceCount = MeshColumns * MeshRows * 2;
+    private const int SphereLongitudeSegments = 32;
+    private const int SphereLatitudeSegments = 17;
+    private const int MeshFaceCount = SphereLongitudeSegments * (SphereLatitudeSegments - 1) * 2;
+    private const int MeshVertexCount = MeshFaceCount * 3;
     private const int WarmupFrames = 180;
     private const int SampleFrames = 600;
     private const int CooldownFrames = 180;
@@ -113,8 +114,8 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
     internal void Start(string resourcePath, Vector3 sortingCenter, int hostCount, float spacing)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(resourcePath);
-        if (hostCount is not (0 or 1 or 4 or 16 or 64 or 256))
-            throw new ArgumentOutOfRangeException(nameof(hostCount), "Host count must be 0, 1, 4, 16, 64, or 256.");
+        if (hostCount is not (0 or 256 or 512 or 1024 or 2048 or 4096))
+            throw new ArgumentOutOfRangeException(nameof(hostCount), "Host count must be 0, 256, 512, 1K, 2K, or 4K.");
         if (!IsFinite(sortingCenter) || !float.IsFinite(spacing) || spacing < 0)
             throw new ArgumentOutOfRangeException(nameof(sortingCenter), "Sorting center and spacing must be finite.");
 
@@ -499,7 +500,7 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
         log.Information(
             "[Underpaint] AVFX performance topology created. Faces={Faces} Vertices={Vertices} Indices={Indices} CreateMs={CreateMs:F2}.",
             MeshFaceCount,
-            (MeshColumns + 1) * (MeshRows + 1),
+            MeshVertexCount,
             MeshFaceCount * 3,
             topologyCreateMilliseconds
         );
@@ -510,40 +511,49 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
         var model = (OwnedModelRecord*)NativeMemory.AllocZeroed((nuint)sizeof(OwnedModelRecord));
         try
         {
-            const int vertexCount = (MeshColumns + 1) * (MeshRows + 1);
+            const int vertexCount = MeshVertexCount;
             const int indexCount = MeshFaceCount * 3;
             var vertices = stackalloc AvfxVertex[vertexCount];
             var indices = stackalloc ushort[indexCount];
 
-            for (var row = 0; row <= MeshRows; row++)
+            var writeIndex = 0;
+            var north = new Vector3(0f, 0f, 0.5f);
+            var south = new Vector3(0f, 0f, -0.5f);
+            for (var longitude = 0; longitude < SphereLongitudeSegments; longitude++)
             {
-                for (var column = 0; column <= MeshColumns; column++)
+                var nextLongitude = (longitude + 1) % SphereLongitudeSegments;
+                WriteTriangle(vertices, indices, ref writeIndex, north, SpherePoint(1, longitude), SpherePoint(1, nextLongitude));
+            }
+
+            for (var latitude = 1; latitude < SphereLatitudeSegments - 1; latitude++)
+            {
+                for (var longitude = 0; longitude < SphereLongitudeSegments; longitude++)
                 {
-                    vertices[row * (MeshColumns + 1) + column] = new AvfxVertex(
-                        column / (float)MeshColumns - 0.5f,
-                        row / (float)MeshRows - 0.5f,
-                        0f
-                    );
+                    var nextLongitude = (longitude + 1) % SphereLongitudeSegments;
+                    var upperLeft = SpherePoint(latitude, longitude);
+                    var upperRight = SpherePoint(latitude, nextLongitude);
+                    var lowerLeft = SpherePoint(latitude + 1, longitude);
+                    var lowerRight = SpherePoint(latitude + 1, nextLongitude);
+                    WriteTriangle(vertices, indices, ref writeIndex, upperLeft, lowerLeft, lowerRight);
+                    WriteTriangle(vertices, indices, ref writeIndex, upperLeft, lowerRight, upperRight);
                 }
             }
 
-            var writeIndex = 0;
-            for (var row = 0; row < MeshRows; row++)
+            for (var longitude = 0; longitude < SphereLongitudeSegments; longitude++)
             {
-                for (var column = 0; column < MeshColumns; column++)
-                {
-                    var lowerLeft = (ushort)(row * (MeshColumns + 1) + column);
-                    var lowerRight = (ushort)(lowerLeft + 1);
-                    var upperLeft = (ushort)(lowerLeft + MeshColumns + 1);
-                    var upperRight = (ushort)(upperLeft + 1);
-                    indices[writeIndex++] = lowerLeft;
-                    indices[writeIndex++] = lowerRight;
-                    indices[writeIndex++] = upperRight;
-                    indices[writeIndex++] = lowerLeft;
-                    indices[writeIndex++] = upperRight;
-                    indices[writeIndex++] = upperLeft;
-                }
+                var nextLongitude = (longitude + 1) % SphereLongitudeSegments;
+                WriteTriangle(
+                    vertices,
+                    indices,
+                    ref writeIndex,
+                    south,
+                    SpherePoint(SphereLatitudeSegments - 1, nextLongitude),
+                    SpherePoint(SphereLatitudeSegments - 1, longitude)
+                );
             }
+
+            if (writeIndex != indexCount)
+                throw new InvalidOperationException($"The performance sphere produced {writeIndex / 3} faces, expected {MeshFaceCount}.");
 
             model->VertexWrapper = createVertexWrapper(0, (uint)(vertexCount * sizeof(AvfxVertex)), 0);
             if (model->VertexWrapper == 0 || !InitializeWrapper(model->VertexWrapper, vertices, initializeVertexBuffer))
@@ -568,6 +578,43 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
     {
         var resource = *(nint*)(wrapper + 0x10);
         return resource != 0 && initialize(resource, data) != 0;
+    }
+
+    private static Vector3 SpherePoint(int latitude, int longitude)
+    {
+        var polar = MathF.PI * latitude / SphereLatitudeSegments;
+        var azimuth = 2f * MathF.PI * longitude / SphereLongitudeSegments;
+        var radial = 0.5f * MathF.Sin(polar);
+        return new Vector3(radial * MathF.Cos(azimuth), radial * MathF.Sin(azimuth), 0.5f * MathF.Cos(polar));
+    }
+
+    private static void WriteTriangle(
+        AvfxVertex* vertices,
+        ushort* indices,
+        ref int writeIndex,
+        Vector3 a,
+        Vector3 b,
+        Vector3 c
+    )
+    {
+        var normal = Vector3.Normalize(Vector3.Cross(b - a, c - a));
+        if (Vector3.Dot(normal, a + b + c) < 0f)
+        {
+            (b, c) = (c, b);
+            normal = -normal;
+        }
+
+        var reference = MathF.Abs(normal.Z) < 0.9f ? Vector3.UnitZ : Vector3.UnitY;
+        var tangent = Vector3.Normalize(Vector3.Cross(reference, normal));
+        vertices[writeIndex] = new AvfxVertex(a, normal, tangent);
+        indices[writeIndex] = (ushort)writeIndex;
+        writeIndex++;
+        vertices[writeIndex] = new AvfxVertex(b, normal, tangent);
+        indices[writeIndex] = (ushort)writeIndex;
+        writeIndex++;
+        vertices[writeIndex] = new AvfxVertex(c, normal, tangent);
+        indices[writeIndex] = (ushort)writeIndex;
+        writeIndex++;
     }
 
     private void ReleaseOwnedModel()
@@ -689,9 +736,6 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private readonly struct AvfxVertex
     {
-        private const uint NormalPositiveZ = 0x7FFF8080;
-        private const uint TangentPositiveX = 0x7F8080FF;
-
         private readonly Half positionX;
         private readonly Half positionY;
         private readonly Half positionZ;
@@ -708,17 +752,26 @@ internal sealed unsafe class AvfxPerformanceProbe : IDisposable
         private readonly Half uv4X;
         private readonly Half uv4Y;
 
-        internal AvfxVertex(float x, float y, float z)
+        internal AvfxVertex(Vector3 position, Vector3 normal, Vector3 tangent)
         {
-            positionX = (Half)x;
-            positionY = (Half)y;
-            positionZ = (Half)z;
+            positionX = (Half)position.X;
+            positionY = (Half)position.Y;
+            positionZ = (Half)position.Z;
             positionW = (Half)1f;
-            normal = NormalPositiveZ;
-            tangent = TangentPositiveX;
+            this.normal = PackDirection(normal);
+            this.tangent = PackDirection(tangent);
             color = uint.MaxValue;
             uv1X = uv1Y = uv2X = uv2Y = uv3X = uv3Y = uv4X = uv4Y = (Half)0.5f;
         }
+
+        private static uint PackDirection(Vector3 value) =>
+            PackDirectionComponent(value.X)
+            | ((uint)PackDirectionComponent(value.Y) << 8)
+            | ((uint)PackDirectionComponent(value.Z) << 16)
+            | 0x7F000000;
+
+        private static byte PackDirectionComponent(float value) =>
+            (byte)MathF.Round((Math.Clamp(value, -1f, 1f) * 0.5f + 0.5f) * 255f);
     }
 
     private enum ProbePhase

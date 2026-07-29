@@ -233,17 +233,17 @@ confirmation in a closed test area.
   it only for `VfxObject.Position`.
 - A separate Debug-only shell performance probe measures the lower-bound one-host-per-primitive cost without the
   geometry probe's model-builder lock or per-host owned buffers. Its current profile substitutes one shared runtime-owned
-  1,000-face model into 1/4/16/64/256 independently sorted shell documents and records bounded warm-up, steady-state
-  frame/process-CPU tails, synchronous create/remove cost, model-builder cardinality, and process-memory deltas. Exact
-  GPU residency and native allocation provenance are not claimed by this probe.
+  1,024-face flat-shaded sphere into 256/512/1K/2K/4K independently sorted shell documents and records bounded warm-up,
+  steady-state frame/process-CPU tails, synchronous create/remove cost, model-builder cardinality, and process-memory
+  deltas. Exact GPU residency and native allocation provenance are not claimed by this probe.
 
 ## Next Action: Measure Shell Host Scale Cost
 
 The immutable shell, dynamic owned geometry, two-host isolation, smooth alpha, visible category-2 ordering, and explicit
 sorting-center publication gates have passed. Before implementing retained lifecycle, run the shell-only lower-bound
-performance probe at baseline and 1, 4, 16, 64, and 256 hosts in the same controlled scene. Each host receives the same
-runtime-owned 1,000-face model without modifying the lifecycle shell. Use recorded document and model-builder cardinality
-to reject incomplete samples.
+performance probe at baseline and 256, 512, 1K, 2K, and 4K hosts in the same controlled scene. Each host receives the same
+runtime-owned 1,024-face faceted sphere without modifying the lifecycle shell. Use recorded document and model-builder
+cardinality to reject incomplete samples.
 
 ### Required Shell Properties
 
@@ -334,8 +334,8 @@ These gates run only after the minimal shell carries the already-accepted owned 
 
 ### Cost
 
-Measure baseline plus 1, 4, 16, 64, and 256 simultaneous one-host-per-primitive instances with one shared runtime-owned
-1,000-face mesh. Record:
+Measure baseline plus 256, 512, 1K, 2K, and 4K simultaneous one-host-per-primitive instances with one shared runtime-owned
+1,024-face faceted sphere. Record:
 
 - CPU time and p95/p99/max frame cost.
 - Native allocation count and resource residency.
