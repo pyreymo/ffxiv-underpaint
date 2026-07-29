@@ -28,6 +28,29 @@ Detailed static traces, addresses, runtime-probe results, and investigation hist
   AVFX resource per changing drawable, or per-frame mutation of a shared AVFX resource does not satisfy the primitive
   model.
 
+### Candidate Runtime Model
+
+The candidate is not a runtime-mutated AVFX resource. It is an Underpaint drawable carried by an immutable, minimal AVFX
+lifecycle shell:
+
+- AVFX owns only the legal engine identity and execution envelope: `VfxObject`, `VfxResourceInstance`, real
+  `DocumentInstance`, category-2 camera-depth rank, render-worker scheduling, and the synchronous model-builder call.
+- Underpaint owns the dynamic draw payload: model record, vertex/index wrappers, topology, transform, dimensions, color,
+  alpha, and the retained drawable lifetime that publishes those values.
+- During the scoped model-builder call, Underpaint copies the transient descriptor and replaces its model record and
+  semantic inputs. It does not mutate the shared AVFX resource, its model array, Apricot slots, or native queues.
+- All drawables use the same immutable shell resource. Each drawable may own a normal shell instance so that the game
+  assigns it an independent real `DocumentInstance`; there is no generated AVFX file per drawable or per shape.
+- The shell's placeholder model exists only to reach the native model builder. Its authored geometry is never a product
+  primitive and must not determine rectangle or triangle semantics.
+
+This can reasonably be described as a runtime-modifiable primitive hosted by AVFX, but not as a modifiable AVFX asset.
+The distinction is architectural: AVFX supplies lifecycle and sorting identity; Underpaint supplies the actual draw.
+
+Reject this model if a neutral shell cannot produce one predictable model-builder call, or if Underpaint must keep
+neutralizing arbitrary emitter, timeline, random, binder, particle, texture, or material behavior from a donor effect.
+Cleaning `no-binder.avfx` one descriptor field at a time is explicitly not the implementation path.
+
 ## Required Results
 
 The following are independent results and must be reported separately:
@@ -48,6 +71,7 @@ generalized to all native transparent rendering.
 - Do not copy or hand-sort expanded native command packets.
 - Do not call native render builders from arbitrary Dalamud callbacks.
 - Do not turn the existing sorting probe into a production lifecycle component.
+- Do not convert donor-effect parameter suppression into a production payload pipeline.
 - Keep A/B tests single-variable and bounded.
 - Prove producer, container, sorting unit, worker behavior, final consumption, allocator, thread, and lifetime ownership
   before modifying a native queue or implementing a persistent host.
@@ -155,28 +179,42 @@ confirmation in a closed test area.
 - No persistent Underpaint AVFX host, resource redirector, or public AVFX API has been implemented.
 - Geometry stability remains unverified because the host particle transform contains strong authored jitter. A/B
   restoration, repeated recreation, territory transition, and unload cleanup also remain unverified.
+- The controlled-transform switch confirmed that the donor transform was one influence, but other authored particle and
+  material inputs remain active. Further field-by-field cleanup of `no-binder.avfx` has no useful decision value and is
+  stopped.
+- The accepted architecture is now the immutable minimal lifecycle shell described above, not continued parasitism on
+  `no-binder.avfx`.
 
-## Next Action: Controlled Transform Runtime Gate
+## Next Action: Minimal AVFX Lifecycle Shell
 
-Keep the accepted owned triangle, document identity, particle/material inputs, and builder call unchanged. Change only
-the copied descriptor's 3x4 transform between the authored particle transform and an identity basis translated to
-`host position + offset`.
+Create and inspect one private, immutable AVFX shell. Asset authoring should use VFXEditor so chunk structure and counts
+remain valid; Underpaint must still own all product geometry and runtime semantic inputs.
 
-### Required Runtime Results
+### Required Shell Properties
 
-1. With controlled transform disabled, the owned triangle retains the host-authored jitter baseline.
-2. Enabling only controlled transform places the same triangle at the requested world translation with a stable unit
-   basis, without restarting or reloading the host.
-3. Disabling controlled transform restores the authored jitter in the same active host.
-4. Camera movement does not detach or corrupt the controlled triangle.
-5. Stop returns the model create/release counters to equality.
+1. Category 2 with one scheduler, timeline, emitter, persistent `LightModel` particle, and model index 0.
+2. One predictable model-builder call per active shell instance.
+3. No binder, `Quad`, `Powder`, random position/rotation/scale, velocity, noise, or additional visible particle.
+4. Neutral fixed color/alpha/material inputs and no unnecessary texture animation.
+5. One placeholder model block sufficient to reach the builder; its geometry is not reused by Underpaint.
+6. No authored behavior that changes topology, transform, tint, alpha, or visibility after startup.
 
-Stop after this gate if the controlled matrix is interpreted incorrectly, the triangle does not remain at its requested
-world position, or switching the copied transform disturbs the document lifecycle.
+### First Shell Gate
+
+Parse the resulting asset before runtime and reject it if the structure violates the properties above. Then replace only
+the probe's resource path and record:
+
+1. One shell instance receives a real category-2 `DocumentInstance` and reaches the scoped model builder.
+2. The same Underpaint-owned unit triangle appears without donor jitter or unrelated visible particles.
+3. The owned transform and neutral semantic inputs remain stable without field-by-field donor suppression.
+4. Stop returns model-owner accounting to equality.
+
+If the minimal shell still leaks authored behavior into the primitive, stop the AVFX route rather than adding another
+layer of descriptor cleanup.
 
 ## Follow-Up Gates
 
-These gates run only after the fixed owned-mesh gate passes.
+These gates run only after the minimal shell carries the already-accepted owned mesh without donor behavior.
 
 ### Primitive Semantics
 
@@ -218,6 +256,7 @@ AVFX may proceed to an Underpaint integration design only if all of the followin
 - Each drawable has one real, stable game-owned sorting identity in category 0-11.
 - Camera-depth changes produce correct visible back-to-front ordering through final execution.
 - Downstream particle or draw batching does not destroy independent document order.
+- One immutable shared lifecycle shell produces a predictable neutral model-builder call without donor-effect cleanup.
 - Rectangle and arbitrary three-point triangle semantics are expressible from Underpaint-owned geometry and descriptor
   inputs without authored per-shape AVFX, per-frame mutation of a shared AVFX resource, or one generated AVFX resource
   per changing drawable.
