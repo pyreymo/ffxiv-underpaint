@@ -13,6 +13,7 @@ public sealed class Renderer : IDisposable
     private readonly NativeBackend backend;
 #if DEBUG
     private readonly AvfxGeometryProbe? avfxGeometryProbe;
+    private readonly AvfxPerformanceProbe? avfxPerformanceProbe;
 #endif
     private ulong nextDrawableId;
     private bool disposed;
@@ -34,6 +35,14 @@ public sealed class Renderer : IDisposable
                 catch (Exception exception)
                 {
                     log.Warning(exception, "[Underpaint] AVFX geometry probe is unavailable.");
+                }
+                try
+                {
+                    avfxPerformanceProbe = new AvfxPerformanceProbe(gameInteropProvider, sigScanner);
+                }
+                catch (Exception exception)
+                {
+                    log.Warning(exception, "[Underpaint] AVFX performance probe is unavailable.");
                 }
 #endif
             }
@@ -93,6 +102,7 @@ public sealed class Renderer : IDisposable
         lock (drawableLock)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
+            avfxPerformanceProbe?.Stop();
             avfxGeometryProbe?.Start(
                 resourcePath,
                 position,
@@ -141,6 +151,43 @@ public sealed class Renderer : IDisposable
                 return avfxGeometryProbe?.Status ?? "Unavailable.";
         }
     }
+
+    public void StartAvfxPerformanceProbe(string resourcePath, System.Numerics.Vector3 sortingCenter, int hostCount, float spacing)
+    {
+        lock (drawableLock)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            avfxGeometryProbe?.Stop();
+            avfxPerformanceProbe?.Start(resourcePath, sortingCenter, hostCount, spacing);
+        }
+    }
+
+    public void UpdateAvfxPerformanceProbe(TimeSpan frameDelta)
+    {
+        lock (drawableLock)
+        {
+            if (!disposed)
+                avfxPerformanceProbe?.Update(frameDelta);
+        }
+    }
+
+    public void StopAvfxPerformanceProbe()
+    {
+        lock (drawableLock)
+        {
+            if (!disposed)
+                avfxPerformanceProbe?.Stop();
+        }
+    }
+
+    public string AvfxPerformanceProbeStatus
+    {
+        get
+        {
+            lock (drawableLock)
+                return avfxPerformanceProbe?.Status ?? "Unavailable.";
+        }
+    }
 #endif
 
     public void Dispose()
@@ -157,6 +204,7 @@ public sealed class Renderer : IDisposable
         }
 
 #if DEBUG
+        avfxPerformanceProbe?.Dispose();
         avfxGeometryProbe?.Dispose();
 #endif
         backend.Dispose();

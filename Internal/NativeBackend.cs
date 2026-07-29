@@ -404,6 +404,7 @@ internal sealed unsafe class NativeBackend : IDisposable
                     primitive.DrawableId,
                     primitive.Mesh,
                     primitive.CurrentTransform,
+                    primitive.SortingCenter,
                     previousTransform,
                     hasPrevious,
                     primitive.Color,
@@ -442,7 +443,7 @@ internal sealed unsafe class NativeBackend : IDisposable
         )
             return;
 
-        var position = primitive.CurrentTransform.Translation;
+        var position = primitive.SortingCenter;
         sortKeyCapture.PrimitiveCount++;
         sortKeyCapture.EntryKeys.Add(context->SortKey);
         sortKeyCapture.Details.AppendLine(
@@ -556,6 +557,7 @@ internal sealed unsafe class NativeBackend : IDisposable
         ulong DrawableId,
         MeshKind Mesh,
         Matrix4x4 CurrentTransform,
+        Vector3 SortingCenter,
         Matrix4x4 PreviousTransform,
         bool HasPrevious,
         Vector3 Color,
@@ -568,6 +570,7 @@ internal readonly record struct FrameCommand(
     ulong DrawableId,
     MeshKind Mesh,
     Matrix4x4 CurrentTransform,
+    Vector3 SortingCenter,
     Vector3 Color,
     float Alpha,
     float Dither

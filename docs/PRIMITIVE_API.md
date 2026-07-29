@@ -16,7 +16,8 @@
 API。
 
 Event Horizon 不注册 mesh，不持有 mesh handle、VB、IB 或 GPU resource ID，也不提交 vertices、indices、
-previous transform、dither options、texture、shader 或 material。外部自定义 mesh 输入明确不提供，也不是本设计
+previous transform、dither options、texture、shader 或 material。caller 需要为每个 primitive 提交独立的 world-space
+sorting center；它不是 geometry transform 的隐式平移。外部自定义 mesh 输入明确不提供，也不是本设计
 的后续路线图。
 
 ## Geometry contract
@@ -86,6 +87,7 @@ public sealed class PrimitiveFrame : IDisposable
     public void DrawTriangle(
         TriangleDrawable drawable,
         Matrix4x4 transform,
+        Vector3 sortingCenter,
         Vector3 color,
         float alpha = 1f
     );
@@ -93,6 +95,7 @@ public sealed class PrimitiveFrame : IDisposable
     public void DrawRectangle(
         RectangleDrawable drawable,
         Matrix4x4 transform,
+        Vector3 sortingCenter,
         Vector3 color,
         float alpha = 1f
     );
@@ -110,8 +113,8 @@ private readonly RectangleDrawable rectangle = renderer.CreateRectangle(2f, 1f);
 public void SubmitScene()
 {
     using var frame = renderer.BeginFrame();
-    frame.DrawTriangle(triangle, triangleWorld, triangleColor, triangleAlpha);
-    frame.DrawRectangle(rectangle, rectangleWorld, rectangleColor, rectangleAlpha);
+    frame.DrawTriangle(triangle, triangleWorld, triangleSortingCenter, triangleColor, triangleAlpha);
+    frame.DrawRectangle(rectangle, rectangleWorld, rectangleSortingCenter, rectangleColor, rectangleAlpha);
     frame.Publish();
 }
 ```
@@ -139,7 +142,7 @@ Underpaint 独立管理，不随单个 drawable dispose。
 `PrimitiveFrame` 收集一份完整的 scene snapshot：
 
 - `BeginFrame` 创建尚未发布的 builder；
-- Draw 只记录 drawable、current transform、color 和 alpha；
+- Draw 只记录 drawable、current transform、world-space sorting center、color 和 alpha；
 - `Publish` 冻结 snapshot，并原子替换尚未被 native renderer 消费的 pending frame；
 - 一个 frame 只能发布一次；
 - dispose 未发布 frame 只丢弃 builder，不改变 pending frame；
@@ -168,6 +171,7 @@ caller 不计算或提交 previous transform。Underpaint 私有维护：
 - dispose drawable 或 renderer 会删除其 history；
 - color/alpha 改变不重置 transform history；
 - rectangle resize 会改变实例 transform，因此参与正常 history，而不是强制 reset。
+- sorting center 独立发布，不参与 current/previous geometry transform history。
 
 motion-history 状态机可做确定性测试，但其拖影视觉改善仍必须单独实机确认。
 

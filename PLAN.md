@@ -228,12 +228,20 @@ confirmation in a closed test area.
 - The fixed alpha-ordering mode passed its visible gate: two overlapping owned triangles changed composition correctly
   when only their host positions were exchanged. Together with the earlier rank/execution capture, category-2
   document-level camera-depth ordering is established for the observed two-host case.
+- `PrimitiveFrame` now publishes an explicit world-space `sortingCenter` independently from the complete geometry
+  transform. The current low-level backend preserves it without changing geometry placement; an AVFX backend will use
+  it only for `VfxObject.Position`.
+- A separate Debug-only shell performance probe measures the lower-bound one-host-per-primitive cost without the
+  geometry probe's model-builder lock or per-host owned buffers. It supports 0/8/32/128/512 normal shell hosts and
+  records bounded warm-up, steady-state frame/process-CPU tails, synchronous create/remove cost, and process-memory
+  deltas. Exact GPU residency and native allocation provenance are not claimed by this probe.
 
-## Next Action: Complete The Primitive Payload Bridge
+## Next Action: Measure Shell Host Scale Cost
 
-The immutable shell, dynamic owned geometry, two-host isolation, smooth alpha, and visible category-2 ordering gates have
-passed. Before implementing persistent retained lifecycle, complete the remaining primitive semantics without changing
-the public API or replacing the current backend.
+The immutable shell, dynamic owned geometry, two-host isolation, smooth alpha, visible category-2 ordering, and explicit
+sorting-center publication gates have passed. Before implementing retained lifecycle, run the shell-only lower-bound
+performance probe at baseline, 8, 32, 128, and 512 hosts in the same controlled scene. If this lower bound is already
+unacceptable, demote or reject one-host-per-primitive before spending work on backend engineering.
 
 ### Required Shell Properties
 
