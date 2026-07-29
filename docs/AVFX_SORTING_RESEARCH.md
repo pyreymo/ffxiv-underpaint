@@ -229,9 +229,46 @@ a detour can copy the stack descriptor, replace its transform and eventually its
 builder synchronously. This preserves the real AVFX identity, producer category, sorting rank, worker context, and final
 consumer while avoiding shared-resource mutation, forged Apricot indices, borrowed frame storage, and queue writes.
 
-The first implementation changes only the copied transform translation and preserves the original model record. Custom
-geometry remains blocked until the model wrapper's create/upload/reference/release protocol is proven independently.
-Build success does not prove that the descriptor substitution is visibly consumed or correctly cleaned up.
+The first implementation changed only the copied transform translation and preserved the original model record. User
+runtime confirmation passed that transform gate. The wrapper ownership trace below was the next prerequisite for custom
+geometry; build success alone still does not prove visible geometry or cleanup behavior.
+
+### Model Wrapper Ownership Trace
+
+Evidence: static IDA analysis of the independently matched global and CN model parsers, wrapper constructors, upload
+helpers, model-record cleanup, and model builder; current Underpaint buffer ownership code; public VFXEditor AVFX vertex
+definitions.
+
+- Global model parser `0x140395DE0` calls vertex-wrapper constructor `0x140386B80` and index-wrapper constructor
+  `0x140386C60`. The independently matched CN equivalents are `0x140395860`, `0x140386600`, and `0x1403866E0`.
+- Each constructor creates the corresponding kernel buffer with static flags `0x804`, allocates a 32-byte game-owned
+  wrapper, stores the kernel resource at wrapper `+0x10`, initializes wrapper reference count `+0x18` to one, adds one
+  kernel-resource reference, and releases the constructor's original kernel-resource reference.
+- The parser passes the AVFX data pointer through the top-level initialize call into the lower device creation helper.
+  The global vertex/index initialize entries are `0x14021E590` / `0x14021EC80`; the CN entries are
+  `0x14021DEC0` / `0x14021E5B0`. They synchronously create/upload the backing resource from that pointer.
+- Model-record cleanup is `0x140395D90` globally and `0x140395810` on CN. It invokes virtual slot `+0x8` on each
+  non-null wrapper and clears model record `+0x10/+0x18`. That release decrements the wrapper count; the final wrapper
+  destruction releases the kernel resource through its delayed-release-capable resource virtual method and frees the
+  32-byte wrapper through the matching game allocator.
+- The model builder reads model record `+0x10/+0x18`, extracts each wrapper's kernel resource at `+0x10`, installs those
+  resources in the current render context, passes the record's vertex/index counts by value, and returns. It does not
+  pass the model-record or wrapper pointer to the final command builder. A stable owned record is therefore sufficient;
+  it need not be registered in the shared AVFX model array.
+- Wrapper creation and upload use the global graphics device and allocator but no Apricot render TLS or borrowed
+  `GraphicsKernelContext`. Static analysis does not prove that arbitrary caller threads are legal. The bounded probe
+  therefore creates and releases wrappers only from its Start/Stop control path and performs no allocation, upload, or
+  release in the model-builder detour. Runtime thread/lifecycle behavior remains a separate gate.
+- AVFX `VDrw` vertices are fixed 36-byte records: half4 position, four packed normal bytes, four packed tangent bytes,
+  RGBA8 color, and four half2 UV sets. `VIdx` is a 16-bit index stream. This is sufficient to define a three-vertex
+  fixed unit triangle without copying geometry from the host asset.
+
+The Debug probe now allocates one private 40-byte model record per Start, creates and uploads one three-vertex unit
+triangle through the native wrappers, and can switch descriptor element 0 between the original and owned records while
+retaining the already-tested copied transform. Stop, automatic host removal followed by Update, failed Start, and
+Dispose each converge on one wrapper-release path; cumulative model create/release counters are exposed in probe status.
+This is implementation and build evidence only; visible geometry, toggle restoration, repeated recreation, territory
+transition, and unload behavior require user runtime confirmation.
 
 ## Binary Identity And IDA Reliability
 
@@ -285,5 +322,7 @@ IDA operating rules retained from the investigation:
 - 2026-07-29: EH removed the temporary sorting UI, category-12 asset, extra redirect, and probe submodule revision.
 - 2026-07-29: Revision `ed08abb` refocused the next decision on external AVFX model-particle capability instead of
   further probe repair.
+- 2026-07-29: Closed the global/CN AVFX model-wrapper ownership trace and added the Debug-only fixed unit triangle
+  substitution gate; runtime validation remains pending.
 
 The complete pre-consolidation narrative remains available in Git history at revision `ed08abb` and its ancestors.

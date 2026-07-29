@@ -113,8 +113,12 @@ confirmation in a closed test area.
 - The test area contained no second `no-binder` instance. Isolation from another instance using the same resource was
   therefore not tested and must not be claimed. That missing control does not block the next resource-ownership step;
   later multi-host ordering tests will exercise independent document identities directly.
-- Geometry substitution remains blocked until the AVFX model wrapper's creation, upload, reference, and release protocol
-  is proven.
+- Static analysis of both current binaries has now closed the wrapper protocol: native constructors create 32-byte
+  reference wrappers around uploaded kernel buffers, model cleanup releases them through virtual slot `+0x8`, and the
+  builder does not retain the temporary model record or wrapper pointers.
+- Wrapper creation/upload uses the global graphics device rather than a borrowed Apricot render context. Exact arbitrary
+  thread legality is not proven, so the Debug gate confines creation/release to Start/Stop control paths and performs no
+  resource operation inside the render detour.
 
 ### Temporary Sorting Probe Retired
 
@@ -138,36 +142,27 @@ confirmation in a closed test area.
   the statically identified model-builder subset.
 - Cross-instance isolation against a second host using the same `no-binder` resource remains untested; no conclusion is
   recorded for that control.
-- No Underpaint-owned AVFX geometry resource has been created or substituted.
+- A Debug-only owned-model implementation now creates a private 40-byte record and native vertex/index wrappers for one
+  fixed three-vertex unit triangle per Start. It can switch descriptor element 0 between the host record and owned
+  record without changing the AVFX resource or document identity.
 - No persistent Underpaint AVFX host, resource redirector, or public AVFX API has been implemented.
-- The next question is how to create, upload, retain, and release an Underpaint-owned model wrapper accepted by the same
-  builder.
+- The owned-mesh implementation has passed build validation only. Visual replacement, A/B restoration, repeated
+  recreation, territory transition, and unload cleanup remain unverified.
 
-## Next Action: AVFX Model Wrapper Ownership
+## Next Action: Owned Fixed-Mesh Runtime Gate
 
-Trace and validate the resource protocol used by the AVFX model parser before replacing descriptor element 0. Continue
-using `no-binder.avfx` only as a normal category-2 lifecycle and model-draw host; its authored geometry is not evidence
-for Underpaint primitive capability.
+Run the bounded Debug probe with `no-binder.avfx` only as a normal category-2 lifecycle and model-draw host. Compare the
+original and Underpaint-owned model records without restarting or reloading the host.
 
-### Required Static Results
+### Required Runtime Results
 
-1. Identify the native create functions for the vertex and index wrappers stored at model record `+0x10/+0x18`.
-2. Confirm the wrapper's actual kernel resource field, reference ownership, upload call, and symmetric release path.
-3. Confirm the legal thread and graphics-context requirements for create, upload, use, and release.
-4. Define one Underpaint-owned 40-byte model record containing a fixed unit mesh without registering it in, or mutating,
-   the shared AVFX resource's model array.
-5. Reject the seam if the builder or downstream command retains the temporary model record pointer rather than the
-   referenced kernel resources.
-
-### First Geometry Gate
-
-Only after the ownership trace closes, change descriptor element 0 for the tracked model-builder call and record:
-
-1. The original host remains the lifecycle and sorting identity.
-2. One Underpaint-owned fixed unit triangle or rectangle replaces only the model-builder subset.
-3. The substituted mesh follows the already-validated copied transform.
-4. Disabling substitution restores the original model draw without resource reload or shared AVFX mutation.
-5. Stop, recreation, territory change, and plugin unload release the owned wrappers exactly once.
+1. With owned mesh disabled, the original model-builder subset remains visible at the copied-transform offset.
+2. Enabling owned mesh replaces only that subset with the fixed unit triangle; `Quad` and `Powder` behavior is unchanged.
+3. The fixed triangle follows the same copied transform without moving the host or reloading the AVFX resource.
+4. Disabling owned mesh restores the original model draw in the same active host.
+5. Stop and repeated Start work without stale geometry, crash, or failed wrapper creation; the status create/release
+   counters return to equality after each Stop.
+6. Territory change and plugin unload complete without stale host callbacks or resource-lifetime failure.
 
 Stop after this gate if the builder rejects the owned model record, command execution retains invalid pointers, or
 resource cleanup is not symmetric.
