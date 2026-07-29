@@ -1,36 +1,21 @@
 # Underpaint
 
-Underpaint is a lightweight world-space primitive rendering library for Dalamud plugins.
+Underpaint is a retained world-space primitive renderer for Dalamud plugins.
 
-The first implementation targets one fixed native semitransparent material path using
-`charactertransparency.shpk`. Underpaint owns its geometry, transforms, colors, constants,
-textures, and GPU resources while using the game's native material helpers and pass builder.
+The first AVFX backend uses a minimal immutable lifecycle shell to obtain a real game-owned `VfxObject`,
+`DocumentInstance`, worker scheduling, opaque-scene depth behavior, and category-2 camera-depth ordering. Underpaint
+replaces only the synchronous model-builder descriptor with its own shared geometry and semantic payload.
 
-## First-version scope
+## Public primitives
 
-- fixed native semitransparent material path;
-- per-primitive color and alpha;
-- current and previous transforms;
-- native main view and verified auxiliary views;
-- triangles, quads, discs, rings, sectors, and spheres;
-- reusable unit geometry for matching detail levels.
+- unit equilateral triangle;
+- unit rectangle with retained width and height;
+- unit-diameter, 1,024-face faceted sphere with retained radius.
 
-`alpha = 1` means fully opaque output within the semitransparent path. It is not a true opaque
-material profile.
+Each retained drawable receives an independent native sorting identity. Callers publish a complete frame containing the
+geometry transform, independent world-space sorting center, RGB color, and smooth alpha. AVFX resources, native handles,
+models, buffers, materials, textures, shaders, and dither controls remain private.
 
-Underpaint does not load arbitrary models, layouts, shaders, materials, or textures. It does not
-create game objects or provide a general model renderer.
-
-## Status
-
-The previous hand-written G-buffer and transparency prototypes have been archived in Git history.
-The native implementation is being rebuilt in small, reviewable steps. The renderer currently
-accepts one complete primitive set per frame, owns fixed triangle and quad meshes, and independently
-loads its fixed donor material. Each stable ID owns its attribute, world, and instance resources
-for independent transforms, color, smooth alpha, and dither fade. Unit geometry, material/model
-constants, textures, and the vertex declaration remain shared.
-
-See [docs/STATUS.md](docs/STATUS.md) for the current implementation boundary, verified runtime
-results, known limitations, and the next minimal task.
-
-See [docs/RESEARCH.md](docs/RESEARCH.md) for the verified findings retained from the prototypes.
+See [`docs/PRIMITIVE_API.md`](docs/PRIMITIVE_API.md) for the API contract, [`docs/STATUS.md`](docs/STATUS.md) for the
+current implementation boundary, and [`docs/AVFX_SORTING_RESEARCH.md`](docs/AVFX_SORTING_RESEARCH.md) for archived
+evidence.

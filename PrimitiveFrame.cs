@@ -22,12 +22,11 @@ public sealed class PrimitiveFrame : IDisposable
         Matrix4x4 transform,
         Vector3 sortingCenter,
         Vector3 color,
-        float alpha = 1f,
-        float dither = 1f
+        float alpha = 1f
     )
     {
         ArgumentNullException.ThrowIfNull(drawable);
-        Add(drawable.State, transform, sortingCenter, color, alpha, dither);
+        Add(drawable.State, transform, sortingCenter, color, alpha);
     }
 
     public void DrawRectangle(
@@ -35,8 +34,7 @@ public sealed class PrimitiveFrame : IDisposable
         Matrix4x4 transform,
         Vector3 sortingCenter,
         Vector3 color,
-        float alpha = 1f,
-        float dither = 1f
+        float alpha = 1f
     )
     {
         ArgumentNullException.ThrowIfNull(drawable);
@@ -45,8 +43,19 @@ public sealed class PrimitiveFrame : IDisposable
             Matrix4x4.CreateScale(drawable.Width, drawable.Height, 1f) * transform,
             sortingCenter,
             color,
-            alpha,
-            dither
+            alpha
+        );
+    }
+
+    public void DrawSphere(SphereDrawable drawable, Matrix4x4 transform, Vector3 sortingCenter, Vector3 color, float alpha = 1f)
+    {
+        ArgumentNullException.ThrowIfNull(drawable);
+        Add(
+            drawable.State,
+            Matrix4x4.CreateScale(drawable.Radius * 2f) * transform,
+            sortingCenter,
+            color,
+            alpha
         );
     }
 
@@ -59,7 +68,7 @@ public sealed class PrimitiveFrame : IDisposable
 
     public void Dispose() => disposed = true;
 
-    private void Add(DrawableState drawable, Matrix4x4 transform, Vector3 sortingCenter, Vector3 color, float alpha, float dither)
+    private void Add(DrawableState drawable, Matrix4x4 transform, Vector3 sortingCenter, Vector3 color, float alpha)
     {
         ThrowIfClosed();
         if (!ReferenceEquals(drawable.Owner, renderer))
@@ -77,8 +86,7 @@ public sealed class PrimitiveFrame : IDisposable
                 transform,
                 sortingCenter,
                 color,
-                Math.Clamp(alpha, 0f, 1f),
-                Math.Clamp(dither, 0f, 1f)
+                Math.Clamp(alpha, 0f, 1f)
             )
         );
     }

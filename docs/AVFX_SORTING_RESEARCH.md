@@ -1,5 +1,8 @@
 # AVFX Native Transparency Sorting Research Archive
 
+The first retained AVFX backend has now been implemented. Current behavior and remaining runtime gates are summarized in
+`PLAN.md` and `docs/STATUS.md`; this file remains historical evidence.
+
 This document preserves the evidence behind the decisions in the root `PLAN.md`. It is an archive, not an active task
 list. Current goals, gates, and next actions belong in `PLAN.md`.
 

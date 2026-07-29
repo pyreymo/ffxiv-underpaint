@@ -3,60 +3,18 @@ using Underpaint.Internal;
 
 namespace Underpaint;
 
-/// <summary>Owns Underpaint's native rendering resources.</summary>
+/// <summary>Owns Underpaint's retained AVFX rendering resources.</summary>
 public sealed class Renderer : IDisposable
 {
     private readonly object drawableLock = new();
     private readonly HashSet<DrawableState> drawables = [];
-    private readonly NativeResources resources;
-    private readonly MaterialLoader material;
-    private readonly NativeBackend backend;
-#if DEBUG
-    private readonly AvfxGeometryProbe? avfxGeometryProbe;
-    private readonly AvfxPerformanceProbe? avfxPerformanceProbe;
-#endif
+    private readonly AvfxBackend backend;
     private ulong nextDrawableId;
     private bool disposed;
 
     public Renderer(IGameInteropProvider gameInteropProvider, ISigScanner sigScanner, IPluginLog log)
     {
-        resources = new NativeResources(sigScanner);
-        try
-        {
-            material = new MaterialLoader();
-            try
-            {
-                backend = new NativeBackend(gameInteropProvider, sigScanner, material, resources, log);
-#if DEBUG
-                try
-                {
-                    avfxGeometryProbe = new AvfxGeometryProbe(gameInteropProvider, sigScanner);
-                }
-                catch (Exception exception)
-                {
-                    log.Warning(exception, "[Underpaint] AVFX geometry probe is unavailable.");
-                }
-                try
-                {
-                    avfxPerformanceProbe = new AvfxPerformanceProbe(gameInteropProvider, sigScanner, log);
-                }
-                catch (Exception exception)
-                {
-                    log.Warning(exception, "[Underpaint] AVFX performance probe is unavailable.");
-                }
-#endif
-            }
-            catch
-            {
-                material.Dispose();
-                throw;
-            }
-        }
-        catch
-        {
-            resources.Dispose();
-            throw;
-        }
+        backend = new AvfxBackend(gameInteropProvider, sigScanner, log);
     }
 
     public TriangleDrawable CreateTriangle() => new(CreateDrawable(MeshKind.Triangle));
@@ -65,6 +23,12 @@ public sealed class Renderer : IDisposable
     {
         RectangleDrawable.ValidateDimensions(width, height);
         return new RectangleDrawable(CreateDrawable(MeshKind.Rectangle), width, height);
+    }
+
+    public SphereDrawable CreateSphere(float radius)
+    {
+        SphereDrawable.ValidateRadius(radius);
+        return new SphereDrawable(CreateDrawable(MeshKind.Sphere), radius);
     }
 
     public PrimitiveFrame BeginFrame()
@@ -76,140 +40,18 @@ public sealed class Renderer : IDisposable
         }
     }
 
-#if DEBUG
-    public void ArmSortKeyCapture()
-    {
-        lock (drawableLock)
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            backend.ArmSortKeyCapture();
-        }
-    }
-
-    public string? SortKeyCaptureStatus => backend.SortKeyCaptureStatus;
-
-    public void StartAvfxGeometryProbe(
-        string resourcePath,
-        System.Numerics.Vector3 position,
-        System.Numerics.Vector3 transformOffset,
-        bool animateColorAndAlpha,
-        bool animateVertices,
-        bool testAlphaOrdering,
-        int instanceCount,
-        System.Numerics.Vector3 instanceSpacing
-    )
-    {
-        lock (drawableLock)
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            avfxPerformanceProbe?.Stop();
-            avfxGeometryProbe?.Start(
-                resourcePath,
-                position,
-                transformOffset,
-                animateColorAndAlpha,
-                animateVertices,
-                testAlphaOrdering,
-                instanceCount,
-                instanceSpacing
-            );
-        }
-    }
-
-    public void UpdateAvfxGeometryProbe()
-    {
-        lock (drawableLock)
-        {
-            if (!disposed)
-                avfxGeometryProbe?.Update();
-        }
-    }
-
-    public void SwapAvfxGeometryProbePositions()
-    {
-        lock (drawableLock)
-        {
-            if (!disposed)
-                avfxGeometryProbe?.SwapPositions();
-        }
-    }
-
-    public void StopAvfxGeometryProbe()
-    {
-        lock (drawableLock)
-        {
-            if (!disposed)
-                avfxGeometryProbe?.Stop();
-        }
-    }
-
-    public string AvfxGeometryProbeStatus
-    {
-        get
-        {
-            lock (drawableLock)
-                return avfxGeometryProbe?.Status ?? "Unavailable.";
-        }
-    }
-
-    public void StartAvfxPerformanceProbe(string resourcePath, System.Numerics.Vector3 sortingCenter, int hostCount, float spacing)
-    {
-        lock (drawableLock)
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            avfxGeometryProbe?.Stop();
-            avfxPerformanceProbe?.Start(resourcePath, sortingCenter, hostCount, spacing);
-        }
-    }
-
-    public void UpdateAvfxPerformanceProbe(TimeSpan frameDelta)
-    {
-        lock (drawableLock)
-        {
-            if (!disposed)
-                avfxPerformanceProbe?.Update(frameDelta);
-        }
-    }
-
-    public void StopAvfxPerformanceProbe()
-    {
-        lock (drawableLock)
-        {
-            if (!disposed)
-                avfxPerformanceProbe?.Stop();
-        }
-    }
-
-    public string AvfxPerformanceProbeStatus
-    {
-        get
-        {
-            lock (drawableLock)
-                return avfxPerformanceProbe?.Status ?? "Unavailable.";
-        }
-    }
-#endif
-
     public void Dispose()
     {
         lock (drawableLock)
         {
             if (disposed)
                 return;
-
             disposed = true;
             foreach (var drawable in drawables)
                 drawable.Invalidate();
             drawables.Clear();
         }
-
-#if DEBUG
-        avfxPerformanceProbe?.Dispose();
-        avfxGeometryProbe?.Dispose();
-#endif
         backend.Dispose();
-        material.Dispose();
-        resources.Dispose();
     }
 
     internal void Publish(List<FrameCommand> commands)
