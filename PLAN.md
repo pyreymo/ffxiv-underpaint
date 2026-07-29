@@ -1,6 +1,6 @@
 # Underpaint AVFX Backend Plan
 
-Last updated: 2026-07-29
+Last updated: 2026-07-30
 
 ## Current Decision
 
@@ -13,6 +13,23 @@ The accepted chain is:
 The old low-level pass-builder backend and temporary AVFX probes have been removed. Detailed reverse engineering and
 completed experiments remain archived in [`docs/AVFX_SORTING_RESEARCH.md`](docs/AVFX_SORTING_RESEARCH.md) and Git
 history.
+
+The current shell/model-substitution implementation is evidence for native lifecycle, document identity, scheduling,
+sorting, and runtime-owned geometry. It is not the intended final effect-authoring abstraction. The target direction is
+runtime AVFX composition using native particle types such as `DecalRing`, with the game retaining ownership of particle
+geometry, animation, culling, and rendering wherever a suitable native primitive exists.
+
+Underpaint will not maintain a private subset or forked copy of VFXEditor's AVFX format model. The preferred integration
+is a versioned Dalamud IPC contract with VFXEditor. VFXEditor should own editable AVFX documents, import/export,
+serialization, and publication of compiled revisions as loadable virtual resources. Underpaint should own semantic
+effect definitions, retained instances, frame publication, `VfxObject` lifetime, and reaction to VFXEditor revision or
+shutdown events. Direct references to VFXEditor plugin objects or editor-internal C# types are out of scope.
+
+The IPC contract does not exist in the current VFXEditor checkout. Its minimum shape still needs agreement with
+VFXEditor upstream: API version and initialized/disposed events; create/open/close editor sessions; import/export bytes;
+publish a session revision to a stable or revisioned virtual AVFX path; and notify consumers when a revision becomes
+ready or invalid. IPC payloads should use runtime-safe primitives such as IDs, strings, and byte arrays rather than
+sharing editor object references across plugin load contexts.
 
 ## Implemented Model
 
@@ -66,3 +83,25 @@ Run these gates in order on the current backend:
 
 Any runtime failure must be recorded separately from build results. Do not restore the deleted low-level backend or
 probe controls as compatibility paths.
+
+## Next Architecture Investigation
+
+Before expanding the current custom-model backend, define and validate one narrow VFXEditor IPC round trip:
+
+1. Underpaint requests an editable runtime document containing a minimal scheduler, timeline, emitter, and
+   `DecalRing` particle.
+2. VFXEditor exposes that document in its normal runtime editor and can import/export it through its existing model.
+3. VFXEditor publishes a compiled revision under a loadable virtual AVFX path without exposing its internal node types.
+4. Underpaint creates and retires one normal `VfxObject` from that revision; no model-builder substitution is involved.
+5. A document edit publishes a new revision and causes an explicit, bounded instance recreation rather than mutating
+   unknown parsed Apricot structures in place.
+
+Until that producer/consumer contract is available, the in-memory virtual-resource transport remains unresolved. The
+existing disk-backed reload and static shell redirect paths prove useful mechanisms but are not the final runtime
+composition boundary.
+
+## Session Continuity
+
+At the end of each substantive discussion or implementation round, briefly update this plan and the Underpaint project
+memory with the decision, new evidence, and next unresolved action. Keep those updates concise and do not treat memory as
+a substitute for the current checkout or runtime evidence.
