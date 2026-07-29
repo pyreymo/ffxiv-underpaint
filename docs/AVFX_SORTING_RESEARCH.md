@@ -195,6 +195,44 @@ Corrected anchors recorded for that updated CN binary included run target `0x140
 graphics-scene task `0x1400D4420`, depth producer `0x1403B8BC0`, and sorted consumer `0x1403B8E80`. These addresses
 must not be transferred to another binary.
 
+## AVFX Model Geometry Descriptor Seam
+
+Evidence: direct parsing of EH's external asset, VFXEditor's current AVFX field definitions, and static IDA analysis.
+
+The existing `EventHorizon/Assets/no-binder.avfx` is not a rectangle implementation:
+
+- root `DrawLayerType = 2`, `DrawOrderType = 0`;
+- one scheduler, two timelines, seven emitters, ten particles, no binders, eight textures, and three model blocks;
+- particle varieties include four `LightModel` particles, two `Quad` particles, and four `Powder` particles;
+- only the first model block has geometry: 55 vertices and 80 triangles; the other two model blocks are empty.
+
+The AVFX root parser allocates a 40-byte record for each `Modl` block. The model parser stores vertex and index counts
+at `+0x24/+0x26`, creates native wrapper resources for `VDrw` and `VIdx`, uploads their data during resource load, and
+stores the wrappers at `+0x10/+0x18`. The wrappers contain the actual kernel buffer pointer at `+0x10`.
+
+Both particle routes converge before native draw construction:
+
+- `LightModel` resolves its single `MNO` model index and builds an 11-pointer stack descriptor.
+- `Model` resolves its model-index list and builds the same descriptor shape.
+- descriptor element 0 is the 40-byte model record;
+- element 2 points to the particle's complete 12-float / 3x4 transform;
+- the remaining elements provide particle/material constants, colors, textures, and optional morph state.
+- both routes call the same model builder synchronously from the real `DocumentInstance` render scope.
+
+The model builder first rejects model records whose vertex or index wrapper is null. It copies the 3x4 transform into
+its constant inputs, dereferences each model wrapper's `+0x10` kernel resource, binds the vertex stream with a fixed
+36-byte AVFX vertex stride, binds the index buffer, and emits the native draw before returning. The caller's descriptor
+and transform pointers are not retained.
+
+This establishes a smaller candidate seam than resource rewriting: while the target game-owned document is rendering,
+a detour can copy the stack descriptor, replace its transform and eventually its model record, and call the original
+builder synchronously. This preserves the real AVFX identity, producer category, sorting rank, worker context, and final
+consumer while avoiding shared-resource mutation, forged Apricot indices, borrowed frame storage, and queue writes.
+
+The first implementation changes only the copied transform translation and preserves the original model record. Custom
+geometry remains blocked until the model wrapper's create/upload/reference/release protocol is proven independently.
+Build success does not prove that the descriptor substitution is visibly consumed or correctly cleaned up.
+
 ## Binary Identity And IDA Reliability
 
 Verified global IDB:
@@ -202,6 +240,19 @@ Verified global IDB:
 - Path: `C:\Users\Administrator\Documents\Repos\FFXIVQuickLauncher\.ffxiv-exe-probe-state\game\ffxiv_dx11.exe.i64`
 - SHA-256: `4236e770e673150e85f8d10beab2fc4834c82f86aab8a555a9175439fc906a6d`
 - MD5: `db16bf90d76be1a344a648abcc9465fe`
+
+The IDB at that same path was rebuilt or replaced before the model-descriptor investigation. The binary actually opened
+for this investigation was:
+
+- Size: `51,753,216` bytes.
+- SHA-256: `9483706ddccc700f95dc4f25eca500b3b5b0b1bdd2b4297fae3c69c95a9bd964`.
+- MD5: `3865fddd1baa546b0eeb756c7d91af67`.
+- AVFX model builder: `0x14037F500`.
+- AVFX root parser: `0x1403ACC40`; model parser: `0x140395DE0`.
+
+The current CN binary identity remains the one below. Its independently matched model builder is `0x14037EF80`. The
+shared builder prologue is represented in code by a version-specific signature; neither address may be transferred to
+another binary.
 
 Updated CN executable recorded during probe repair:
 

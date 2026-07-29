@@ -8,8 +8,9 @@ Find a legal engine-backed path that gives Underpaint rectangles and arbitrary t
 camera-depth ordering for transparent rendering.
 
 The current low-level pass-builder backend remains in place until a candidate proves visual behavior, primitive
-semantics, lifecycle ownership, and acceptable cost. The current investigation is testing a normal AVFX host, not
-designing a general model or VFX API.
+semantics, lifecycle ownership, and acceptable cost. The current investigation uses normal AVFX only for its
+game-owned identity, lifecycle, producer, and sorting path. Underpaint must provide the primitive geometry and semantic
+inputs; an authored rectangle AVFX is not the implementation.
 
 Detailed static traces, addresses, runtime-probe results, and investigation history are archived in
 [`docs/AVFX_SORTING_RESEARCH.md`](docs/AVFX_SORTING_RESEARCH.md).
@@ -17,14 +18,15 @@ Detailed static traces, addresses, runtime-probe results, and investigation hist
 ## Product Boundary
 
 - Consumers work with semantic retained drawables, not native render commands or GPU resources.
-- AVFX and `VfxObject` may be used as an internal backend if their ownership remains private to Underpaint.
+- AVFX and `VfxObject` may be used as an internal host if their ownership remains private to Underpaint.
 - The public API must not expose AVFX, Apricot, `DocumentInstance`, resource redirection, native handles, model indices,
   shaders, materials, vertex buffers, or index buffers.
 - Rectangle remains a shared unit mesh plus per-drawable dimensions and transform.
 - Triangle must ultimately support arbitrary three-point geometry. The unit equilateral triangle contract currently in
   `docs/PRIMITIVE_API.md` is superseded and requires a separate API redesign before implementation is complete.
-- A design that requires one generated resource per changing drawable or per-frame mutation of a shared AVFX resource
-  does not satisfy the primitive model.
+- The host AVFX is not the geometry source. A design that requires one authored AVFX resource per shape, one generated
+  AVFX resource per changing drawable, or per-frame mutation of a shared AVFX resource does not satisfy the primitive
+  model.
 
 ## Required Results
 
@@ -88,9 +90,26 @@ Evidence: static IDA analysis followed by bounded runtime capture and user runti
 - This proves category-2 producer rank propagation to final execution for the observed case. It does not yet prove
   visible model-particle overlap, primitive semantics, production lifecycle, or scale cost.
 
-### Temporary Probe Retired From The Decision Path
+### AVFX Model Builder Provides A Descriptor Seam
 
-- The Debug-only Underpaint probe remains research history and is default-off.
+Evidence: current external asset parsing plus static IDA analysis of the current global and CN binaries.
+
+- `no-binder.avfx` is useful only as a normal category-2 host sample. It contains ten particles and three model blocks;
+  the only populated model has 55 vertices and 80 triangles. It is not a minimal rectangle resource and must not become
+  Underpaint's geometry implementation.
+- Both AVFX `Model` and `LightModel` particles resolve a resource model record and synchronously call the same native
+  model builder from the real document render scope.
+- The builder receives a stack descriptor containing the model record, a complete 3x4 transform, and the remaining
+  particle/material inputs. It reads the descriptor synchronously, binds the model record's vertex/index resources,
+  writes constants, and emits the native draw before returning.
+- A scoped detour can copy that stack descriptor and replace semantic inputs for one real game-owned document without
+  mutating the shared AVFX resource, changing Apricot slots or indices, retaining frame pointers, or writing a queue.
+- Transform substitution requires no new native resource and is the first runtime gate. Geometry substitution remains
+  blocked until the AVFX model wrapper's creation, upload, reference, and release protocol is proven.
+
+### Temporary Sorting Probe Retired
+
+- The old Debug-only sorting probe exists only in Git history and has been removed from the current source.
 - EH no longer consumes the probe revision or exposes its sorting controls and category-12 asset.
 - Re-arm and Stop experiments crashed because the probe cleared documents while active slot work could still consume
   them. This invalidates the probe's transition scheme, not the normal category-2 AVFX route.
@@ -102,47 +121,55 @@ Evidence: static IDA analysis followed by bounded runtime capture and user runti
 - Active Underpaint checkout: root `ffxiv-underpaint` repository, branch `probe/avfx-native-sort`.
 - The nested `event-horizon/libraries/Underpaint` checkout is an EH consumer submodule and must not be edited directly.
 - Phase 1, normal AVFX identity and producer-to-final-execution ordering, is complete for category 2.
-- No AVFX model-particle primitive has been visually validated.
+- The external authored-rectangle experiment has been rejected because it would test an asset as the implementation,
+  not Underpaint geometry carried by an AVFX lifecycle.
+- A Debug-only transform descriptor probe now exists in Underpaint. It uses the real `VfxObject` and document, preserves
+  the original model resource, and changes only the copied 3x4 transform during the scoped synchronous builder call.
+- The transform probe has passed build validation but has not been run in game.
+- No Underpaint-owned AVFX geometry resource has been created or substituted.
 - No persistent Underpaint AVFX host, resource redirector, or public AVFX API has been implemented.
-- The next question is useful drawable capability, not another sorting-producer control.
+- The next question is whether the descriptor seam is correctly scoped to one real document and visibly consumes the
+  substituted transform.
 
-## Next Action: External AVFX Rectangle Experiment
+## Next Action: Scoped Transform Descriptor A/B
 
-The next experiment is owned by the Event Horizon test harness because EH already owns established static-VFX resource
-redirection, scheduler-managed lifecycle code, and Debug controls. Underpaint production code must not gain a resource
-redirector or AVFX host for this experiment.
+Event Horizon may supply its existing `no-binder.avfx` redirect and Debug control, but the descriptor hook is owned by
+Underpaint. The asset is only a known category-2 host containing model draws; its authored geometry is not evidence for
+Underpaint primitive capability.
 
 ### Experiment Setup
 
-1. Create one minimal external AVFX resource containing one persistent rectangle model particle.
-2. Set `DrawLayerType` explicitly to the verified category 2. Keep `DrawOrderType` independently controlled; its
-   `Depth` label is not evidence of document-level sorting.
-3. Use ordinary alpha blending, enable depth test, and disable depth write.
-4. Use the established EH resource-replacement and scheduler-managed static-VFX lifecycle. Do not use the temporary
-   Underpaint probe's transition hooks.
-5. Create one real VFX instance per candidate drawable. Give overlapping instances distinct per-instance tints while
-   keeping one shared resource and fixed create/update order.
+1. Start one normal category-2 `no-binder` host through the Debug probe at a visible world position.
+2. Keep its AVFX resource, model record, particle state, color, alpha, depth settings, and creation order unchanged.
+3. In only that game-owned document's model-builder scope, copy the stack descriptor and add a clearly visible offset to
+   the descriptor's 3x4 transform translation.
+4. Confirm the original descriptor is never modified and the copied transform lives only for the synchronous original
+   builder call.
+5. Stop through the normal static-VFX remove path. Do not use the retired sorting probe's graphics-task transition.
 
 ### First Visual Gate
 
-Change only camera-space depth in the ordering A/B and record these results separately:
+Record these results separately:
 
-1. The rectangle model particle is visible and stable.
-2. Two overlapping instances blend back to front.
-3. Swapping only their depth reverses the visible overlap order.
-4. Crossing the camera through their depth relation reverses the order without changing creation/update order.
-5. Opaque scene geometry depth-tests correctly against both instances.
+1. The normal host is visible and stable before substitution.
+2. Only model draws belonging to the tracked document report builder hits.
+3. Enabling the copied transform offset moves only those model draws by the requested amount.
+4. Stopping and recreating the host does not crash, leave a visible object, or affect normal hidden-player markers.
+5. Plugin unload with the probe active removes the host through the normal lifecycle without a crash.
 
-Stop after this gate if model-particle rendering or visible ordering fails. Do not begin Underpaint integration to work
-around a failed external capability test.
+Stop after this gate if the scoped transform is not visibly consumed or lifecycle cleanup fails. Do not add custom
+geometry to work around an unproven descriptor seam.
 
 ## Follow-Up Gates
 
-These gates run only after the first rectangle visual gate passes.
+These gates run only after the scoped transform gate passes.
 
 ### Primitive Semantics
 
-- Validate per-instance transform, tint, smooth alpha, and rectangle dimensions without mutating the shared resource.
+- Prove the native AVFX model wrapper create/upload/reference/release protocol before substituting geometry.
+- Substitute one Underpaint-owned fixed unit mesh while retaining the normal document, particle state, and sort path.
+- Validate per-instance transform, tint, smooth alpha, and rectangle dimensions without mutating the shared AVFX
+  resource.
 - Determine how one persistent host can express arbitrary three-point triangle geometry, including affine/shear freedom
   unavailable through ordinary TRS.
 - Reject the route if arbitrary triangles require per-frame shared-resource mutation or one generated resource per
@@ -179,8 +206,9 @@ AVFX may proceed to an Underpaint integration design only if all of the followin
 - Each drawable has one real, stable game-owned sorting identity in category 0-11.
 - Camera-depth changes produce correct visible back-to-front ordering through final execution.
 - Downstream particle or draw batching does not destroy independent document order.
-- Rectangle and arbitrary three-point triangle semantics are expressible without per-frame mutation of a shared AVFX
-  resource or one generated AVFX resource per changing drawable.
+- Rectangle and arbitrary three-point triangle semantics are expressible from Underpaint-owned geometry and descriptor
+  inputs without authored per-shape AVFX, per-frame mutation of a shared AVFX resource, or one generated AVFX resource
+  per changing drawable.
 - Opaque depth testing and same-category native transparent ordering satisfy their separate visual gates.
 - Create, update, hide/show, reload, cleanup, and destruction ownership are explicit and symmetric.
 - Cost is acceptable at the measured instance counts.
@@ -195,7 +223,7 @@ If AVFX passes every gate:
 
 1. Redesign the retained triangle API to represent arbitrary three-point geometry. Do not silently retain the currently
    documented unit-equilateral-only contract.
-2. Implement one internal resource-backed AVFX host in the root Underpaint repository with normal
+2. Implement one internal AVFX lifecycle host and Underpaint-owned geometry path in the root repository with normal
    create/load/update/hide/show/cleanup/destroy behavior.
 3. Keep AVFX and resource-redirection details private. Preserve semantic drawable and latest-wins frame publication
    boundaries.

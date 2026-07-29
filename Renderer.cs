@@ -12,7 +12,7 @@ public sealed class Renderer : IDisposable
     private readonly MaterialLoader material;
     private readonly NativeBackend backend;
 #if DEBUG
-    private readonly AvfxSortProbe? avfxSortProbe;
+    private readonly AvfxGeometryProbe? avfxGeometryProbe;
 #endif
     private ulong nextDrawableId;
     private bool disposed;
@@ -29,11 +29,11 @@ public sealed class Renderer : IDisposable
 #if DEBUG
                 try
                 {
-                    avfxSortProbe = new AvfxSortProbe(gameInteropProvider, sigScanner, log);
+                    avfxGeometryProbe = new AvfxGeometryProbe(gameInteropProvider, sigScanner);
                 }
                 catch (Exception exception)
                 {
-                    log.Warning(exception, "[Underpaint] AVFX sorting probe is unavailable.");
+                    log.Warning(exception, "[Underpaint] AVFX geometry probe is unavailable.");
                 }
 #endif
             }
@@ -79,46 +79,40 @@ public sealed class Renderer : IDisposable
 
     public string? SortKeyCaptureStatus => backend.SortKeyCaptureStatus;
 
-    public void ArmAvfxSortProbe(string resourcePath, IReadOnlyList<System.Numerics.Vector3> positions, int expectedDrawLayerType)
+    public void StartAvfxGeometryProbe(string resourcePath, System.Numerics.Vector3 position, System.Numerics.Vector3 transformOffset)
     {
         lock (drawableLock)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            avfxSortProbe?.Arm(resourcePath, positions, expectedDrawLayerType);
+            avfxGeometryProbe?.Start(resourcePath, position, transformOffset);
         }
     }
 
-    public void UpdateAvfxSortProbe()
+    public void UpdateAvfxGeometryProbe()
     {
         lock (drawableLock)
         {
             if (!disposed)
-                avfxSortProbe?.Update();
+                avfxGeometryProbe?.Update();
         }
     }
 
-    public void StopAvfxSortProbe()
+    public void StopAvfxGeometryProbe()
     {
         lock (drawableLock)
         {
             if (!disposed)
-                avfxSortProbe?.Stop();
+                avfxGeometryProbe?.Stop();
         }
     }
 
-    public string AvfxSortProbeStatus
+    public string AvfxGeometryProbeStatus
     {
         get
         {
             lock (drawableLock)
-                return avfxSortProbe?.Status ?? "Unavailable.";
+                return avfxGeometryProbe?.Status ?? "Unavailable.";
         }
-    }
-
-    public string? TakeAvfxSortProbeReport()
-    {
-        lock (drawableLock)
-            return avfxSortProbe?.TakeReport();
     }
 #endif
 
@@ -136,7 +130,7 @@ public sealed class Renderer : IDisposable
         }
 
 #if DEBUG
-        avfxSortProbe?.Dispose();
+        avfxGeometryProbe?.Dispose();
 #endif
         backend.Dispose();
         material.Dispose();
