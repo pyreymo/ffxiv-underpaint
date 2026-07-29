@@ -108,11 +108,34 @@ Evidence: static IDA analysis followed by bounded runtime capture and user runti
 - AVFX `DrawLayerType`, not `DrawOrderType`, selects the producer category.
 - Categories 0-11 use the established camera-depth producer. Category 12 uses a priority key.
 - The existing category-2 sample has `DrawLayerType = 2`, `DrawOrderType = 0`, and `SoftKeyOffset = 0`.
+- "Category 2" is only the verified internal bucket selected by raw `DrawLayerType = 2`; no reliable official semantic
+  name has been established. It is not a blend mode, render pass, particle type, or manually authored `SortKey`.
 - Swapping only two instance positions reversed Apricot rank and final command execution order together.
 - Across 50 comparable frames and 1,024 captured commands, the probe observed zero order failures and zero missing
   executions, including both observed `Start=0/1, Stride=16` worker subsequences.
-- This proves category-2 producer rank propagation to final execution for the observed case. It does not yet prove
-  visible model-particle overlap, primitive semantics, production lifecycle, or scale cost.
+- This proves category-2 producer rank propagation to final execution for the observed case. Visible owned-geometry
+  blending has since passed separately below; production lifecycle and scale cost remain unproven.
+
+### Category-2 Owned Geometry Passed Visible Alpha Ordering
+
+Evidence: the established category-2 rank/execution capture, fixed-identity two-host A/B, and user runtime confirmation.
+
+- Two persistent shell instances owned distinct real `VfxObject`, `DocumentInstance`, model-record, and wrapper
+  identities. Host 0 remained red and host 1 remained blue, both at smooth alpha `0.5`.
+- Creation order, document identity, model record, wrappers, colors, alpha, and hook routing remained fixed. The runtime
+  swap only exchanged their stored world positions and called `UpdateTransforms(true)` on the same VFX objects during
+  the normal probe update.
+- The shell descriptor transform followed each `VfxObject.Position`; Underpaint added the same fixed transform offset and
+  substituted only that document's owned model record. Visible geometry and the game's sorting center therefore moved
+  together without exchanging payload identity.
+- User runtime confirmation: with projected overlap at different depths, the expected red/blue alpha composition changed
+  correctly after the position swap. No instability or identity recreation was observed.
+- Combined with the earlier capture showing that the same category-2 position swap reverses Apricot rank and final
+  command execution order, this proves object-level camera-depth back-to-front ordering for the observed pair of
+  Underpaint-owned transparent primitives. Underpaint performed no CPU sort and did not write `Context.SortKey`.
+- This result is scoped to independent `DocumentInstance` objects inside category 2. It does not prove ordering across
+  categories/draw layers, relative ordering against other native transparent producers, or face ordering inside one
+  primitive.
 
 ### AVFX Model Builder Descriptor Seam Passed The First Runtime Gate
 
@@ -171,7 +194,8 @@ confirmation in a closed test area.
 - The owned record passed its first CN visual gate on the old donor: the model-builder subset became triangles, and the
   observed Stop returned model create/release accounting to `1/1`.
 - No persistent Underpaint AVFX host, resource redirector, or public AVFX API has been implemented.
-- Cross-instance isolation, repeated recreation, territory transition, and unload cleanup remain unverified.
+- Cross-instance owned-payload isolation passed for two hosts. Repeated recreation, territory transition, and unload
+  cleanup remain unverified.
 - The controlled-transform experiment on `no-binder.avfx` confirmed that donor transform was one influence, but other
   authored inputs remained active. That control has been removed; further donor cleanup is stopped.
 - The accepted architecture is now the immutable minimal lifecycle shell described above, not continued parasitism on
@@ -186,8 +210,8 @@ confirmation in a closed test area.
   user asset remains untouched and the generated shell is now a project-owned asset.
 - User runtime confirmation on CN: the game accepted the shell and displayed one static white Underpaint-owned triangle
   with stable opaque-scene depth handling, no animation, and no unrelated visible effect. This passes the shell's parser,
-  visual-neutrality, and geometry-stability gate. It does not yet prove transparent alpha, two-host ordering, exact
-  model-builder call cardinality, or transition lifecycle.
+  visual-neutrality, and geometry-stability gate. Transparent alpha and two-host ordering have since passed separately;
+  exact model-builder call cardinality and transition lifecycle remain unproven.
 - A bounded Debug probe now has two independently selectable animation modes. Color mode updates only
   `VfxObject.Color` over time. Vertex mode creates one native dynamic AVFX vertex wrapper per Start and writes changing
   positions through its render-scope source pointer without recreating the host, document, model record, or wrapper.
@@ -201,14 +225,15 @@ confirmation in a closed test area.
   record, vertex/index wrappers, transform offset, animation phase, and counters. User runtime confirmation: two hosts
   appeared separately and their owned vertices moved independently without instability. This passes the multi-host
   identity and dynamic-payload isolation gate for the observed run.
-- A fixed alpha-ordering mode now assigns persistent host 0 red and host 1 blue at alpha `0.5`, disables both animation
-  modes, and can swap only their world positions during the run. Creation order, document identity, model record,
-  wrappers, colors, and alpha remain unchanged. Its visible ordering result is pending.
+- The fixed alpha-ordering mode passed its visible gate: two overlapping owned triangles changed composition correctly
+  when only their host positions were exchanged. Together with the earlier rank/execution capture, category-2
+  document-level camera-depth ordering is established for the observed two-host case.
 
-## Next Action: Bounded Retained-Backend Experiment
+## Next Action: Complete The Primitive Payload Bridge
 
-The immutable shell gate has passed. The next work is an explicitly Debug-only backend experiment that consumes the
-existing retained `FrameCommand` snapshots without changing the public API or replacing the current backend.
+The immutable shell, dynamic owned geometry, two-host isolation, smooth alpha, and visible category-2 ordering gates have
+passed. Before implementing persistent retained lifecycle, complete the remaining primitive semantics without changing
+the public API or replacing the current backend.
 
 ### Required Shell Properties
 
@@ -219,20 +244,24 @@ existing retained `FrameCommand` snapshots without changing the public API or re
 5. One placeholder model block sufficient to reach the builder; its geometry is not reused by Underpaint.
 6. No authored behavior that changes topology, transform, tint, alpha, or visibility after startup.
 
-### First Semantic Gate
+### Primitive Semantic Gate
 
-Keep one shell host and owned triangle, then vary one native input at a time:
+Confirmed by user runtime testing:
 
-1. Set only `VfxObject.Color.xyz` and confirm RGB reaches the owned model draw.
-2. Set only `VfxObject.Color.w` and confirm smooth transparency rather than dither or disappearance.
-3. With color animation disabled, enable dynamic vertices and confirm the top vertex changes position continuously while
-   status retains one stable VFX/document/model/wrapper identity and `VertexMisses` remains zero.
-4. Stop each mode and confirm model-owner accounting returns to equality; no repeated creation/release may occur while
-   either animation is running.
-5. Replace only the copied 3x4 transform with one `FrameCommand.CurrentTransform`; keep `VfxObject.Position` equal to
+1. `VfxObject.Color.xyz` dynamically controls owned-model RGB without host recreation.
+2. `VfxObject.Color.w` dynamically controls smooth alpha without host recreation.
+3. One persistent dynamic vertex wrapper accepts changing owned positions through the verified `+0x60` source accessor.
+4. Two independent hosts retain distinct VFX/document/model/wrapper identities and animate their vertices independently.
+5. Two fixed-alpha hosts receive correct visible camera-depth ordering after a position-only swap.
+
+Remaining, in order:
+
+1. Replace only the copied 3x4 transform with one `FrameCommand.CurrentTransform`; keep `VfxObject.Position` equal to
    the primitive's world-space sorting center and confirm geometry and sorting identity coincide without double
    translation.
-6. Add the owned rectangle record using the same wrapper protocol and confirm dimensions remain transform-driven.
+2. Add the owned rectangle record using the same wrapper protocol and confirm dimensions remain transform-driven.
+3. Confirm Stop returns model-owner accounting to equality after the two-host path, then separately test repeated
+   recreation before generalizing lifecycle.
 
 If host color does not propagate, statically map the remaining descriptor semantic inputs before another bounded A/B.
 Do not turn unknown descriptor fields into a trial-and-error payload pipeline.
@@ -245,10 +274,10 @@ so they overlap in screen space at different camera depths, then swap only their
 order to reverse with camera depth while opaque-scene depth behavior remains correct. Capture document rank and final
 execution order for the same frames so the visual result remains correlated with the already-established producer path.
 
-The current bounded gate uses red host 0 and blue host 1, both at alpha `0.5`. Runtime position swap is queued to the
-normal probe update and calls only each existing `VfxObject.UpdateTransforms`; it does not recreate or exchange host
-identity or payload ownership. First record the visual overlap before and after one swap. Add rank/execution capture only
-if the visible result is absent or ambiguous; do not combine instrumentation with the first visual A/B.
+Result: passed for the observed category-2 pair. The bounded gate used red host 0 and blue host 1, both at alpha `0.5`.
+Runtime position swap was queued to the normal probe update and called only each existing `VfxObject.UpdateTransforms`;
+it did not recreate or exchange host identity or payload ownership. User runtime confirmed correct visible composition
+before and after the swap. Do not repeat this gate unless later integration changes its routing or identity semantics.
 
 ### Experimental Backend Seam
 
@@ -265,8 +294,8 @@ if the visible result is absent or ambiguous; do not combine instrumentation wit
 - Keep host position synchronized to the payload's world-space sorting center independently from the full descriptor
   transform. This distinction is required for affine/sheared geometry and future arbitrary three-point triangles.
 
-Only after the one-host semantic gate and two-host ordering gate pass should create/hide/show/retire and transition
-lifecycle be generalized. Cost measurements remain last.
+The one-host semantic and two-host ordering gates have passed. Complete full transform and rectangle semantics before
+generalizing create/hide/show/retire and transition lifecycle. Cost measurements remain last.
 
 ## Follow-Up Gates
 
