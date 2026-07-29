@@ -165,23 +165,15 @@ confirmation in a closed test area.
 - Phase 1, normal AVFX identity and producer-to-final-execution ordering, is complete for category 2.
 - The external authored-rectangle experiment has been rejected because it would test an asset as the implementation,
   not Underpaint geometry carried by an AVFX lifecycle.
-- A Debug-only transform descriptor probe now exists in Underpaint. It uses the real `VfxObject` and document, preserves
-  the original model resource, and changes only the copied 3x4 transform during the scoped synchronous builder call.
-- The transform probe has passed build validation and user runtime confirmation: a visible subset moved, consistent with
-  the statically identified model-builder subset.
-- Cross-instance isolation against a second host using the same `no-binder` resource remains untested; no conclusion is
-  recorded for that control.
-- A Debug-only owned-model implementation now creates a private 40-byte record and native vertex/index wrappers for one
-  fixed three-vertex unit triangle per Start. It can switch descriptor element 0 between the host record and owned
-  record without changing the AVFX resource or document identity.
-- The owned record passed its first CN visual gate: the model-builder subset became triangles, and the observed Stop
-  returned model create/release accounting to `1/1`.
+- A Debug-only owned-model probe creates a private 40-byte record and native vertex/index wrappers for one fixed
+  three-vertex unit triangle per Start. During the scoped document render it always substitutes descriptor element 0
+  without changing the AVFX resource or document identity.
+- The owned record passed its first CN visual gate on the old donor: the model-builder subset became triangles, and the
+  observed Stop returned model create/release accounting to `1/1`.
 - No persistent Underpaint AVFX host, resource redirector, or public AVFX API has been implemented.
-- Geometry stability remains unverified because the host particle transform contains strong authored jitter. A/B
-  restoration, repeated recreation, territory transition, and unload cleanup also remain unverified.
-- The controlled-transform experiment confirmed that the donor transform was one influence, but other authored particle
-  and material inputs remained active. That A/B control has been removed; further field-by-field cleanup of
-  `no-binder.avfx` is stopped.
+- Cross-instance isolation, repeated recreation, territory transition, and unload cleanup remain unverified.
+- The controlled-transform experiment on `no-binder.avfx` confirmed that donor transform was one influence, but other
+  authored inputs remained active. That control has been removed; further donor cleanup is stopped.
 - The accepted architecture is now the immutable minimal lifecycle shell described above, not continued parasitism on
   `no-binder.avfx`.
 - A user-authored one-node candidate was parsed as category 2 with exactly one scheduler, timeline, point emitter,
@@ -190,11 +182,17 @@ confirmation in a closed test area.
   distortion inputs, fixed transform/color/alpha curves, ordinary blend mode, and a three-vertex placeholder model.
 - The probe now always substitutes its Underpaint-owned model record. Donor geometry and controlled-transform A/B
   switches are no longer exposed.
+- EH publishes the candidate through the dedicated virtual path `vfx/common/eff/underpaint_shell.avfx`; the original
+  user asset remains untouched and the generated shell is now a project-owned asset.
+- User runtime confirmation on CN: the game accepted the shell and displayed one static white Underpaint-owned triangle
+  with stable opaque-scene depth handling, no animation, and no unrelated visible effect. This passes the shell's parser,
+  visual-neutrality, and geometry-stability gate. It does not yet prove transparent alpha, two-host ordering, exact
+  model-builder call cardinality, or transition lifecycle.
 
-## Next Action: Minimal AVFX Lifecycle Shell
+## Next Action: Bounded Retained-Backend Experiment
 
-The private shell has passed structural parsing and static property checks. Publish it through a dedicated virtual AVFX
-path, then run the first shell gate; Underpaint must still own all product geometry and runtime semantic inputs.
+The immutable shell gate has passed. The next work is an explicitly Debug-only backend experiment that consumes the
+existing retained `FrameCommand` snapshots without changing the public API or replacing the current backend.
 
 ### Required Shell Properties
 
@@ -205,17 +203,45 @@ path, then run the first shell gate; Underpaint must still own all product geome
 5. One placeholder model block sufficient to reach the builder; its geometry is not reused by Underpaint.
 6. No authored behavior that changes topology, transform, tint, alpha, or visibility after startup.
 
-### First Shell Gate
+### First Semantic Gate
 
-Use the dedicated shell resource path and record:
+Keep one shell host and owned triangle, then vary one native input at a time:
 
-1. One shell instance receives a real category-2 `DocumentInstance` and reaches the scoped model builder.
-2. The same Underpaint-owned unit triangle appears without donor jitter or unrelated visible particles.
-3. The owned transform and neutral semantic inputs remain stable without field-by-field donor suppression.
-4. Stop returns model-owner accounting to equality.
+1. Set only `VfxObject.Color.xyz` and confirm RGB reaches the owned model draw.
+2. Set only `VfxObject.Color.w` and confirm smooth transparency rather than dither or disappearance.
+3. Replace only the copied 3x4 transform with one `FrameCommand.CurrentTransform`; keep `VfxObject.Position` equal to
+   the primitive's world-space sorting center and confirm geometry and sorting identity coincide without double
+   translation.
+4. Add the owned rectangle record using the same wrapper protocol and confirm dimensions remain transform-driven.
 
-If the minimal shell still leaks authored behavior into the primitive, stop the AVFX route rather than adding another
-layer of descriptor cleanup.
+If host color does not propagate, statically map the remaining descriptor semantic inputs before another bounded A/B.
+Do not turn unknown descriptor fields into a trial-and-error payload pipeline.
+
+### First Ordering Gate
+
+After smooth alpha is proven, create exactly two persistent shell hosts with fixed creation/publication order and
+different colors. Give each a real independent category-2 `DocumentInstance`, place their transparent owned triangles
+so they overlap in screen space at different camera depths, then swap only their positions. Pass requires visible blend
+order to reverse with camera depth while opaque-scene depth behavior remains correct. Capture document rank and final
+execution order for the same frames so the visual result remains correlated with the already-established producer path.
+
+### Experimental Backend Seam
+
+- Keep `Renderer`, retained drawable types, `PrimitiveFrame`, and `FrameCommand` unchanged.
+- Add a separate Debug-only AVFX backend owner; do not grow `AvfxGeometryProbe` into the lifecycle implementation.
+- Reconcile the latest complete frame by `DrawableId`: one persistent shell instance and real document per drawable,
+  shared immutable triangle/rectangle topology records where semantics allow, and no AVFX resource mutation.
+- A missing drawable in a published frame must suppress that host's model-builder call without destroying its retained
+  identity. `Drawable.Dispose` retires and destroys the host through one symmetric owner path.
+- Publish immutable per-host payload snapshots. The render detour may only read the current payload and synchronously
+  copy/replace the descriptor; it must not allocate, upload, release, or wait under a framework-thread lock.
+- Route a test frame to either the current backend or the AVFX experiment, never both, so duplicate draws cannot mask the
+  result.
+- Keep host position synchronized to the payload's world-space sorting center independently from the full descriptor
+  transform. This distinction is required for affine/sheared geometry and future arbitrary three-point triangles.
+
+Only after the one-host semantic gate and two-host ordering gate pass should create/hide/show/retire and transition
+lifecycle be generalized. Cost measurements remain last.
 
 ## Follow-Up Gates
 

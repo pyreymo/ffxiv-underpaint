@@ -282,8 +282,8 @@ payload stage.
 
 ### Minimal Lifecycle Shell Asset
 
-Evidence: direct recursive AVFX TLV parsing, VFXEditor's current field definitions, and deterministic offline trimming.
-No runtime conclusion is recorded yet.
+Evidence: direct recursive AVFX TLV parsing, VFXEditor's current field definitions, deterministic offline trimming, and
+user runtime confirmation on the current CN client.
 
 User source asset `simple_rotation.avfx`:
 
@@ -306,8 +306,17 @@ The generated `underpaint-shell.avfx` candidate:
 
 The TLV serializer follows VFXEditor's framing rules: reversed four-byte names, 32-bit payload sizes, four-byte padding,
 and recursively recomputed parent sizes. The generated file reparsed to one complete `AVFX` chunk with no trailing or
-truncated data. This is structural evidence only; the game parser, one-call behavior, visual neutrality, and lifecycle
-still require the first shell runtime gate.
+truncated data.
+
+EH serves this file through the dedicated virtual path `vfx/common/eff/underpaint_shell.avfx`. The current CN game
+parser accepted it. User runtime confirmation observed one static white triangle with stable opaque-scene depth handling,
+no animation, and no unrelated visible particles or effects. The scoped probe always substitutes its owned model record,
+so this passes the shell's visual-neutrality and owned-geometry stability gate. The placeholder asset geometry is the
+same triangle, however, so the visual observation alone is not an independent substitution discriminator; the earlier
+donor-host test remains the direct visual evidence for geometry replacement.
+
+This result does not establish smooth alpha, dynamic tint, two-document visible ordering, exact one-call-per-frame
+cardinality, repeated recreation, transition cleanup, or cost. Those remain separate gates.
 
 The previous controlled-transform A/B is no longer the active path. The probe now always replaces descriptor model
 element 0 with Underpaint-owned geometry and otherwise consumes the neutral shell descriptor. If the shell still leaks
@@ -371,5 +380,8 @@ IDA operating rules retained from the investigation:
   accounting after Stop; host-authored jitter prevented a geometry-stability conclusion.
 - 2026-07-29: Parsed the user-authored one-LightModel asset, identified UV scroll as its rotation source, and generated
   the 7,340-byte texture-free minimal shell candidate for the first runtime gate.
+- 2026-07-29: CN runtime accepted the minimal shell and showed one stable static white owned triangle with expected
+  opaque-scene depth handling and no authored animation or unrelated effect. The shell became a retained project asset;
+  transparency semantics and two-host visible ordering remain untested.
 
 The complete pre-consolidation narrative remains available in Git history at revision `ed08abb` and its ancestors.
