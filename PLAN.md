@@ -90,9 +90,10 @@ Evidence: static IDA analysis followed by bounded runtime capture and user runti
 - This proves category-2 producer rank propagation to final execution for the observed case. It does not yet prove
   visible model-particle overlap, primitive semantics, production lifecycle, or scale cost.
 
-### AVFX Model Builder Provides A Descriptor Seam
+### AVFX Model Builder Descriptor Seam Passed The First Runtime Gate
 
-Evidence: current external asset parsing plus static IDA analysis of the current global and CN binaries.
+Evidence: current external asset parsing, static IDA analysis of the current global and CN binaries, and user runtime
+confirmation in a closed test area.
 
 - `no-binder.avfx` is useful only as a normal category-2 host sample. It contains ten particles and three model blocks;
   the only populated model has 55 vertices and 80 triangles. It is not a minimal rectangle resource and must not become
@@ -102,10 +103,18 @@ Evidence: current external asset parsing plus static IDA analysis of the current
 - The builder receives a stack descriptor containing the model record, a complete 3x4 transform, and the remaining
   particle/material inputs. It reads the descriptor synchronously, binds the model record's vertex/index resources,
   writes constants, and emits the native draw before returning.
-- A scoped detour can copy that stack descriptor and replace semantic inputs for one real game-owned document without
-  mutating the shared AVFX resource, changing Apricot slots or indices, retaining frame pointers, or writing a queue.
-- Transform substitution requires no new native resource and is the first runtime gate. Geometry substitution remains
-  blocked until the AVFX model wrapper's creation, upload, reference, and release protocol is proven.
+- The Debug detour copied that stack descriptor and changed only its 3x4 transform translation. The original descriptor,
+  shared AVFX resource, Apricot slots, model indices, and native queues were not modified.
+- User runtime confirmation: only part of the visible `no-binder` effect moved. This is consistent with the asset
+  structure: its `LightModel` particles pass through the hooked model builder, while its `Quad` and `Powder` particles
+  do not. The visual observation alone does not identify each moved or stationary component by particle type.
+- This proves that the current CN model builder consumes the copied transform and that the descriptor seam can alter
+  model draws without rewriting the AVFX resource.
+- The test area contained no second `no-binder` instance. Isolation from another instance using the same resource was
+  therefore not tested and must not be claimed. That missing control does not block the next resource-ownership step;
+  later multi-host ordering tests will exercise independent document identities directly.
+- Geometry substitution remains blocked until the AVFX model wrapper's creation, upload, reference, and release protocol
+  is proven.
 
 ### Temporary Sorting Probe Retired
 
@@ -125,49 +134,50 @@ Evidence: current external asset parsing plus static IDA analysis of the current
   not Underpaint geometry carried by an AVFX lifecycle.
 - A Debug-only transform descriptor probe now exists in Underpaint. It uses the real `VfxObject` and document, preserves
   the original model resource, and changes only the copied 3x4 transform during the scoped synchronous builder call.
-- The transform probe has passed build validation but has not been run in game.
+- The transform probe has passed build validation and user runtime confirmation: a visible subset moved, consistent with
+  the statically identified model-builder subset.
+- Cross-instance isolation against a second host using the same `no-binder` resource remains untested; no conclusion is
+  recorded for that control.
 - No Underpaint-owned AVFX geometry resource has been created or substituted.
 - No persistent Underpaint AVFX host, resource redirector, or public AVFX API has been implemented.
-- The next question is whether the descriptor seam is correctly scoped to one real document and visibly consumes the
-  substituted transform.
+- The next question is how to create, upload, retain, and release an Underpaint-owned model wrapper accepted by the same
+  builder.
 
-## Next Action: Scoped Transform Descriptor A/B
+## Next Action: AVFX Model Wrapper Ownership
 
-Event Horizon may supply its existing `no-binder.avfx` redirect and Debug control, but the descriptor hook is owned by
-Underpaint. The asset is only a known category-2 host containing model draws; its authored geometry is not evidence for
-Underpaint primitive capability.
+Trace and validate the resource protocol used by the AVFX model parser before replacing descriptor element 0. Continue
+using `no-binder.avfx` only as a normal category-2 lifecycle and model-draw host; its authored geometry is not evidence
+for Underpaint primitive capability.
 
-### Experiment Setup
+### Required Static Results
 
-1. Start one normal category-2 `no-binder` host through the Debug probe at a visible world position.
-2. Keep its AVFX resource, model record, particle state, color, alpha, depth settings, and creation order unchanged.
-3. In only that game-owned document's model-builder scope, copy the stack descriptor and add a clearly visible offset to
-   the descriptor's 3x4 transform translation.
-4. Confirm the original descriptor is never modified and the copied transform lives only for the synchronous original
-   builder call.
-5. Stop through the normal static-VFX remove path. Do not use the retired sorting probe's graphics-task transition.
+1. Identify the native create functions for the vertex and index wrappers stored at model record `+0x10/+0x18`.
+2. Confirm the wrapper's actual kernel resource field, reference ownership, upload call, and symmetric release path.
+3. Confirm the legal thread and graphics-context requirements for create, upload, use, and release.
+4. Define one Underpaint-owned 40-byte model record containing a fixed unit mesh without registering it in, or mutating,
+   the shared AVFX resource's model array.
+5. Reject the seam if the builder or downstream command retains the temporary model record pointer rather than the
+   referenced kernel resources.
 
-### First Visual Gate
+### First Geometry Gate
 
-Record these results separately:
+Only after the ownership trace closes, change descriptor element 0 for the tracked model-builder call and record:
 
-1. The normal host is visible and stable before substitution.
-2. Only model draws belonging to the tracked document report builder hits.
-3. Enabling the copied transform offset moves only those model draws by the requested amount.
-4. Stopping and recreating the host does not crash, leave a visible object, or affect normal hidden-player markers.
-5. Plugin unload with the probe active removes the host through the normal lifecycle without a crash.
+1. The original host remains the lifecycle and sorting identity.
+2. One Underpaint-owned fixed unit triangle or rectangle replaces only the model-builder subset.
+3. The substituted mesh follows the already-validated copied transform.
+4. Disabling substitution restores the original model draw without resource reload or shared AVFX mutation.
+5. Stop, recreation, territory change, and plugin unload release the owned wrappers exactly once.
 
-Stop after this gate if the scoped transform is not visibly consumed or lifecycle cleanup fails. Do not add custom
-geometry to work around an unproven descriptor seam.
+Stop after this gate if the builder rejects the owned model record, command execution retains invalid pointers, or
+resource cleanup is not symmetric.
 
 ## Follow-Up Gates
 
-These gates run only after the scoped transform gate passes.
+These gates run only after the fixed owned-mesh gate passes.
 
 ### Primitive Semantics
 
-- Prove the native AVFX model wrapper create/upload/reference/release protocol before substituting geometry.
-- Substitute one Underpaint-owned fixed unit mesh while retaining the normal document, particle state, and sort path.
 - Validate per-instance transform, tint, smooth alpha, and rectangle dimensions without mutating the shared AVFX
   resource.
 - Determine how one persistent host can express arbitrary three-point triangle geometry, including affine/shear freedom
