@@ -195,7 +195,11 @@ confirmation in a closed test area.
   because the implementation incorrectly called the layout-specific `ConstantBuffer.LoadSourcePointer` on a vertex
   buffer and corrupted the kernel resource list. The first targeted fix used an ambiguous common-prologue signature and
   resolved a different resource accessor with a `+0x90` source field, causing the same corruption. The signature now
-  includes the target's vertex-specific `+0x60` source load; its runtime result remains pending.
+  includes the target's vertex-specific `+0x60` source load. User runtime confirmation: the corrected single instance
+  remained stable and its top vertex moved continuously. Dynamic vertex writes therefore pass the first runtime gate.
+- The bounded probe can now create one or two shell hosts. Each host owns a separate `VfxObject`, real document, model
+  record, vertex/index wrappers, transform offset, animation phase, and counters. Two-host runtime behavior remains
+  pending and is the next gate before visible alpha ordering.
 
 ## Next Action: Bounded Retained-Backend Experiment
 

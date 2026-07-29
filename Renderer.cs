@@ -84,13 +84,23 @@ public sealed class Renderer : IDisposable
         System.Numerics.Vector3 position,
         System.Numerics.Vector3 transformOffset,
         bool animateColorAndAlpha,
-        bool animateVertices
+        bool animateVertices,
+        int instanceCount,
+        System.Numerics.Vector3 instanceSpacing
     )
     {
         lock (drawableLock)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            avfxGeometryProbe?.Start(resourcePath, position, transformOffset, animateColorAndAlpha, animateVertices);
+            avfxGeometryProbe?.Start(
+                resourcePath,
+                position,
+                transformOffset,
+                animateColorAndAlpha,
+                animateVertices,
+                instanceCount,
+                instanceSpacing
+            );
         }
     }
 

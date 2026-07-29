@@ -362,7 +362,16 @@ again returned a resource-list address and that the failure still occurred befor
 
 The signature now extends through the target's unique `mov rax,[rbx+60h]` branch and exposes the resolved address in
 probe status. On the current CN binary it must resolve to module offset `+0x21DD40`. No color, shell, owned-model,
-dynamic-wrapper, or animation code was rolled back. Runtime validation remains pending.
+dynamic-wrapper, or animation code was rolled back.
+
+User runtime confirmation on the corrected build: color and smooth alpha changed over time without recreation, and the
+single dynamic triangle's top vertex moved continuously without another crash. This validates the corrected accessor
+and one persistent dynamic wrapper for the observed run. It does not yet prove multiple independent wrappers or hosts.
+
+The next bounded implementation supports exactly one or two instances. Each instance receives its own normal VFX host,
+game-owned document, model record, dynamic vertex wrapper, and phase-shifted vertex animation. A configurable world-space
+spacing separates the visuals. Probe status reports each identity and write/miss count independently; shared shell
+resource and global hooks are the only intentionally shared parts. Runtime validation of this two-host gate is pending.
 
 The previous controlled-transform A/B is no longer the active path. The probe now always replaces descriptor model
 element 0 with Underpaint-owned geometry and otherwise consumes the neutral shell descriptor. If the shell still leaks

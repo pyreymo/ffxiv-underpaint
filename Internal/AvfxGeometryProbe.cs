@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Text;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
@@ -30,6 +31,8 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private const string LoadVertexBufferSourceSignature =
         "48 89 5C 24 ?? 57 48 83 EC 20 48 8B D9 8B 49 38 41 8B F8 45 85 C0 75 ?? 8B F9 2B FA 8D 04 3A 3B C8 72 ?? 8B 4B 3C F6 C1 03 74 ?? 41 F6 C1 01 75 ?? 8B 05 ?? ?? ?? ?? 48 83 7C C3 40 00 74 ?? F6 C1 11 74 ?? 48 8B 43 60";
     private const int ExpectedDrawLayer = 2;
+    private const int MaxHostCount = 2;
+    private const float HostPhaseStep = 2.1f;
 
     private readonly object sync = new();
     private readonly IGameInteropProvider gameInteropProvider;
@@ -43,25 +46,26 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private readonly InitializeBufferDelegate initializeIndexBuffer;
     private readonly LoadBufferSourceDelegate loadVertexBufferSource;
     private readonly nint loadVertexBufferSourceAddress;
+    private readonly nint[] vfxAddresses = new nint[MaxHostCount];
+    private readonly nint[] documentAddresses = new nint[MaxHostCount];
+    private readonly nint[] ownedModels = new nint[MaxHostCount];
+    private readonly Vector3[] transformOffsets = new Vector3[MaxHostCount];
+    private readonly Vector3[] originalTranslations = new Vector3[MaxHostCount];
+    private readonly int[] modelBuildCounts = new int[MaxHostCount];
+    private readonly int[] colorUpdateCounts = new int[MaxHostCount];
+    private readonly int[] vertexWriteCounts = new int[MaxHostCount];
+    private readonly int[] vertexWriteMissCounts = new int[MaxHostCount];
+    private readonly bool[] hasOriginalTranslations = new bool[MaxHostCount];
+    private readonly bool[] releaseOwnedModelPending = new bool[MaxHostCount];
     private Hook<DocumentRenderDelegate>? documentRenderHook;
     private nint apricotCore;
-    private nint vfxAddress;
-    private nint documentAddress;
-    private Vector3 transformOffset;
-    private Vector3 originalTranslation;
-    private int modelBuildCount;
     private int ownedModelCreateCount;
     private int ownedModelReleaseCount;
-    private int colorUpdateCount;
-    private int vertexWriteCount;
-    private int vertexWriteMissCount;
+    private int hostCount;
     private string status = "Ready.";
-    private OwnedModelRecord* ownedModel;
     private long animationStartTimestamp;
     private bool animateColorAndAlpha;
     private bool animateVertices;
-    private bool hasOriginalTranslation;
-    private bool releaseOwnedModelPending;
     private bool disposed;
 
     [ThreadStatic]
@@ -115,153 +119,143 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
         {
             lock (sync)
             {
-                var details =
-                    $"{status} ModelCalls={modelBuildCount} OwnedModels={Volatile.Read(ref ownedModelCreateCount)}/{Volatile.Read(ref ownedModelReleaseCount)} "
-                    + $"ColorUpdates={colorUpdateCount} VertexWrites={vertexWriteCount} VertexMisses={vertexWriteMissCount}.";
-                return hasOriginalTranslation ? $"{details} OriginalTranslation={originalTranslation}." : details;
+                var details = new StringBuilder(
+                    $"{status} OwnedModels={Volatile.Read(ref ownedModelCreateCount)}/{Volatile.Read(ref ownedModelReleaseCount)} "
+                        + $"vertexSource=0x{loadVertexBufferSourceAddress:X}."
+                );
+                for (var index = 0; index < hostCount; index++)
+                {
+                    var model = (OwnedModelRecord*)ownedModels[index];
+                    details.Append(
+                        $"\n[{index}] Vfx=0x{vfxAddresses[index]:X} Document=0x{documentAddresses[index]:X} "
+                            + $"Model=0x{ownedModels[index]:X} VertexWrapper=0x{(model == null ? 0 : model->VertexWrapper):X} "
+                            + $"ModelCalls={modelBuildCounts[index]} ColorUpdates={colorUpdateCounts[index]} "
+                            + $"VertexWrites={vertexWriteCounts[index]} VertexMisses={vertexWriteMissCounts[index]}."
+                    );
+                    if (hasOriginalTranslations[index])
+                        details.Append($" OriginalTranslation={originalTranslations[index]}.");
+                }
+                return details.ToString();
             }
         }
     }
 
-    internal void Start(string resourcePath, Vector3 position, Vector3 offset, bool animateColor, bool animateVertexPositions)
+    internal void Start(
+        string resourcePath,
+        Vector3 position,
+        Vector3 offset,
+        bool animateColor,
+        bool animateVertexPositions,
+        int instanceCount,
+        Vector3 instanceSpacing
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(resourcePath);
-        if (!IsFinite(position) || !IsFinite(offset))
-            throw new ArgumentOutOfRangeException(nameof(position), "Probe position and offset must be finite.");
+        if (!IsFinite(position) || !IsFinite(offset) || !IsFinite(instanceSpacing))
+            throw new ArgumentOutOfRangeException(nameof(position), "Probe position, offset, and spacing must be finite.");
+        if (instanceCount is < 1 or > MaxHostCount)
+            throw new ArgumentOutOfRangeException(nameof(instanceCount), $"Probe instance count must be between 1 and {MaxHostCount}.");
 
-        ReleasePendingOwnedModel();
+        ReleasePendingOwnedModels();
 
         lock (sync)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            if (vfxAddress != 0 || ownedModel != null)
-                throw new InvalidOperationException("Stop the active AVFX geometry probe before starting another one.");
-            transformOffset = offset;
+            if (hostCount != 0)
+                throw new InvalidOperationException("Stop the active AVFX geometry probe hosts before starting another run.");
+            hostCount = instanceCount;
             animateColorAndAlpha = animateColor;
             animateVertices = animateVertexPositions;
             animationStartTimestamp = Stopwatch.GetTimestamp();
-            originalTranslation = default;
-            modelBuildCount = 0;
-            colorUpdateCount = 0;
-            vertexWriteCount = 0;
-            vertexWriteMissCount = 0;
-            hasOriginalTranslation = false;
-            documentAddress = 0;
-            releaseOwnedModelPending = false;
-            status = "Starting a normal AVFX host.";
+            for (var index = 0; index < hostCount; index++)
+            {
+                transformOffsets[index] = offset;
+                originalTranslations[index] = default;
+                modelBuildCounts[index] = 0;
+                colorUpdateCounts[index] = 0;
+                vertexWriteCounts[index] = 0;
+                vertexWriteMissCounts[index] = 0;
+                hasOriginalTranslations[index] = false;
+                releaseOwnedModelPending[index] = false;
+            }
+            status = $"Starting {hostCount} normal AVFX host(s).";
         }
 
-        var model = CreateOwnedModel(animateVertexPositions);
-        lock (sync)
-            ownedModel = model;
-
-        VfxObject* vfx = null;
         try
         {
             removeHook.Enable();
             depthProducerHook.Enable();
             modelBuilderHook.Enable();
-            vfx = VfxObject.Create(resourcePath, PoolName);
-            if (vfx == null)
-                throw new InvalidOperationException("VfxObject.Create returned null.");
+            for (var index = 0; index < instanceCount; index++)
+            {
+                var model = CreateOwnedModel(animateVertexPositions);
+                lock (sync)
+                    ownedModels[index] = (nint)model;
 
-            lock (sync)
-                vfxAddress = (nint)vfx;
-            run(vfx, 0f, uint.MaxValue);
-            SetPosition(vfx, position);
-            UpdateColor(vfx, 0f);
+                var vfx = VfxObject.Create(resourcePath, PoolName);
+                if (vfx == null)
+                    throw new InvalidOperationException($"VfxObject.Create returned null for host {index}.");
+
+                lock (sync)
+                    vfxAddresses[index] = (nint)vfx;
+                run(vfx, 0f, uint.MaxValue);
+                SetPosition(vfx, position + instanceSpacing * index);
+                UpdateColor(index, vfx, index * HostPhaseStep);
+            }
         }
         catch
         {
-            lock (sync)
-                vfxAddress = 0;
-            if (vfx != null)
-                removeHook.Original(vfx);
-            modelBuilderHook.Disable();
-            depthProducerHook.Disable();
-            removeHook.Disable();
-            ReleaseOwnedModel(TakeOwnedModel());
+            Stop();
             throw;
         }
     }
 
     internal void Update()
     {
-        ReleasePendingOwnedModel();
+        ReleasePendingOwnedModels();
 
         lock (sync)
         {
-            if (disposed || vfxAddress == 0)
+            if (disposed || hostCount == 0)
                 return;
 
             var elapsed = (float)Stopwatch.GetElapsedTime(animationStartTimestamp).TotalSeconds;
-            if (animateColorAndAlpha)
-                UpdateColor((VfxObject*)vfxAddress, elapsed);
-            if (documentAddress != 0 || apricotCore == 0)
-                return;
-
-            var resourceInstance = ((VfxObject*)vfxAddress)->VfxResourceInstance;
-            if (resourceInstance == null)
-                return;
-
-            var state = *(byte**)(apricotCore + 0x1498);
-            var handle = *(ulong*)((byte*)resourceInstance + 0x60);
-            var generation = (uint)handle;
-            var slot = (uint)(handle >> 32);
-            if (state == null || handle == 0 || slot >= 2048)
-                return;
-
-            var slotRecord = state + 0x2000 + slot * 0x88;
-            if (
-                *(nint*)(slotRecord + 0x48) != (nint)resourceInstance
-                || *(uint*)(slotRecord + 0x60) != generation
-                || *(uint*)(slotRecord + 0x64) != slot
-            )
+            for (var index = 0; index < hostCount; index++)
             {
-                status = "Rejected: the game-owned Apricot slot identity did not match the VFX handle.";
-                return;
+                var vfx = (VfxObject*)vfxAddresses[index];
+                if (vfx == null)
+                    continue;
+                if (animateColorAndAlpha)
+                    UpdateColor(index, vfx, elapsed + index * HostPhaseStep);
+                if (documentAddresses[index] == 0 && apricotCore != 0)
+                    TryAttachDocument(index, vfx);
             }
 
-            var document = *(nint*)(slotRecord + 0x30);
-            var resource = *(byte**)(slotRecord + 0x38);
-            if (document == 0 || resource == null)
-                return;
-
-            var drawLayer = (*(uint*)(resource + 0x5C) >> 10) & 0x1F;
-            if (drawLayer != ExpectedDrawLayer)
-            {
-                status = $"Rejected: DrawLayerType={drawLayer}, expected {ExpectedDrawLayer}.";
-                return;
-            }
-
-            var renderTarget = *(nint*)(*(nint*)document + 0x128);
-            if (renderTarget == 0)
-                return;
-            documentRenderHook ??= gameInteropProvider.HookFromAddress<DocumentRenderDelegate>(renderTarget, DocumentRenderDetour);
-            documentRenderHook.Enable();
-            documentAddress = document;
             var mode = animateColorAndAlpha ? (animateVertices ? "color+vertices" : "color") : (animateVertices ? "vertices" : "static");
-            status =
-                $"Active: mode={mode}, vfx=0x{vfxAddress:X}, document=0x{document:X}, model=0x{(nint)ownedModel:X}, "
-                + $"vertexWrapper=0x{ownedModel->VertexWrapper:X}, vertexSource=0x{loadVertexBufferSourceAddress:X}, "
-                + $"offset={transformOffset}.";
+            status = $"Active: mode={mode}, hosts={hostCount}.";
         }
     }
 
     internal void Stop()
     {
-        nint activeVfx;
-        OwnedModelRecord* model;
+        var activeVfx = new nint[MaxHostCount];
+        var models = new nint[MaxHostCount];
+        int count;
         lock (sync)
         {
             if (disposed)
                 return;
-            activeVfx = vfxAddress;
-            vfxAddress = 0;
-            documentAddress = 0;
-            releaseOwnedModelPending = false;
-            model = ownedModel;
-            ownedModel = null;
+            count = hostCount;
+            for (var index = 0; index < count; index++)
+            {
+                activeVfx[index] = vfxAddresses[index];
+                models[index] = ownedModels[index];
+                vfxAddresses[index] = 0;
+                documentAddresses[index] = 0;
+                ownedModels[index] = 0;
+                releaseOwnedModelPending[index] = false;
+            }
+            hostCount = 0;
             status = "Stopped.";
         }
 
@@ -269,35 +263,47 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
         modelBuilderHook.Disable();
         depthProducerHook.Disable();
         removeHook.Disable();
-        if (activeVfx != 0)
-            removeHook.Original((VfxObject*)activeVfx);
-        ReleaseOwnedModel(model);
+        for (var index = 0; index < count; index++)
+        {
+            if (activeVfx[index] != 0)
+                removeHook.Original((VfxObject*)activeVfx[index]);
+            ReleaseOwnedModel((OwnedModelRecord*)models[index]);
+        }
     }
 
     public void Dispose()
     {
-        nint activeVfx;
-        OwnedModelRecord* model;
+        var activeVfx = new nint[MaxHostCount];
+        var models = new nint[MaxHostCount];
+        int count;
         lock (sync)
         {
             if (disposed)
                 return;
             disposed = true;
-            activeVfx = vfxAddress;
-            vfxAddress = 0;
-            documentAddress = 0;
-            releaseOwnedModelPending = false;
-            model = ownedModel;
-            ownedModel = null;
+            count = hostCount;
+            for (var index = 0; index < count; index++)
+            {
+                activeVfx[index] = vfxAddresses[index];
+                models[index] = ownedModels[index];
+                vfxAddresses[index] = 0;
+                documentAddresses[index] = 0;
+                ownedModels[index] = 0;
+                releaseOwnedModelPending[index] = false;
+            }
+            hostCount = 0;
         }
 
         documentRenderHook?.Disable();
         modelBuilderHook.Disable();
         depthProducerHook.Disable();
         removeHook.Disable();
-        if (activeVfx != 0)
-            removeHook.Original((VfxObject*)activeVfx);
-        ReleaseOwnedModel(model);
+        for (var index = 0; index < count; index++)
+        {
+            if (activeVfx[index] != 0)
+                removeHook.Original((VfxObject*)activeVfx[index]);
+            ReleaseOwnedModel((OwnedModelRecord*)models[index]);
+        }
         documentRenderHook?.Dispose();
         modelBuilderHook.Dispose();
         depthProducerHook.Dispose();
@@ -320,8 +326,14 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
         var previousDocument = renderingDocument;
         lock (sync)
         {
-            if (document == documentAddress)
-                renderingDocument = document;
+            for (var index = 0; index < hostCount; index++)
+            {
+                if (document == documentAddresses[index])
+                {
+                    renderingDocument = document;
+                    break;
+                }
+            }
         }
 
         try
@@ -338,7 +350,16 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     {
         lock (sync)
         {
-            if (documentAddress == 0 || renderingDocument != documentAddress || descriptorAddress == 0)
+            var hostIndex = -1;
+            for (var index = 0; index < hostCount; index++)
+            {
+                if (documentAddresses[index] != 0 && renderingDocument == documentAddresses[index])
+                {
+                    hostIndex = index;
+                    break;
+                }
+            }
+            if (hostIndex < 0 || descriptorAddress == 0)
                 return modelBuilderHook.Original(rendererState, useProjection, descriptorAddress);
 
             var sourceDescriptor = (nint*)descriptorAddress;
@@ -351,19 +372,23 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             var transform = stackalloc float[12];
             Buffer.MemoryCopy(sourceTransform, transform, 12 * sizeof(float), 12 * sizeof(float));
 
-            if (!hasOriginalTranslation)
+            if (!hasOriginalTranslations[hostIndex])
             {
-                originalTranslation = new Vector3(transform[9], transform[10], transform[11]);
-                hasOriginalTranslation = true;
+                originalTranslations[hostIndex] = new Vector3(transform[9], transform[10], transform[11]);
+                hasOriginalTranslations[hostIndex] = true;
             }
-            modelBuildCount++;
+            modelBuildCounts[hostIndex]++;
 
+            var transformOffset = transformOffsets[hostIndex];
             transform[9] += transformOffset.X;
             transform[10] += transformOffset.Y;
             transform[11] += transformOffset.Z;
-            var ownedModelReady = ownedModel != null && (!animateVertices || TryWriteAnimatedVertices(elapsedSeconds: GetElapsedSeconds()));
+            var model = (OwnedModelRecord*)ownedModels[hostIndex];
+            var ownedModelReady =
+                model != null
+                && (!animateVertices || TryWriteAnimatedVertices(hostIndex, model, GetElapsedSeconds() + hostIndex * HostPhaseStep));
             if (ownedModelReady)
-                descriptor[0] = (nint)ownedModel;
+                descriptor[0] = (nint)model;
             descriptor[2] = (nint)transform;
             return modelBuilderHook.Original(rendererState, useProjection, (nint)descriptor);
         }
@@ -373,12 +398,15 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     {
         lock (sync)
         {
-            if ((nint)vfx == vfxAddress)
+            for (var index = 0; index < hostCount; index++)
             {
-                vfxAddress = 0;
-                documentAddress = 0;
-                releaseOwnedModelPending = true;
-                status = "The game removed the tracked VFX host.";
+                if ((nint)vfx != vfxAddresses[index])
+                    continue;
+                vfxAddresses[index] = 0;
+                documentAddresses[index] = 0;
+                releaseOwnedModelPending[index] = true;
+                status = $"The game removed tracked VFX host {index}.";
+                break;
             }
         }
         return removeHook.Original(vfx);
@@ -398,7 +426,51 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
 
     private static bool IsFinite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
 
-    private void UpdateColor(VfxObject* vfx, float elapsedSeconds)
+    private void TryAttachDocument(int index, VfxObject* vfx)
+    {
+        var resourceInstance = vfx->VfxResourceInstance;
+        if (resourceInstance == null)
+            return;
+
+        var state = *(byte**)(apricotCore + 0x1498);
+        var handle = *(ulong*)((byte*)resourceInstance + 0x60);
+        var generation = (uint)handle;
+        var slot = (uint)(handle >> 32);
+        if (state == null || handle == 0 || slot >= 2048)
+            return;
+
+        var slotRecord = state + 0x2000 + slot * 0x88;
+        if (
+            *(nint*)(slotRecord + 0x48) != (nint)resourceInstance
+            || *(uint*)(slotRecord + 0x60) != generation
+            || *(uint*)(slotRecord + 0x64) != slot
+        )
+        {
+            status = $"Rejected host {index}: the game-owned Apricot slot identity did not match the VFX handle.";
+            return;
+        }
+
+        var document = *(nint*)(slotRecord + 0x30);
+        var resource = *(byte**)(slotRecord + 0x38);
+        if (document == 0 || resource == null)
+            return;
+
+        var drawLayer = (*(uint*)(resource + 0x5C) >> 10) & 0x1F;
+        if (drawLayer != ExpectedDrawLayer)
+        {
+            status = $"Rejected host {index}: DrawLayerType={drawLayer}, expected {ExpectedDrawLayer}.";
+            return;
+        }
+
+        var renderTarget = *(nint*)(*(nint*)document + 0x128);
+        if (renderTarget == 0)
+            return;
+        documentRenderHook ??= gameInteropProvider.HookFromAddress<DocumentRenderDelegate>(renderTarget, DocumentRenderDetour);
+        documentRenderHook.Enable();
+        documentAddresses[index] = document;
+    }
+
+    private void UpdateColor(int index, VfxObject* vfx, float elapsedSeconds)
     {
         if (!animateColorAndAlpha)
         {
@@ -419,23 +491,23 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             Z = Wave(elapsedSeconds + 4f * MathF.PI / 3f),
             W = 0.15f + 0.75f * Wave(elapsedSeconds * 0.7f),
         };
-        colorUpdateCount++;
+        colorUpdateCounts[index]++;
     }
 
-    private bool TryWriteAnimatedVertices(float elapsedSeconds)
+    private bool TryWriteAnimatedVertices(int index, OwnedModelRecord* model, float elapsedSeconds)
     {
-        var wrapper = ownedModel->VertexWrapper;
+        var wrapper = model->VertexWrapper;
         var resource = wrapper == 0 ? 0 : *(nint*)(wrapper + 0x10);
         if (resource == 0)
         {
-            vertexWriteMissCount++;
+            vertexWriteMissCounts[index]++;
             return false;
         }
 
         var vertices = (AvfxVertex*)loadVertexBufferSource(resource, 0, (uint)(3 * sizeof(AvfxVertex)), 2);
         if (vertices == null)
         {
-            vertexWriteMissCount++;
+            vertexWriteMissCounts[index]++;
             return false;
         }
 
@@ -444,7 +516,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
         vertices[0] = new AvfxVertex(-0.5f, -0.5f, 0f);
         vertices[1] = new AvfxVertex(0.5f, -0.5f, 0f);
         vertices[2] = new AvfxVertex(horizontal, height, 0f);
-        vertexWriteCount++;
+        vertexWriteCounts[index]++;
         return true;
     }
 
@@ -489,29 +561,26 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
         return resource != 0 && initialize(resource, data) != 0;
     }
 
-    private void ReleasePendingOwnedModel()
+    private void ReleasePendingOwnedModels()
     {
-        OwnedModelRecord* model = null;
+        Span<nint> models = stackalloc nint[MaxHostCount];
+        int count;
         lock (sync)
         {
-            if (releaseOwnedModelPending)
+            count = hostCount;
+            for (var index = 0; index < count; index++)
             {
-                releaseOwnedModelPending = false;
-                model = ownedModel;
-                ownedModel = null;
+                if (!releaseOwnedModelPending[index])
+                    continue;
+                releaseOwnedModelPending[index] = false;
+                models[index] = ownedModels[index];
+                ownedModels[index] = 0;
             }
         }
-        ReleaseOwnedModel(model);
-    }
-
-    private OwnedModelRecord* TakeOwnedModel()
-    {
-        lock (sync)
+        for (var index = 0; index < count; index++)
         {
-            var model = ownedModel;
-            ownedModel = null;
-            releaseOwnedModelPending = false;
-            return model;
+            if (models[index] != 0)
+                ReleaseOwnedModel((OwnedModelRecord*)models[index]);
         }
     }
 
