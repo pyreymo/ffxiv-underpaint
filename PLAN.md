@@ -193,8 +193,9 @@ confirmation in a closed test area.
   positions through its render-scope source pointer without recreating the host, document, model record, or wrapper.
   Color/alpha animation passed runtime confirmation without host recreation. The first dynamic-vertex run crashed
   because the implementation incorrectly called the layout-specific `ConstantBuffer.LoadSourcePointer` on a vertex
-  buffer and corrupted the kernel resource list. The targeted fix now calls the verified vertex-buffer source accessor;
-  its runtime result remains pending.
+  buffer and corrupted the kernel resource list. The first targeted fix used an ambiguous common-prologue signature and
+  resolved a different resource accessor with a `+0x90` source field, causing the same corruption. The signature now
+  includes the target's vertex-specific `+0x60` source load; its runtime result remains pending.
 
 ## Next Action: Bounded Retained-Backend Experiment
 

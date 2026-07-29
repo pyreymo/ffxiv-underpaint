@@ -27,7 +27,8 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private const string InitializeVertexBufferSignature =
         "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 ?? 44 8B 49";
     private const string InitializeIndexBufferSignature = "40 53 48 83 EC 20 F7 41 40 00 08 00 00 48 8B D9";
-    private const string LoadVertexBufferSourceSignature = "48 89 5C 24 ?? 57 48 83 EC 20 48 8B D9 8B 49 38 41 8B F8";
+    private const string LoadVertexBufferSourceSignature =
+        "48 89 5C 24 ?? 57 48 83 EC 20 48 8B D9 8B 49 38 41 8B F8 45 85 C0 75 ?? 8B F9 2B FA 8D 04 3A 3B C8 72 ?? 8B 4B 3C F6 C1 03 74 ?? 41 F6 C1 01 75 ?? 8B 05 ?? ?? ?? ?? 48 83 7C C3 40 00 74 ?? F6 C1 11 74 ?? 48 8B 43 60";
     private const int ExpectedDrawLayer = 2;
 
     private readonly object sync = new();
@@ -41,6 +42,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private readonly InitializeBufferDelegate initializeVertexBuffer;
     private readonly InitializeBufferDelegate initializeIndexBuffer;
     private readonly LoadBufferSourceDelegate loadVertexBufferSource;
+    private readonly nint loadVertexBufferSourceAddress;
     private Hook<DocumentRenderDelegate>? documentRenderHook;
     private nint apricotCore;
     private nint vfxAddress;
@@ -82,9 +84,8 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
         initializeIndexBuffer = Marshal.GetDelegateForFunctionPointer<InitializeBufferDelegate>(
             sigScanner.ScanText(InitializeIndexBufferSignature)
         );
-        loadVertexBufferSource = Marshal.GetDelegateForFunctionPointer<LoadBufferSourceDelegate>(
-            sigScanner.ScanText(LoadVertexBufferSourceSignature)
-        );
+        loadVertexBufferSourceAddress = sigScanner.ScanText(LoadVertexBufferSourceSignature);
+        loadVertexBufferSource = Marshal.GetDelegateForFunctionPointer<LoadBufferSourceDelegate>(loadVertexBufferSourceAddress);
 
         Hook<StaticVfxRemoveDelegate>? remove = null;
         Hook<DepthProducerDelegate>? depthProducer = null;
@@ -242,7 +243,8 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             var mode = animateColorAndAlpha ? (animateVertices ? "color+vertices" : "color") : (animateVertices ? "vertices" : "static");
             status =
                 $"Active: mode={mode}, vfx=0x{vfxAddress:X}, document=0x{document:X}, model=0x{(nint)ownedModel:X}, "
-                + $"vertexWrapper=0x{ownedModel->VertexWrapper:X}, offset={transformOffset}.";
+                + $"vertexWrapper=0x{ownedModel->VertexWrapper:X}, vertexSource=0x{loadVertexBufferSourceAddress:X}, "
+                + $"offset={transformOffset}.";
         }
     }
 

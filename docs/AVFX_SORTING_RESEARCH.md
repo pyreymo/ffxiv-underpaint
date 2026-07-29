@@ -352,9 +352,17 @@ recreating the host. The first dynamic-vertex implementation then caused an imme
   vertex storage, so writing three AVFX records corrupted that list and directly explains the next Framework traversal
   crash.
 
-The targeted repair removes the invalid type reuse and resolves the CN-verified vertex source accessor
-`0x14021DD40` through its version signature. No color, shell, owned-model, dynamic-wrapper, or animation code was rolled
-back. Runtime validation of the corrected accessor is pending.
+The first targeted repair removed the invalid type reuse, but its replacement signature contained only the common
+function prologue. CN functions `0x14021D4D0` and `0x14021DD40` share that prologue and their size/flag logic; the former
+returns its mapped source from `+0x90`, while the 104-byte AVFX vertex resource requires the latter's `+0x60` field.
+
+The second run crashed immediately at `ffxiv_dx11.exe+0x22691A`. The current resource node's first qword had become
+`0x3C000000B800B800`, exactly the first owned AVFX vertex's packed half4 position. This proves the ambiguous signature
+again returned a resource-list address and that the failure still occurred before valid vertex rendering.
+
+The signature now extends through the target's unique `mov rax,[rbx+60h]` branch and exposes the resolved address in
+probe status. On the current CN binary it must resolve to module offset `+0x21DD40`. No color, shell, owned-model,
+dynamic-wrapper, or animation code was rolled back. Runtime validation remains pending.
 
 The previous controlled-transform A/B is no longer the active path. The probe now always replaces descriptor model
 element 0 with Underpaint-owned geometry and otherwise consumes the neutral shell descriptor. If the shell still leaks
