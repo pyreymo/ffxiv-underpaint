@@ -267,8 +267,18 @@ The Debug probe now allocates one private 40-byte model record per Start, create
 triangle through the native wrappers, and can switch descriptor element 0 between the original and owned records while
 retaining the already-tested copied transform. Stop, automatic host removal followed by Update, failed Start, and
 Dispose each converge on one wrapper-release path; cumulative model create/release counters are exposed in probe status.
-This is implementation and build evidence only; visible geometry, toggle restoration, repeated recreation, territory
-transition, and unload behavior require user runtime confirmation.
+
+User runtime confirmation on the current CN client established that enabling the owned model record changed the visible
+model-builder subset into triangles without an observed wrapper rejection or failure. Stop then reported
+`OwnedModels=1/1`. This proves accepted owned geometry and balanced owner accounting for that single run. It does not
+prove stable geometry: `no-binder.avfx` applies strong authored jitter to its particle transforms, so the observation
+could not distinguish stable owned resources from the expected animated descriptor transform. Toggle restoration,
+repeated recreation, territory transition, and unload behavior were not separately reported.
+
+The next bounded implementation retains the same owned triangle and changes only the copied transform. A Debug switch
+can replace all twelve authored transform floats with an identity 3x3 basis and translation equal to
+`host position + offset`; resource creation and the render descriptor seam are otherwise unchanged. This is build-only
+until runtime confirms that the triangle becomes stable at the requested world position.
 
 ## Binary Identity And IDA Reliability
 
@@ -323,6 +333,8 @@ IDA operating rules retained from the investigation:
 - 2026-07-29: Revision `ed08abb` refocused the next decision on external AVFX model-particle capability instead of
   further probe repair.
 - 2026-07-29: Closed the global/CN AVFX model-wrapper ownership trace and added the Debug-only fixed unit triangle
-  substitution gate; runtime validation remains pending.
+  substitution gate.
+- 2026-07-29: CN runtime replaced the model-builder subset with owned triangles and reported balanced `1/1` model-owner
+  accounting after Stop; host-authored jitter prevented a geometry-stability conclusion.
 
 The complete pre-consolidation narrative remains available in Git history at revision `ed08abb` and its ancestors.

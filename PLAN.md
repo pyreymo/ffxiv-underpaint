@@ -119,6 +119,11 @@ confirmation in a closed test area.
 - Wrapper creation/upload uses the global graphics device rather than a borrowed Apricot render context. Exact arbitrary
   thread legality is not proven, so the Debug gate confines creation/release to Start/Stop control paths and performs no
   resource operation inside the render detour.
+- User runtime confirmation on CN: enabling the owned record changed the visible model-builder subset into triangles;
+  no wrapper rejection or runtime failure was observed. The host effect has strong authored jitter, so this observation
+  does not establish stable geometry or a controlled per-instance transform.
+- After Stop, probe status reported `OwnedModels=1/1`. This confirms balanced model-owner accounting for the observed
+  single Start/Stop run. Repeated recreation, territory transition, and unload remain separate lifecycle controls.
 
 ### Temporary Sorting Probe Retired
 
@@ -145,27 +150,29 @@ confirmation in a closed test area.
 - A Debug-only owned-model implementation now creates a private 40-byte record and native vertex/index wrappers for one
   fixed three-vertex unit triangle per Start. It can switch descriptor element 0 between the host record and owned
   record without changing the AVFX resource or document identity.
+- The owned record passed its first CN visual gate: the model-builder subset became triangles, and the observed Stop
+  returned model create/release accounting to `1/1`.
 - No persistent Underpaint AVFX host, resource redirector, or public AVFX API has been implemented.
-- The owned-mesh implementation has passed build validation only. Visual replacement, A/B restoration, repeated
-  recreation, territory transition, and unload cleanup remain unverified.
+- Geometry stability remains unverified because the host particle transform contains strong authored jitter. A/B
+  restoration, repeated recreation, territory transition, and unload cleanup also remain unverified.
 
-## Next Action: Owned Fixed-Mesh Runtime Gate
+## Next Action: Controlled Transform Runtime Gate
 
-Run the bounded Debug probe with `no-binder.avfx` only as a normal category-2 lifecycle and model-draw host. Compare the
-original and Underpaint-owned model records without restarting or reloading the host.
+Keep the accepted owned triangle, document identity, particle/material inputs, and builder call unchanged. Change only
+the copied descriptor's 3x4 transform between the authored particle transform and an identity basis translated to
+`host position + offset`.
 
 ### Required Runtime Results
 
-1. With owned mesh disabled, the original model-builder subset remains visible at the copied-transform offset.
-2. Enabling owned mesh replaces only that subset with the fixed unit triangle; `Quad` and `Powder` behavior is unchanged.
-3. The fixed triangle follows the same copied transform without moving the host or reloading the AVFX resource.
-4. Disabling owned mesh restores the original model draw in the same active host.
-5. Stop and repeated Start work without stale geometry, crash, or failed wrapper creation; the status create/release
-   counters return to equality after each Stop.
-6. Territory change and plugin unload complete without stale host callbacks or resource-lifetime failure.
+1. With controlled transform disabled, the owned triangle retains the host-authored jitter baseline.
+2. Enabling only controlled transform places the same triangle at the requested world translation with a stable unit
+   basis, without restarting or reloading the host.
+3. Disabling controlled transform restores the authored jitter in the same active host.
+4. Camera movement does not detach or corrupt the controlled triangle.
+5. Stop returns the model create/release counters to equality.
 
-Stop after this gate if the builder rejects the owned model record, command execution retains invalid pointers, or
-resource cleanup is not symmetric.
+Stop after this gate if the controlled matrix is interpreted incorrectly, the triangle does not remain at its requested
+world position, or switching the copied transform disturbs the document lifecycle.
 
 ## Follow-Up Gates
 

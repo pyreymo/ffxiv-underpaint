@@ -42,6 +42,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private nint vfxAddress;
     private nint documentAddress;
     private Vector3 transformOffset;
+    private Vector3 controlledTranslation;
     private Vector3 originalTranslation;
     private int modelBuildCount;
     private int ownedModelCreateCount;
@@ -50,6 +51,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
     private OwnedModelRecord* ownedModel;
     private bool hasOriginalTranslation;
     private bool useOwnedModel = true;
+    private bool useControlledTransform;
     private bool releaseOwnedModelPending;
     private bool disposed;
 
@@ -103,7 +105,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             lock (sync)
             {
                 var details =
-                    $"{status} OwnedMesh={(useOwnedModel ? "On" : "Off")} ModelCalls={modelBuildCount} OwnedModels={Volatile.Read(ref ownedModelCreateCount)}/{Volatile.Read(ref ownedModelReleaseCount)}.";
+                    $"{status} OwnedMesh={(useOwnedModel ? "On" : "Off")} ControlledTransform={(useControlledTransform ? "On" : "Off")} ModelCalls={modelBuildCount} OwnedModels={Volatile.Read(ref ownedModelCreateCount)}/{Volatile.Read(ref ownedModelReleaseCount)}.";
                 return hasOriginalTranslation ? $"{details} OriginalTranslation={originalTranslation}." : details;
             }
         }
@@ -115,6 +117,15 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
         {
             ObjectDisposedException.ThrowIf(disposed, this);
             useOwnedModel = enabled;
+        }
+    }
+
+    internal void SetControlledTransformEnabled(bool enabled)
+    {
+        lock (sync)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            useControlledTransform = enabled;
         }
     }
 
@@ -132,6 +143,7 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             if (vfxAddress != 0 || ownedModel != null)
                 throw new InvalidOperationException("Stop the active AVFX geometry probe before starting another one.");
             transformOffset = offset;
+            controlledTranslation = position + offset;
             originalTranslation = default;
             modelBuildCount = 0;
             hasOriginalTranslation = false;
@@ -336,9 +348,20 @@ internal sealed unsafe class AvfxGeometryProbe : IDisposable
             }
             modelBuildCount++;
 
-            transform[9] += transformOffset.X;
-            transform[10] += transformOffset.Y;
-            transform[11] += transformOffset.Z;
+            if (useControlledTransform)
+            {
+                new Span<float>(transform, 12).Clear();
+                transform[0] = transform[4] = transform[8] = 1f;
+                transform[9] = controlledTranslation.X;
+                transform[10] = controlledTranslation.Y;
+                transform[11] = controlledTranslation.Z;
+            }
+            else
+            {
+                transform[9] += transformOffset.X;
+                transform[10] += transformOffset.Y;
+                transform[11] += transformOffset.Z;
+            }
             if (useOwnedModel && ownedModel != null)
                 descriptor[0] = (nint)ownedModel;
             descriptor[2] = (nint)transform;
